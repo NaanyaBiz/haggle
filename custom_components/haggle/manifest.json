@@ -1,0 +1,18 @@
+{
+  "domain": "haggle",
+  "name": "AGL Haggle",
+  "version": "0.0.1",
+  "codeowners": ["@naanyabiz"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/NaanyaBiz/haggle",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/NaanyaBiz/haggle/issues",
+  "loggers": ["custom_components.haggle"],
+  "quality_scale": "bronze",
+  "requirements": [
+    "aiohttp>=3.10",
+    "beautifulsoup4>=4.12"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "AGL account",
+        "description": "Sign in with your AGL Neighbourhood credentials. AGL will send you a one-time code on the next step.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "otp": {
+        "title": "One-time code",
+        "description": "Enter the OTP that AGL just sent to you.",
+        "data": {
+          "otp": "OTP"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials.",
+      "invalid_otp": "Invalid or expired OTP.",
+      "cannot_connect": "Could not reach AGL. Check your connection and try again."
+    },
+    "abort": {
+      "already_configured": "This AGL account is already configured.",
+      "reauth_successful": "Reauthentication successful."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "grid_import": { "name": "Grid import" },
+      "grid_export": { "name": "Grid export" }
+    }
+  }
+}
