@@ -1,7 +1,6 @@
 {
   "domain": "haggle",
   "name": "AGL Haggle",
-  "version": "0.0.1",
   "codeowners": ["@davosparent"],
   "config_flow": true,
   "dependencies": [],
@@ -14,5 +13,6 @@
   "requirements": [
     "aiohttp>=3.10",
     "beautifulsoup4>=4.12"
-  ]
+  ],
+  "version": "0.0.1"
 }
