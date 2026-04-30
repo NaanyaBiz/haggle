@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PreToolUse hook: refuse `git commit` / `git push` while sitting on `main`.
+# PreToolUse hook: refuse `git commit` / `git push` while on `main`.
 # Rationale: this repo enforces a PR-only flow on main; direct commits
 # bypass review and break the AI-generated provenance chain.
 set -euo pipefail
@@ -16,7 +16,16 @@ if ! echo "$cmd" | grep -qE '(^|[[:space:]])git[[:space:]]+(commit|push)([[:spac
     exit 0
 fi
 
-branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+# Determine the git directory targeted by this command.
+# Handle: `git -C /some/path commit` and `cd /some/path && git commit`.
+git_dir="."
+if echo "$cmd" | grep -qE 'git[[:space:]]+-C[[:space:]]+'; then
+    git_dir="$(echo "$cmd" | grep -oE 'git[[:space:]]+-C[[:space:]]+[^[:space:]]+' | head -1 | awk '{print $NF}')"
+elif echo "$cmd" | grep -qE '^cd[[:space:]]+'; then
+    git_dir="$(echo "$cmd" | grep -oE '^cd[[:space:]]+[^[:space:]&]+' | awk '{print $2}')"
+fi
+
+branch="$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 if [[ "$branch" == "main" ]]; then
     # Allow bypass via env var in the *calling shell* OR as a prefix in the
     # command string (e.g. `HAGGLE_ALLOW_MAIN_PUSH=1 git commit ...`).
