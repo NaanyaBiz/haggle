@@ -4,7 +4,13 @@
 
 set -euo pipefail
 
-MAIN_WORKTREE="$(git rev-parse --show-toplevel)"
+# Resolve the main worktree root regardless of CWD.
+# git worktree list always lists the main worktree first.
+MAIN_WORKTREE="$(git worktree list --porcelain | awk '/^worktree/{path=$2} /^branch refs\/heads\/main$/{print path; exit}')"
+# Fall back to the closest git toplevel if main branch isn't found.
+if [[ -z "$MAIN_WORKTREE" ]]; then
+    MAIN_WORKTREE="$(git rev-parse --show-toplevel)"
+fi
 WORKTREE_ROOT="$(dirname "$MAIN_WORKTREE")/haggle.wt"
 
 usage() {
@@ -58,8 +64,8 @@ cmd_rm() {
         exit 1
     fi
 
-    # Refuse to remove a dirty worktree.
-    if [[ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]]; then
+    # Refuse to remove a dirty worktree (untracked files like .venv symlinks are OK).
+    if [[ -n "$(git -C "$worktree_path" status --porcelain --untracked-files=no 2>/dev/null)" ]]; then
         echo "Error: worktree at $worktree_path has uncommitted changes — aborting." >&2
         echo "Commit or stash your changes first, then re-run." >&2
         exit 1
