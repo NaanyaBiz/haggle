@@ -2,35 +2,37 @@
   "config": {
     "step": {
       "user": {
-        "title": "AGL account",
-        "description": "Sign in with your AGL Neighbourhood credentials. AGL will send you a one-time code on the next step.",
+        "title": "AGL refresh token",
+        "description": "Paste the `refresh_token` from your AGL iOS app session (captured via a proxy — see README). This is temporary; a browser-based login will replace this in a future version.",
         "data": {
-          "email": "Email",
-          "password": "Password"
+          "refresh_token": "Refresh token"
         }
       },
-      "otp": {
-        "title": "One-time code",
-        "description": "Enter the OTP that AGL just sent to you.",
+      "select_contract": {
+        "title": "Select contract",
+        "description": "Multiple electricity contracts were found. Select the one to monitor.",
         "data": {
-          "otp": "OTP"
+          "contract_number": "Contract"
         }
       }
     },
     "error": {
-      "invalid_auth": "Invalid credentials.",
-      "invalid_otp": "Invalid or expired OTP.",
-      "cannot_connect": "Could not reach AGL. Check your connection and try again."
+      "invalid_auth": "Refresh token is invalid or has been revoked.",
+      "cannot_connect": "Could not reach AGL. Check your internet connection."
     },
     "abort": {
-      "already_configured": "This AGL account is already configured.",
+      "already_configured": "This AGL contract is already configured.",
       "reauth_successful": "Reauthentication successful."
     }
   },
   "entity": {
     "sensor": {
-      "grid_import": { "name": "Grid import" },
-      "grid_export": { "name": "Grid export" }
+      "consumption":        { "name": "Consumption" },
+      "consumption_today":  { "name": "Consumption today" },
+      "consumption_period": { "name": "Consumption this period" },
+      "bill_projection":    { "name": "Bill projection" },
+      "unit_rate":          { "name": "Unit rate" },
+      "supply_charge":      { "name": "Supply charge" }
     }
   }
 }

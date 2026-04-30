@@ -1,16 +1,16 @@
 """Sensor entities for haggle.
 
-Cumulative kWh totals for grid import / export, exposed with the field
-combinations the HA Energy dashboard expects:
+Entity design per AGL-API-FINDINGS.md §4.
 
-  device_class             = ENERGY
-  state_class              = TOTAL_INCREASING   (monotonic; HA tracks resets)
-  native_unit_of_measurement = kWh
+Cumulative consumption / cost use `import_statistics()` to feed historical
+data into the HA Energy dashboard (data is always for past intervals; a
+live state sensor would attribute everything to "now"). Entities backed
+by live coordinator data use the standard CoordinatorEntity pattern.
 
-`TOTAL_INCREASING` is correct for retailer-side cumulative reads (the
-underlying meter register only ever goes up). If we ever surface
-half-hourly intervals as standalone deltas, those would be a separate
-entity with `state_class=MEASUREMENT`.
+state_class choices:
+  - `TOTAL_INCREASING` for cumulative kWh / cost (monotonic, HA tracks resets)
+  - `TOTAL` for period / today totals (reset at known boundary)
+  - `MEASUREMENT` for instantaneous / forecast values
 """
 
 from __future__ import annotations
@@ -27,7 +27,15 @@ from homeassistant.const import UnitOfEnergy
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DATA_GRID_EXPORT_KWH, DATA_GRID_IMPORT_KWH, DOMAIN
+from .const import (
+    DATA_BILL_PROJECTION,
+    DATA_CONSUMPTION_KWH,
+    DATA_CONSUMPTION_PERIOD,
+    DATA_CONSUMPTION_TODAY,
+    DATA_SUPPLY_CHARGE,
+    DATA_UNIT_RATE,
+    DOMAIN,
+)
 from .coordinator import HaggleCoordinator
 
 if TYPE_CHECKING:
@@ -36,22 +44,56 @@ if TYPE_CHECKING:
 
     from . import HaggleConfigEntry
 
-ENERGY_SENSORS: tuple[SensorEntityDescription, ...] = (
+SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+    # --- Energy dashboard sensors (total_increasing) ---
+    # The cumulative kWh total (all-time from start of integration) is fed
+    # via import_statistics(); this entity reflects the latest known value.
     SensorEntityDescription(
-        key=DATA_GRID_IMPORT_KWH,
-        translation_key="grid_import",
+        key=DATA_CONSUMPTION_KWH,
+        translation_key="consumption",
         device_class=SensorDeviceClass.ENERGY,
         state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),
+    # --- Sub-period sensors (reset at known boundaries) ---
     SensorEntityDescription(
-        key=DATA_GRID_EXPORT_KWH,
-        translation_key="grid_export",
+        key=DATA_CONSUMPTION_TODAY,
+        translation_key="consumption_today",
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
+        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=3,
+        suggested_display_precision=2,
+    ),
+    SensorEntityDescription(
+        key=DATA_CONSUMPTION_PERIOD,
+        translation_key="consumption_period",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+    ),
+    # --- Forecast / cost (monetary, measurement) ---
+    SensorEntityDescription(
+        key=DATA_BILL_PROJECTION,
+        translation_key="bill_projection",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD",
+    ),
+    SensorEntityDescription(
+        key=DATA_UNIT_RATE,
+        translation_key="unit_rate",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/kWh",
+    ),
+    SensorEntityDescription(
+        key=DATA_SUPPLY_CHARGE,
+        translation_key="supply_charge",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/day",
     ),
 )
 
@@ -61,15 +103,15 @@ async def async_setup_entry(
     entry: HaggleConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up haggle sensor entities."""
+    """Set up haggle sensor entities for the entry."""
     coordinator = entry.runtime_data.coordinator
     async_add_entities(
-        HaggleEnergySensor(coordinator, entry, desc) for desc in ENERGY_SENSORS
+        HaggleEnergySensor(coordinator, entry, desc) for desc in SENSOR_DESCRIPTIONS
     )
 
 
 class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
-    """A cumulative kWh sensor backed by AGL portal data."""
+    """A sensor backed by the haggle coordinator."""
 
     _attr_has_entity_name = True
 
@@ -79,7 +121,6 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
         entry: HaggleConfigEntry,
         description: SensorEntityDescription,
     ) -> None:
-        """Initialize the sensor."""
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
@@ -87,13 +128,13 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
             manufacturer="AGL Australia",
-            model="Neighbourhood portal",
+            model="AGL Energy API",
             entry_type=DeviceEntryType.SERVICE,
         )
 
     @property
     def native_value(self) -> float | None:
-        """Return the latest cumulative kWh value, or None if unknown."""
+        """Return the current value, or None if not yet available."""
         data = self.coordinator.data
         if not data:
             return None

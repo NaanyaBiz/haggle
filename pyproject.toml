@@ -76,6 +76,7 @@ ignore = [
     "PLR0913",     # too many arguments — HA entity __init__ legitimately takes many
     "PLR2004",     # magic numbers in tests are fine
     "S101",        # assert in tests
+    "TID252",      # HA integrations use relative imports throughout; absolute is wrong here
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -120,6 +121,7 @@ asyncio_mode = "auto"
 filterwarnings = [
     "error",
     "ignore::DeprecationWarning:homeassistant.*",
+    "ignore::ResourceWarning",  # aiohttp GC timing between tests is non-deterministic
 ]
 
 [tool.coverage.run]
