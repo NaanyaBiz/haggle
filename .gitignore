@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# uv
+.uv/
+
+# Type checkers / linters
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Claude Code (per-machine settings stay local)
+.claude/settings.local.json
+.claude/.credentials.json
+
+# Home Assistant dev artefacts
+.HA_VERSION
+config/
+
+# Worktrees live as siblings (../haggle.wt/), not nested,
+# but ignore the dir defensively in case someone tries the nested layout.
+.worktrees/
+
+# Local secrets (defence-in-depth; gitleaks also scans)
+.env
+.env.*
+!.env.example

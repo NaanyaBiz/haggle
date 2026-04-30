@@ -1,0 +1,22 @@
+# Default
+* text=auto eol=lf
+
+# Python
+*.py text diff=python
+*.pyi text diff=python
+
+# Web / config
+*.json text
+*.yaml text
+*.yml text
+*.md text
+*.toml text
+
+# Binary
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Generated artefacts (mark for reviewers + linguist)
+custom_components/haggle/translations/*.json linguist-generated=true
+CHANGELOG.md linguist-generated=true
