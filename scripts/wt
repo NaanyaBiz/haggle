@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# Manage sibling git worktrees for parallel feature development.
+# Usage: ./scripts/wt new <branch> | list | rm <branch>
+
+set -euo pipefail
+
+MAIN_WORKTREE="$(git rev-parse --show-toplevel)"
+WORKTREE_ROOT="$(dirname "$MAIN_WORKTREE")/haggle.wt"
+
+usage() {
+    echo "Usage: $0 new <branch> | list | rm <branch>" >&2
+    exit 1
+}
+
+cmd_new() {
+    local branch="${1:-}"
+    [[ -z "$branch" ]] && { echo "Error: branch name required" >&2; usage; }
+
+    local safe_branch="${branch//\//-}"
+    local worktree_path="$WORKTREE_ROOT/$safe_branch"
+
+    if [[ -d "$worktree_path" ]]; then
+        echo "Error: worktree already exists at $worktree_path" >&2
+        exit 1
+    fi
+
+    mkdir -p "$WORKTREE_ROOT"
+    git worktree add "$worktree_path" -b "$branch"
+
+    # Share .venv from the main worktree (avoid duplicating 200MB of packages).
+    if [[ -d "$MAIN_WORKTREE/.venv" ]]; then
+        ln -s "$MAIN_WORKTREE/.venv" "$worktree_path/.venv"
+    fi
+
+    # Share committed Claude settings; local overrides stay separate.
+    ln -s "$MAIN_WORKTREE/.claude/settings.json" "$worktree_path/.claude/settings.json" 2>/dev/null || true
+    if [[ -f "$MAIN_WORKTREE/.claude/settings.local.json" ]]; then
+        ln -s "$MAIN_WORKTREE/.claude/settings.local.json" "$worktree_path/.claude/settings.local.json"
+    fi
+
+    echo "Worktree created at \`$worktree_path\`."
+    echo "Open a new Claude Code session there to work on feature \`$branch\` in isolation."
+}
+
+cmd_list() {
+    git worktree list
+}
+
+cmd_rm() {
+    local branch="${1:-}"
+    [[ -z "$branch" ]] && { echo "Error: branch name required" >&2; usage; }
+
+    local safe_branch="${branch//\//-}"
+    local worktree_path="$WORKTREE_ROOT/$safe_branch"
+
+    if [[ ! -d "$worktree_path" ]]; then
+        echo "Error: no worktree at $worktree_path" >&2
+        exit 1
+    fi
+
+    # Refuse to remove a dirty worktree.
+    if [[ -n "$(git -C "$worktree_path" status --porcelain 2>/dev/null)" ]]; then
+        echo "Error: worktree at $worktree_path has uncommitted changes — aborting." >&2
+        echo "Commit or stash your changes first, then re-run." >&2
+        exit 1
+    fi
+
+    git worktree remove "$worktree_path" --force
+    git branch -d "$branch" 2>/dev/null || true
+
+    echo "Worktree $worktree_path removed."
+}
+
+case "${1:-}" in
+    new)  cmd_new  "${2:-}" ;;
+    list) cmd_list ;;
+    rm)   cmd_rm   "${2:-}" ;;
+    *)    usage ;;
+esac
