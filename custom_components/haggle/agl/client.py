@@ -8,10 +8,11 @@ Architecture (§7 of AGL-API-FINDINGS.md):
               Client-Flavor, User-Agent) and retries once on 401 by forcing
               an auth refresh.
 
-Both classes are stubs here. Real implementation is Sprint 1; see
-AGENTS.md > AGL gotchas and ~/tests/fixtures/AGL-API-FINDINGS.md.
+Both classes are stubs here. Real implementation is Sprint 1.
+See AGENTS.md > AGL gotchas and ~/tests/fixtures/AGL-API-FINDINGS.md.
 The actual API responses are captured in ~/tests/fixtures/flows/agl-json/
 and should be used as pytest fixtures (real captures = real tests).
+Token endpoint: POST https://secure.agl.com.au/oauth/token (grant=refresh_token).
 """
 
 from __future__ import annotations
