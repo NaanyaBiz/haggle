@@ -1,0 +1,40 @@
+name: Bug report
+description: Something is broken
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing a bug: check that your AGL refresh token is still valid
+        and that the integration has had at least 48 hours to collect data.
+
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      placeholder: "2025.6.0"
+    validations:
+      required: true
+
+  - type: input
+    id: haggle_version
+    attributes:
+      label: Haggle version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Include relevant log lines (Settings → System → Logs, filter by "haggle").
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
