@@ -97,11 +97,11 @@ def validate_hacs(path: Path) -> bool:
         _error(f"cannot read {path}: {exc}")
         return False
 
-    errors = [
-        f"missing required key: {k!r}"
-        for k in ("name", "homeassistant")
-        if k not in data
-    ]
+    # HACS 2.x: all fields are optional — the file just needs to be valid JSON.
+    # Validate known fields if present.
+    errors = []
+    if "homeassistant" in data and not SEMVER_RE.match(str(data["homeassistant"])):
+        errors.append(f"homeassistant {data['homeassistant']!r} must be semver (X.Y.Z)")
     if errors:
         for err in errors:
             _error(f"{path.name}: {err}")
