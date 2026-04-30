@@ -1,0 +1,135 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "haggle"
+version = "0.0.1"
+description = "AGL Australia smart meter -> Home Assistant Energy dashboard"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Naanya Biz", email = "davosparent@gmail.com" }]
+requires-python = ">=3.13"
+keywords = ["home-assistant", "hacs", "agl", "energy", "smart-meter", "australia"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Framework :: AsyncIO",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Home Automation",
+]
+dependencies = [
+    # Runtime deps mirror what's in custom_components/haggle/manifest.json
+    # so editor tooling resolves imports. HA installs from manifest at runtime.
+    "homeassistant>=2025.1",
+    "aiohttp>=3.10",
+    "beautifulsoup4>=4.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "pytest-homeassistant-custom-component>=0.13",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "types-beautifulsoup4",
+    "pre-commit>=4.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/NaanyaBiz/haggle"
+Issues = "https://github.com/NaanyaBiz/haggle/issues"
+Changelog = "https://github.com/NaanyaBiz/haggle/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.wheel]
+packages = ["custom_components/haggle"]
+
+# ---------- ruff ----------
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+src = ["custom_components", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E", "W",      # pycodestyle
+    "F",           # pyflakes
+    "I",           # isort
+    "UP",          # pyupgrade
+    "B",           # flake8-bugbear
+    "SIM",         # flake8-simplify
+    "RUF",         # ruff-specific
+    "ASYNC",       # flake8-async (catches blocking I/O in async)
+    "N",           # pep8-naming
+    "PL",          # pylint
+    "PT",          # pytest style
+    "S",           # flake8-bandit (security)
+    "TID",         # tidy imports
+    "TCH",         # type-checking (move imports to TYPE_CHECKING)
+]
+ignore = [
+    "E501",        # line length handled by formatter
+    "PLR0913",     # too many arguments — HA entity __init__ legitimately takes many
+    "PLR2004",     # magic numbers in tests are fine
+    "S101",        # assert in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S", "PLR", "PT011"]
+"scripts/**/*.py" = ["S603", "S607"]   # subprocess usage in dev scripts
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+known-first-party = ["custom_components.haggle"]
+
+# ---------- mypy ----------
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_decorators = false  # HA decorators are loosely typed
+plugins = []
+
+[[tool.mypy.overrides]]
+module = ["homeassistant.*", "pytest_homeassistant_custom_component.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["tests.*"]
+disallow_untyped_defs = false
+
+# ---------- pytest ----------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=custom_components/haggle",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+asyncio_mode = "auto"
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:homeassistant.*",
+]
+
+[tool.coverage.run]
+source = ["custom_components/haggle"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
