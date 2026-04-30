@@ -1,32 +1,36 @@
 """Config flow for haggle.
 
-Three steps: `user` (email + password) -> `otp` (one-time code) -> finish.
-Reauth re-enters at `otp` because session-cookie expiry is the typical
-failure mode and the user's stored credentials are still valid.
+Onboarding strategy (per AGL-API-FINDINGS.md §1, Decision for v1):
+  Step 1 — user provides a refresh token (obtained by running mitmproxy
+            against the AGL iOS app, then copying the token from the
+            oauth/token response).
+  Step 2 — integration uses the refresh token to fetch /api/v3/overview
+            and discover available contracts; if >1, user selects.
+  Step 3 — entry is created; coordinator takes over.
+
+PKCE flow (Sprint 2): replace Step 1 with an OAuth redirect so the user
+just clicks "Log in" in the HA UI and doesn't need mitmproxy at all.
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
+import aiohttp
 import voluptuous as vol
-from homeassistant.config_entries import SOURCE_REAUTH, ConfigFlow, ConfigFlowResult
-from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
-from .agl.client import AGLAuthError, AGLClient, AGLError
-from .const import CONF_OTP, DOMAIN
-
-if TYPE_CHECKING:
-    from collections.abc import Mapping
-
-USER_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_EMAIL): str,
-        vol.Required(CONF_PASSWORD): str,
-    }
+from .agl.client import AglAuth, AGLAuthError, AglClient, AGLError, Contract
+from .const import (
+    CONF_ACCESS_TOKEN,
+    CONF_ACCESS_TOKEN_EXPIRY,
+    CONF_ACCOUNT_NUMBER,
+    CONF_CONTRACT_NUMBER,
+    CONF_REFRESH_TOKEN,
+    DOMAIN,
 )
 
-OTP_SCHEMA = vol.Schema({vol.Required(CONF_OTP): str})
+REFRESH_TOKEN_SCHEMA = vol.Schema({vol.Required(CONF_REFRESH_TOKEN): str})
 
 
 class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -35,83 +39,117 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
 
     def __init__(self) -> None:
-        """Initialize the flow."""
-        self._email: str | None = None
-        self._password: str | None = None
-        self._client: AGLClient | None = None
+        self._refresh_token: str | None = None
+        self._contracts: list[Contract] = []
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 1: collect email + password."""
+        """Step 1: accept a refresh token from the user.
+
+        The token was obtained by proxying the AGL iOS app (see README).
+        PKCE replaces this in Sprint 2.
+        """
         errors: dict[str, str] = {}
         if user_input is not None:
-            self._email = user_input[CONF_EMAIL]
-            self._password = user_input[CONF_PASSWORD]
+            token = user_input[CONF_REFRESH_TOKEN].strip()
             try:
-                # Stubbed: real client.async_login() submits creds and
-                # triggers AGL to send an OTP via SMS / email.
-                client = AGLClient(self.hass, entry=None)  # type: ignore[arg-type]
-                assert self._email is not None
-                assert self._password is not None
-                await client.async_login(self._email, self._password)
-                self._client = client
+                contracts = await self._discover_contracts(token)
+                self._refresh_token = token
+                self._contracts = contracts
             except AGLAuthError:
                 errors["base"] = "invalid_auth"
-            except AGLError:
+            except (AGLError, TimeoutError):
                 errors["base"] = "cannot_connect"
             except NotImplementedError:
-                # Stub path: pretend login worked and advance to OTP step.
-                # Removed once agl-portal-explorer wires the real client.
-                return await self.async_step_otp()
+                # Stub path: pretend discovery worked with a placeholder.
+                self._refresh_token = token
+                self._contracts = []
+                return await self.async_step_select_contract()
             else:
-                return await self.async_step_otp()
+                return await self.async_step_select_contract()
 
         return self.async_show_form(
-            step_id="user", data_schema=USER_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=REFRESH_TOKEN_SCHEMA,
+            errors=errors,
         )
 
-    async def async_step_otp(
+    async def async_step_select_contract(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Step 2: collect the OTP AGL just sent the user."""
-        errors: dict[str, str] = {}
+        """Step 2: select contract if multiple discovered.
+
+        Single-contract accounts skip selection and create the entry directly.
+        """
+        if not self._contracts:
+            # Stub path or single contract — create entry with placeholders.
+            return await self._create_entry(contract_number="", account_number="")
+
+        if len(self._contracts) == 1:
+            c = self._contracts[0]
+            return await self._create_entry(
+                contract_number=c.contract_number,
+                account_number=c.account_number,
+            )
+
         if user_input is not None:
-            try:
-                if self._client is not None:
-                    await self._client.async_submit_otp(user_input[CONF_OTP])
-            except AGLAuthError:
-                errors["base"] = "invalid_otp"
-            except AGLError:
-                errors["base"] = "cannot_connect"
-            except NotImplementedError:
-                # Stub: skip validation; treat as success.
-                pass
+            chosen = user_input[CONF_CONTRACT_NUMBER]
+            contract = next(
+                (c for c in self._contracts if c.contract_number == chosen),
+                self._contracts[0],
+            )
+            return await self._create_entry(
+                contract_number=contract.contract_number,
+                account_number=contract.account_number,
+            )
 
-            if not errors:
-                if self.source == SOURCE_REAUTH:
-                    return self.async_update_reload_and_abort(
-                        self._get_reauth_entry(),
-                        data_updates={CONF_OTP: user_input[CONF_OTP]},
-                    )
-
-                assert self._email is not None
-                await self.async_set_unique_id(self._email.lower())
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title=f"AGL ({self._email})",
-                    data={
-                        CONF_EMAIL: self._email,
-                        CONF_PASSWORD: self._password,
-                    },
-                )
-
+        options = {
+            c.contract_number: f"{c.address} ({c.fuel_type})" for c in self._contracts
+        }
         return self.async_show_form(
-            step_id="otp", data_schema=OTP_SCHEMA, errors=errors
+            step_id="select_contract",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_CONTRACT_NUMBER): vol.In(options)}
+            ),
         )
 
-    async def async_step_reauth(
-        self, _entry_data: Mapping[str, Any]
+    async def async_step_reauth(self, _entry_data: dict[str, Any]) -> ConfigFlowResult:
+        """Reauth when the refresh token has been revoked.
+
+        Re-enters at Step 1; the rotated token in the config entry should
+        normally prevent this — it only fires if the token is force-revoked
+        (e.g. user changed AGL password) or somehow lost.
+        """
+        return await self.async_step_user()
+
+    async def _create_entry(
+        self, contract_number: str, account_number: str
     ) -> ConfigFlowResult:
-        """Reauth on session-cookie expiry: jump straight to OTP."""
-        return await self.async_step_otp()
+        assert self._refresh_token is not None
+        unique_id = f"{account_number}_{contract_number}" or self._refresh_token[:16]
+        await self.async_set_unique_id(unique_id)
+        self._abort_if_unique_id_configured()
+        return self.async_create_entry(
+            title=f"AGL {contract_number or 'account'}",
+            data={
+                CONF_REFRESH_TOKEN: self._refresh_token,
+                CONF_ACCESS_TOKEN: "",
+                CONF_ACCESS_TOKEN_EXPIRY: 0,
+                CONF_CONTRACT_NUMBER: contract_number,
+                CONF_ACCOUNT_NUMBER: account_number,
+            },
+        )
+
+    async def _discover_contracts(self, refresh_token: str) -> list[Contract]:
+        """Exchange token and fetch /overview to discover contracts."""
+
+        async def _noop_persist(_token: str) -> None:
+            pass  # during discovery we don't have an entry yet
+
+        auth = AglAuth(refresh_token, _noop_persist)
+        async with aiohttp.ClientSession() as session:
+            access_token = await auth.async_ensure_valid_token(session)
+            _ = access_token  # will be used by AglClient in Sprint 1
+            client = AglClient(auth, session)
+            return await client.async_get_overview()

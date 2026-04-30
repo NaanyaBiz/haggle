@@ -7,19 +7,39 @@ from typing import Final
 
 DOMAIN: Final = "haggle"
 
-# AGL portal data lags 24-48h. Polling more often is wasted requests
-# (and the portal rate-limits aggressively).
-SCAN_INTERVAL: Final = timedelta(hours=24)
+# Auth0 / AGL API
+AGL_AUTH_HOST: Final = "https://secure.agl.com.au"
+AGL_API_HOST: Final = "https://api.platform.agl.com.au"
+# iOS app client_id — captured from mitmproxy session (app.iOS.public.8.38.0-531).
+AGL_CLIENT_ID: Final = "2mDkNcC8gkDLL7FTT1ZxF5rrQHrLTHL3"
+# Match the captured client-flavor; AGL servers may reject unknown clients.
+AGL_CLIENT_FLAVOR: Final = "app.iOS.public.8.38.0-531"
+AGL_USER_AGENT: Final = "AGL/531 CFNetwork/3860.500.112 Darwin/25.4.0"
 
-# Config-flow / config-entry keys.
-# `CONF_EMAIL` and `CONF_PASSWORD` are imported from `homeassistant.const`
-# (the standard HA keys); only haggle-specific ones live here.
-CONF_OTP: Final = "otp"
-CONF_NMI: Final = "nmi"
-CONF_ACCOUNT_ID: Final = "account_id"
-CONF_SESSION_COOKIE: Final = "session_cookie"
+# Polling cadences.
+# AGL interval data is delayed 24-48 h from the meter (AEMO feed lag).
+SCAN_INTERVAL_HOURLY: Final = timedelta(hours=24)  # 30-min intervals: fetch yesterday
+SCAN_INTERVAL_DAILY: Final = timedelta(hours=6)  # daily series: pick up new days
+SCAN_INTERVAL_PLAN: Final = timedelta(days=7)  # plan/rates: rarely changes
 
-# Sensor keys produced by the coordinator.
-DATA_GRID_IMPORT_KWH: Final = "grid_import_kwh"
-DATA_GRID_EXPORT_KWH: Final = "grid_export_kwh"
-DATA_LAST_READING_AT: Final = "last_reading_at"
+# How many minutes before access-token expiry to proactively refresh.
+TOKEN_REFRESH_MARGIN_MINUTES: Final = 5
+
+# Config-entry keys.
+# CONF_EMAIL / CONF_PASSWORD are NOT used — auth is via refresh token.
+CONF_REFRESH_TOKEN: Final = "refresh_token"  # ← it IS a token key
+CONF_ACCESS_TOKEN: Final = "access_token"
+CONF_ACCESS_TOKEN_EXPIRY: Final = "access_token_expiry"
+CONF_CONTRACT_NUMBER: Final = "contract_number"
+CONF_ACCOUNT_NUMBER: Final = "account_number"
+
+# Coordinator data keys.
+DATA_CONSUMPTION_KWH: Final = "consumption_kwh"  # cumulative kWh (total_increasing)
+DATA_CONSUMPTION_COST: Final = "consumption_cost"  # cumulative AUD cost
+DATA_CONSUMPTION_TODAY: Final = (
+    "consumption_today"  # kWh this local day (resets midnight)
+)
+DATA_CONSUMPTION_PERIOD: Final = "consumption_period"  # kWh this bill period
+DATA_BILL_PROJECTION: Final = "bill_projection"  # AUD forecast for current period
+DATA_UNIT_RATE: Final = "unit_rate"  # c/kWh
+DATA_SUPPLY_CHARGE: Final = "supply_charge"  # c/day
