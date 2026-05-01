@@ -84,6 +84,28 @@ scripts/
 
 ---
 
+## Documentation Checklist — Required on Every PR
+
+Every PR that ships code (not pure CI/tooling fixes) MUST include updates to
+all of the following before it can be merged. The `/pr` command enforces this.
+
+| Artifact | What to update | Where |
+|---|---|---|
+| `CHANGELOG.md` | Add bullet(s) under `## [Unreleased]` for every user-visible capability added, changed, or fixed | repo root |
+| `AGENTS.md` — Repo Map | Add any new files; update descriptions if a file's role changed | this file |
+| `AGENTS.md` — AGL API | Correct any API facts that were proven wrong (endpoints, field names, token lifetimes, headers) | this file |
+| `AGENTS.md` — What NOT to Do | Add a new prohibition if a footgun was discovered | this file |
+| Memory files | Record non-obvious decisions, confirmed API behaviour, or user preferences that should survive context resets | `~/.claude/projects/.../memory/` |
+
+**Sprint / phase boundary** (when a branch completes a named sprint or phase):
+
+- Move completed items out of `## [Unreleased]` into a dated `## [x.y.z-dev]` entry.
+- Update `## [Unreleased]` → `### Targets for next sprint` with the next block of work.
+- Verify the Repo Map matches every file currently in `custom_components/haggle/` and `tests/`.
+- Review every bullet in the AGL API section against the current implementation — correct or delete stale facts.
+
+---
+
 ## Subagent Triggers
 
 | Agent | File | Trigger condition |
