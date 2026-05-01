@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flow (authorize URL → browser login → paste callback URL) instead of the
   stale email+OTP flow.
 
+### Added (infrastructure)
+- Three new review subagents under `.claude/agents/`: `code-quality-reviewer`,
+  `security-reviewer`, `async-performance-reviewer`. Auto-trigger on edits to
+  the relevant areas of `custom_components/haggle/`; complement the existing
+  five domain agents.
+
 ### Targets for next sprint
 - End-to-end live install test against a real AGL account.
 - Solar/feed-in sensor (needs a solar-customer mitmproxy capture).
