@@ -1,0 +1,75 @@
+{
+  "resourceType": "electricity",
+  "granularity": "hourly",
+  "timeZone": "Australia/Sydney",
+  "sections": [
+    {
+      "startDate": "2026-04-28",
+      "items": [
+        {
+          "dateTime": "2026-04-28T13:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.1534, "quantity": 0.1534},
+            "amount": 0.081096,
+            "quantity": 0.24,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-04-28T13:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.1629, "quantity": 0.1629},
+            "amount": 0.086164,
+            "quantity": 0.255,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-04-28T12:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.1572, "quantity": 0.1572},
+            "amount": 0.083124,
+            "quantity": 0.246,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-04-28T12:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.1527, "quantity": 0.1527},
+            "amount": 0.080758,
+            "quantity": 0.239,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-04-28T03:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.9252, "quantity": 0.9252},
+            "amount": 0.48928,
+            "quantity": 1.448,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-04-28T03:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.5738, "quantity": 0.5738},
+            "amount": 0.303434,
+            "quantity": 0.898,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-04-28T14:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "none"
+          }
+        }
+      ]
+    }
+  ]
+}
