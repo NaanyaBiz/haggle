@@ -1,6 +1,7 @@
 {
   "domain": "haggle",
   "name": "AGL Haggle",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@naanyabiz"],
   "config_flow": true,
   "dependencies": [],

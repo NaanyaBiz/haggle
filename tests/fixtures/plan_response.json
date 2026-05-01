@@ -1,0 +1,35 @@
+{
+  "contractNumber": "9999999999",
+  "fuelType": "Electricity",
+  "productCode": "AGLMKTRE0000000",
+  "productName": "Smart Saver",
+  "billFrequency": "Quarterly",
+  "gstInclusiveRates": [
+    {
+      "kind": "header",
+      "title": "T11 General Usage**"
+    },
+    {
+      "validTo": "9999-12-31",
+      "type": "c/kWh",
+      "price": 33.792,
+      "kind": "detail",
+      "title": "First 379 kWh"
+    },
+    {
+      "validTo": "9999-12-31",
+      "type": "c/kWh",
+      "price": 33.792,
+      "kind": "detail",
+      "title": "Thereafter"
+    },
+    {
+      "validTo": "9999-12-31",
+      "timeBasis": "1",
+      "type": "c/day",
+      "price": 131.714,
+      "kind": "detail",
+      "title": "Supply charge"
+    }
+  ]
+}

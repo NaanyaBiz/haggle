@@ -57,6 +57,17 @@ gh pr create \
   --body "<body>"
 ```
 
+> **Note — merging from a worktree**: `gh pr merge` will fail because
+> `main` is checked out in the primary worktree. Use the GitHub API
+> instead:
+> ```
+> gh api repos/<owner>/<repo>/pulls/<number>/merge \
+>   -X PUT -f merge_method=squash \
+>   -f commit_title="<title> (#<number>)"
+> gh api repos/<owner>/<repo>/git/refs/heads/<branch> -X DELETE
+> ```
+> After merging, run `/wt rm <branch>` to remove the local worktree.
+
 **Title**: If the user supplied one, use it verbatim. Otherwise derive it
 from the branch name and commits: conventional-commit prefix + short
 summary (≤70 chars).

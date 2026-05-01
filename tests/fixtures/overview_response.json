@@ -1,0 +1,23 @@
+{
+  "accounts": [
+    {
+      "contracts": [
+        {
+          "hasSolar": false,
+          "contractNumber": "9999999999",
+          "title": "20 Apr - 19 May 2026",
+          "label": "Cost So Far",
+          "labelValue": "$99.24",
+          "additionalLabel": "Bill Projection",
+          "additionalLabelValue": "$139.15",
+          "meterType": "smart",
+          "type": "electricityContract",
+          "status": "active"
+        }
+      ],
+      "address": "1 Sample Street SUBURB QLD 4000",
+      "type": "energyAccount",
+      "accountNumber": "1234567890"
+    }
+  ]
+}
