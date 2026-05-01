@@ -4,36 +4,41 @@ Home Assistant custom integration that pulls smart-meter usage from
 [AGL Australia](https://www.agl.com.au/) and feeds it into the HA Energy
 dashboard.
 
-> **Status:** scaffolding — no working data path yet. See
-> [`CHANGELOG.md`](./CHANGELOG.md) for milestone progress.
+> **Status:** beta — core data path working, HACS submission pending.
+> See [`CHANGELOG.md`](./CHANGELOG.md) for milestone progress.
 
 ## Why
 
 AGL is one of Australia's largest electricity retailers. They expose
-half-hourly NEM12 usage to customers via the *AGL Neighbourhood* portal
-but offer no public API. `haggle` logs in on your behalf, fetches the
-daily NEM12 export, and surfaces import / export / feed-in as proper
-HA energy sensors (`device_class=energy`, `state_class=total_increasing`).
+half-hourly interval data to customers via their mobile app. `haggle`
+authenticates as the AGL iOS app (PKCE OAuth2), fetches your smart-meter
+intervals, and surfaces consumption and cost as proper HA energy sensors
+(`device_class=energy`, `state_class=total_increasing`).
 
 ## Install
 
-> Not yet HACS-listed. Install via HACS *Custom repository* once published.
+> Not yet HACS-listed. Install via HACS *Custom repository*.
 
-1. HACS → *Integrations* → *Custom repositories* → add this repo URL.
-2. Install **Haggle**, restart HA.
-3. *Settings* → *Devices & Services* → *Add integration* → search for
-   *AGL Haggle*.
-4. Enter your AGL email + password, then the OTP that AGL emails / SMSes
-   you. The integration polls once per day; AGL data lags 24–48 h.
+1. HACS → *Integrations* → *Custom repositories* → add this repo URL → category **Integration**.
+2. Install **Haggle**, then restart Home Assistant.
+3. *Settings* → *Devices & Services* → *Add integration* → search **AGL Haggle**.
+4. A login URL is shown. Open it in your **real browser** (handles Akamai
+   bot-protection and MFA transparently). Complete your AGL login.
+5. After login, AGL redirects to a "Not Found" page. Copy the full URL from
+   your browser's address bar and paste it into the HA dialog.
+6. If you have multiple electricity contracts, select the one to monitor.
+
+The integration will backfill 30 days of history on first run, then poll
+once per day. AGL interval data lags 24–48 h.
 
 ## Develop
 
 ```sh
 uv sync                                # install deps + dev deps
 uv run pytest                          # run tests
-uv run ruff check . && uv run ruff format --check .
+uv run ruff check custom_components/ tests/ && uv run ruff format --check .
 uv run mypy custom_components/haggle
-uv run python -m script.hassfest --integration-path custom_components/haggle
+python scripts/validate_manifest.py custom_components/haggle/manifest.json
 ```
 
 This repo uses sibling git worktrees for parallel feature work — see
