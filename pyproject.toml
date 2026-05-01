@@ -25,7 +25,7 @@ dependencies = [
     # so editor tooling resolves imports. HA installs from manifest at runtime.
     "homeassistant>=2025.1",
     "aiohttp>=3.10",
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4>=4.14.3",
 ]
 
 [project.optional-dependencies]
