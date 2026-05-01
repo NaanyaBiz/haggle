@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.haggle.agl.client import AGLAuthError
+from custom_components.haggle.agl.client import AGLAuthError, AGLError
 from custom_components.haggle.agl.models import Contract
 from custom_components.haggle.config_flow import CALLBACK_URL_FIELD
 from custom_components.haggle.const import (
@@ -116,6 +116,38 @@ async def test_user_flow_exchange_failure_shows_error(hass: HomeAssistant) -> No
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"]["base"] == "invalid_auth"
+
+
+async def test_fetch_contracts_failure_shows_cannot_connect(
+    hass: HomeAssistant,
+) -> None:
+    """When _fetch_contracts raises, select_contract shows cannot_connect error."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    authorize_url: str = result["description_placeholders"]["authorize_url"]
+    callback_url = _make_callback_url(authorize_url)
+
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("access_tok", "refresh_tok"),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            side_effect=AGLError("network error"),
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CALLBACK_URL_FIELD: callback_url},
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "select_contract"
+    assert result["errors"]["base"] == "cannot_connect"
 
 
 async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) -> None:

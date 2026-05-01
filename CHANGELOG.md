@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (Phase A — pre-flight logging)
+- **config_flow.py**: `_fetch_contracts` failure no longer silently creates a
+  broken entry with empty contract/account numbers. Now shows a `cannot_connect`
+  error on the `select_contract` step so the user can retry.
+- **config_flow.py**: INFO log after `_async_create_entry` records account +
+  contract numbers.
+- **__init__.py**: INFO log at top of `async_setup_entry` records contract
+  number. `_persist_refresh_token` wrapped in try/except — ERROR on failure,
+  DEBUG (token length only) on success.
+- **coordinator.py**: INFO log at start of 30-day backfill (contract + day
+  count); INFO at end (interval count, day count, both statistic IDs). INFO
+  log on incremental path (date range + interval count).
+- **agl/client.py**: Token-refresh log promoted DEBUG → INFO; now includes
+  `expires_at` ISO timestamp.
+- **info.md / README.md**: Install steps rewritten to document the actual PKCE
+  flow (authorize URL → browser login → paste callback URL) instead of the
+  stale email+OTP flow.
+
 ### Targets for next sprint
 - End-to-end live install test against a real AGL account.
 - Solar/feed-in sensor (needs a solar-customer mitmproxy capture).
