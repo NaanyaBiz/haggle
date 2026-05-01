@@ -179,12 +179,21 @@ Each worktree shares `.venv` and `.claude/settings.local.json` via symlink.
 ### Data API
 
 - **Base**: `https://api.platform.agl.com.au`
-- **Required header**: `Client-Flavor: app.iOS.public.8.38.0-531`
+- **Required headers on ALL data endpoints** (captured from iOS 8.38.0-531, 2026-05-01):
+  - `Client-Flavor: app.iOS.public.8.38.0-531`
+  - `Client-Device: Apple-iPhone-iPhone14,7-iOS-26.4.2`
+  - `Accept-Language: en-AU,en;q=0.9`
+  - `Accept-Features: <long feature-flag list>` — see `AGL_ACCEPT_FEATURES` in `const.py`.
+    Must include `UsageEnableHistoricalMeterReads`. **Omitting any of these headers causes
+    HTTP 500 on Hourly/Daily usage endpoints** (overview and plan are more permissive).
+- **`scaling` query parameter**: Hourly and Daily usage URLs require
+  `&scaling=36.514404_108.057_40.670903_120.357_0_0_0_0` (screen DPI vector for chart
+  rendering). Without it, the BFF returns HTTP 500.
 - **Contract discovery**: `GET /mobile/bff/api/v3/overview`
   - Key fields: `accounts[].accountNumber`, `accounts[].contracts[].contractNumber`
   - `contractNumber` ≠ `accountNumber` — use `contractNumber` in all data paths
 - **30-min interval data** (despite "Hourly" in the path):
-  `GET /mobile/bff/api/v2/usage/smart/Electricity/{contractNumber}/Current/Hourly?period=YYYY-MM-DD_YYYY-MM-DD`
+  `GET /mobile/bff/api/v2/usage/smart/Electricity/{contractNumber}/Current/Hourly?period=YYYY-MM-DD_YYYY-MM-DD&scaling=...`
 - **kWh source of truth**: `consumption.values.quantity` — NOT `consumption.quantity`
   (which is UI-rounded) and NOT `consumption.values.amount` (same value but semantically cost)
 - **`dateTime` field**: slot start, in **UTC**. Convert to local for display.
@@ -205,10 +214,12 @@ Each worktree shares `.venv` and `.claude/settings.local.json` via symlink.
 ### Previous Bill Period
 
 ```
-GET /mobile/bff/api/v2/usage/smart/Electricity/{contractNumber}/Previous/Hourly?period=...
+GET /mobile/bff/api/v2/usage/smart/Electricity/{contractNumber}/Previous/Hourly?period=YYYY-MM-DD_YYYY-MM-DD&scaling=...
 ```
 
-Use on first install to backfill 30 days of history (one day at a time, ~1 req/s).
+Used for backfill of dates **before** the current billing period start (`bill_period.start`).
+Confirmed working back to at least 2025-12-24 (single-day period params). Requires the same
+`Accept-Features`/`Client-Device`/`scaling` headers as `Current/Hourly`.
 
 ### Plan / Rates
 
@@ -230,8 +241,11 @@ The HA Energy dashboard requires:
   regardless of when the API call happened. Skipping this means the Energy dashboard shows
   a spike at poll time, not a smooth historical chart.
 - Statistic IDs per contract:
-  - `haggle:consumption_<contract_number>` — kWh, `has_sum=True`
-  - `haggle:cost_<contract_number>` — AUD, `has_sum=True`
+  - `haggle:consumption_<contract_number>` — kWh, `has_sum=True`, **`unit_class="energy"`**
+  - `haggle:cost_<contract_number>` — AUD, `has_sum=True`, `unit_class=None`
+- **`unit_class="energy"` is required** on the consumption statistic for it to appear in
+  the Energy dashboard's "add consumption source" picker. `unit_class=None` silently excludes
+  it from the UI filter even though the data is in the DB.
 - Resume point: `get_last_statistics(hass, 1, stat_id, True, {"start", "sum"})` — returns
   the last-imported hour so incremental updates don't re-import already-stored rows.
 - Each import call is idempotent: `(statistic_id, start)` updates in place.
@@ -248,6 +262,14 @@ The HA Energy dashboard requires:
 - **Don't store `access_token` in `entry.data`** — it's transient (15 min).
   Persist only `refresh_token` to `entry.data`; keep `access_token` in memory only.
 - **Don't use `async_add_executor_job`** for AGL API calls — they're already async.
+- **Don't pass `access_token` to `AglAuth`** — `AglAuth.__init__` expects a `refresh_token`.
+  Passing an `access_token` silently fails: `async_force_refresh` posts it as a refresh_token,
+  Auth0 rejects it, and the contract number is never set → HTTP 404 on every data call.
+  For one-shot calls with a bare bearer token (e.g. config flow), use a direct `aiohttp` GET.
+- **Don't omit `Accept-Features` / `Client-Device` / `scaling`** — omitting any of these
+  from Hourly or Daily usage requests returns HTTP 500 with no useful error body.
+- **Don't set `unit_class=None` on the consumption statistic** — HA's Energy dashboard
+  consumption picker filters by `unit_class="energy"`. `None` silently hides the statistic.
 - **No committing directly to `main`** — the `guard-main-branch` hook blocks it.
   Use a feature branch + PR.
 

@@ -20,7 +20,15 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ..const import AGL_AUTH_HOST, AGL_CLIENT_FLAVOR, AGL_CLIENT_ID, AGL_USER_AGENT
+from ..const import (
+    AGL_ACCEPT_FEATURES,
+    AGL_AUTH_HOST,
+    AGL_CLIENT_DEVICE,
+    AGL_CLIENT_FLAVOR,
+    AGL_CLIENT_ID,
+    AGL_SCALING,
+    AGL_USER_AGENT,
+)
 from .models import (
     BillPeriod,
     Contract,
@@ -218,9 +226,12 @@ class AglClient:
     def _default_headers(self) -> dict[str, str]:
         return {
             "Client-Flavor": AGL_CLIENT_FLAVOR,
+            "Client-Device": AGL_CLIENT_DEVICE,
             "User-Agent": AGL_USER_AGENT,
             "Accept": "*/*",
             "Accept-Encoding": "gzip, deflate, br",
+            "Accept-Language": "en-AU,en;q=0.9",
+            "Accept-Features": AGL_ACCEPT_FEATURES,
         }
 
     async def _get(self, url: str) -> Any:
@@ -286,7 +297,7 @@ class AglClient:
         dateTime is slot-start in UTC.
         """
         period = f"{day}_{day}"
-        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
         return parse_interval_readings(data)
 
@@ -295,7 +306,7 @@ class AglClient:
     ) -> list[DailyReading]:
         """Fetch /Daily for a date range."""
         period = f"{start}_{end}"
-        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Daily?period={period}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Daily?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
         return parse_daily_readings(data)
 
@@ -304,7 +315,7 @@ class AglClient:
     ) -> list[IntervalReading]:
         """Fetch /Previous/Hourly — useful for backfill on first install."""
         period = f"{day}_{day}"
-        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Previous/Hourly?period={period}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Previous/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
         return parse_interval_readings(data)
 

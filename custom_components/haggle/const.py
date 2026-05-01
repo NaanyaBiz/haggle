@@ -37,6 +37,54 @@ TOKEN_REFRESH_MARGIN_SECONDS: Final = 120
 
 # Number of days of history to backfill on first install.
 BACKFILL_DAYS: Final = 30
+# Maximum days to fetch per 24 h poll cycle (throttles first-install backfill).
+BACKFILL_CHUNK_DAYS: Final = 7
+
+# AGL BFF requires these headers on Hourly/Daily usage endpoints (HTTP 500 without them).
+# Captured from iOS app 8.38.0-531 via mitmproxy — 2026-05-01.
+AGL_ACCEPT_FEATURES: Final = (
+    "AccountEnableCarbonNeutral, AccountEnableCarbonNeutralMessagingRemoval,"
+    " AccountEnableConcessionMessaging, AccountEnableConsumerDataRight,"
+    " AccountEnableDirectDebitSetup, AccountEnableHideTelcoNoChangeWarning,"
+    " AccountEnableMessagingInfoItem, AccountEnableNativeAccountDeletion,"
+    " AccountEnableTelcoDirectDebit, BillingEnableDirectDebitSetup,"
+    " BillingEnableEnergyPaymentDirectDebit, BillingEnableEnergyViewPlan,"
+    " BillingEnablePaymentArrangement, BillingEnableTransactionHistory,"
+    " BillingEnableUpdatedPastBillsFlow, BillingEnableV3,"
+    " DeeplinkEnableBpFuelOffer, DeeplinkEnableBpPulseOffer,"
+    " DeeplinkEnableElectrifyNowLanding, DeeplinkEnableInAppSales,"
+    " DeeplinkEnablePushNotificationPreferences, DeeplinkEnableTransactionHistory,"
+    " ElectricityServiceHubEnableFinancialHardship, ElectricityServiceHubEnableMessaging,"
+    " EnableAglAssistantRebrand, EnableHighBillProjectionTreatment,"
+    " EnableInAppSales, EnableMobileSimActivationSetting, EnableServiceHub,"
+    " EnableTelcoServiceHub, EnableUsageFromOverview, EnergyPlanEnableManageActions,"
+    " EnergyServiceHubEnableBudgetTracker, EnergyServiceHubEnableElectricityUsageDisclaimer,"
+    " EnergyServiceHubEnableHidingSettingsTitle, HelpCentreEnableArrangeYourMoveQuickLink,"
+    " HelpCentreEnableDisconnectMessagingFaq, HelpCentreEnableSetupTwoFactorAuthentication,"
+    " HelpEnableConsumerDataRight, HelpEnableFamilyDomesticViolenceSupport,"
+    " HelpEnableTelcoFinancialHardshipLink, InAppSalesEnableElectrifyNow,"
+    " InAppSalesEnablePeakEnergyRewards, InAppSalesEnableRewardsTile,"
+    " InAppSalesEnableTelcoOffersSourceChange, LoginEnableAuth0HttpsCallbacks,"
+    " LoginEnablePasskey, LoginEnablePasskeyButton, MessagingEnableUpdateSdk,"
+    " OffersEnableOverviewAlertBanner, OffersEnableV3,"
+    " OverviewAndAccountEnableSecurityCentre, OverviewAndViewPlanEnableNetflix,"
+    " OverviewEnableHideTelcoCarbonNeutralLabel, OverviewEnableMessaging,"
+    " OverviewEnableMultiOffers, OverviewEnableOffer, OverviewEnableV3,"
+    " OverviewV3EnableSolarHealth, PushEnablePreferenceManagement,"
+    " PushPreferencesEnableHasTelcoFlag, QuickTourEnable,"
+    " ServiceHubEnableAccessVirtualCircuitId, ServiceHubEnableEnergyPlan,"
+    " ServiceHubEnableMobileChangePlan, ServiceHubEnableMobileConfiguration,"
+    " ServiceHubEnableNbnChangePlan, ServiceHubEnableNbnCostOfPlanDisclaimer,"
+    " ServiceHubEnableUsageInsightSmartElectricity,"
+    " ServiceHubEnableUsageInsightSmartElectricitySolar,"
+    " TelcoServiceHubEnableMobileESimCopy, UsageEnableBattery,"
+    " UsageEnableHistoricalMeterReads, UsageEnableMultiMeterRead,"
+    " UsageEnableVirtualPowerPlant, UsageInsightEnableSolarRecommendation,"
+    " VirtualPowerPlantEnableByobV3"
+)
+AGL_CLIENT_DEVICE: Final = "Apple-iPhone-iPhone14,7-iOS-26.4.2"
+# Screen scaling vector required by the BFF for usage chart rendering.
+AGL_SCALING: Final = "36.514404_108.057_40.670903_120.357_0_0_0_0"
 
 # Statistic ID suffixes — full ID is f"{DOMAIN}:{STAT_*}_{contract_number}"
 STAT_CONSUMPTION: Final = "consumption"  # → haggle:consumption_{contract}
@@ -52,7 +100,6 @@ CONF_ACCOUNT_NUMBER: Final = "account_number"
 
 # Coordinator data attribute names — must match HaggleData field names exactly.
 DATA_CONSUMPTION_KWH: Final = "latest_cumulative_kwh"  # TOTAL_INCREASING sensor
-DATA_CONSUMPTION_TODAY: Final = "consumption_today_kwh"  # kWh this local day
 DATA_CONSUMPTION_PERIOD: Final = "consumption_period_kwh"  # kWh this bill period
 DATA_CONSUMPTION_COST: Final = "consumption_period_cost_aud"  # cumulative AUD cost
 DATA_BILL_PROJECTION: Final = "bill_projection_aud"  # AUD forecast for current period
