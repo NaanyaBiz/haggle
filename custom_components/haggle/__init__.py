@@ -7,6 +7,7 @@ rotation, daily polling, import_statistics for historical data).
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from .coordinator import HaggleCoordinator
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
+
+_LOGGER = logging.getLogger(__name__)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -44,11 +47,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     refresh_token = entry.data[CONF_REFRESH_TOKEN]
     contract_number: str = entry.data.get(CONF_CONTRACT_NUMBER, "")
 
+    _LOGGER.info("Setting up haggle entry: contract=%s", contract_number or "unknown")
+
     async def _persist_refresh_token(new_token: str) -> None:
         """Persist rotated refresh token back to config entry data."""
-        hass.config_entries.async_update_entry(
-            entry, data={**entry.data, CONF_REFRESH_TOKEN: new_token}
-        )
+        try:
+            hass.config_entries.async_update_entry(
+                entry, data={**entry.data, CONF_REFRESH_TOKEN: new_token}
+            )
+            _LOGGER.debug("Refresh token persisted (len=%d)", len(new_token))
+        except Exception:
+            _LOGGER.error(
+                "Failed to persist rotated refresh token — next restart will require reauth"
+            )
 
     session = aiohttp.ClientSession()
     auth = AglAuth(refresh_token, _persist_refresh_token)

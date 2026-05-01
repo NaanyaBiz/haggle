@@ -86,6 +86,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         intervals and imports them into the recorder statistics table.
         """
         today = date.today()
+        _LOGGER.info(
+            "Starting %d-day backfill for contract %s",
+            BACKFILL_DAYS,
+            self.contract_number,
+        )
         all_intervals: list[IntervalReading] = []
         for i in range(1, BACKFILL_DAYS + 1):
             day = today - timedelta(days=i)
@@ -97,6 +102,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             except (AGLError, NotImplementedError) as err:
                 _LOGGER.debug("Backfill skip %s: %s", day, err)
         if all_intervals:
+            stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
+            stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
+            _LOGGER.info(
+                "Backfill complete: %d intervals across %d days — pushing to %s, %s",
+                len(all_intervals),
+                BACKFILL_DAYS,
+                stat_id_cons,
+                stat_id_cost,
+            )
             await self._import_intervals(
                 all_intervals,
                 initial_cons_sum=0.0,
@@ -240,6 +254,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             current += timedelta(days=1)
 
         if all_intervals:
+            _LOGGER.info(
+                "Incremental update: %d intervals from %s to %s",
+                len(all_intervals),
+                next_day,
+                yesterday,
+            )
             await self._import_intervals(
                 all_intervals,
                 initial_cons_sum=last_sum,

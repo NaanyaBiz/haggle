@@ -247,11 +247,18 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Select contract if multiple discovered; skip selection if just one."""
+        errors: dict[str, str] = {}
+
         if not self._contracts:
             try:
                 self._contracts = await _fetch_contracts(self._access_token)
             except Exception:
-                self._contracts = []
+                errors["base"] = "cannot_connect"
+                return self.async_show_form(
+                    step_id="select_contract",
+                    data_schema=vol.Schema({}),
+                    errors=errors,
+                )
 
         if not self._contracts:
             return await self._async_create_entry(contract_number="", account_number="")
@@ -314,6 +321,11 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         )
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
+        _LOGGER.info(
+            "Creating haggle entry: account=%s contract=%s",
+            account_number or "unknown",
+            contract_number or "unknown",
+        )
         return self.async_create_entry(
             title=title or f"AGL {contract_number or 'account'}",
             data={

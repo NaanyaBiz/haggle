@@ -189,7 +189,10 @@ class AglAuth:
         self._refresh_token = new_refresh_token
         await self._persist(new_refresh_token)
 
-        _LOGGER.debug("AGL token refreshed; expires_in=%d", expires_in)
+        _LOGGER.info(
+            "AGL token refreshed; expires_at=%s",
+            expires_at.isoformat(),
+        )
         return access_token
 
 
