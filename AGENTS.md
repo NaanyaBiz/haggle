@@ -31,11 +31,11 @@ python scripts/validate_manifest.py custom_components/haggle/manifest.json
 # Run all pre-commit hooks
 uv run pre-commit run --all-files
 
-# Hassfest (Docker required)
+# Hassfest — easiest via CI (push a branch + open PR)
+# Or use the dedicated image locally:
 docker run --rm \
   -v "$(pwd)/custom_components:/github/workspace/custom_components:ro" \
-  ghcr.io/home-assistant/home-assistant:dev \
-  python -m script.hassfest --action validate \
+  ghcr.io/home-assistant/hassfest \
   --integration-path /github/workspace/custom_components/haggle
 ```
 
@@ -48,20 +48,29 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # ConfigFlow: user (refresh token paste) → select_contract
-├── coordinator.py       # HaggleCoordinator(DataUpdateCoordinator[HaggleData])
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
+├── coordinator.py       # HaggleCoordinator: 30-day backfill + incremental statistics import
 ├── sensor.py            # 6 SensorEntityDescription entries; HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
-│   ├── client.py        # AglAuth (token rotation) + AglClient (HTTP methods)
-│   └── parser.py        # JSON → typed dataclasses
+│   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
+│   ├── models.py        # TokenSet, Contract, IntervalReading, DailyReading, BillPeriod, PlanRates
+│   └── parser.py        # JSON → typed dataclasses (filters type=none intervals)
 ├── strings.json         # translatable config-flow strings
 └── translations/en.json # English strings (must mirror strings.json)
 
 tests/
-├── conftest.py          # _auto_enable_custom_integrations fixture
-├── test_init.py         # setup/unload smoke tests
-└── test_config_flow.py  # config-flow step navigation
+├── conftest.py                      # _auto_enable_custom_integrations fixture
+├── fixtures/
+│   ├── hourly_response.json         # 30-min interval data (Current/Hourly)
+│   ├── overview_response.json       # /v3/overview with accounts + contracts
+│   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates
+│   └── bill_period_response.json    # usage summary
+├── test_init.py                     # setup/unload smoke tests
+├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
+├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan (22 tests)
+└── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, aggregation (26 tests)
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
@@ -70,7 +79,7 @@ scripts/
 .claude/
 ├── settings.json        # committed hooks config
 ├── agents/              # 5 subagent definitions
-└── commands/            # 4 slash commands
+└── commands/            # 5 slash commands (new-entity, wt, release, hassfest, pr)
 ```
 
 ---
@@ -121,14 +130,22 @@ Each worktree shares `.venv` and `.claude/settings.local.json` via symlink.
 
 ## AGL API — Key Facts
 
-### Authentication (Auth0)
+### Authentication (Auth0 PKCE)
 
 - **Auth host**: `https://secure.agl.com.au`
+- **Setup grant**: `authorization_code` + PKCE (`S256`). The config flow
+  generates a PKCE verifier+challenge, builds an `/authorize` URL, and shows
+  it to the user. The user opens the URL in their **real browser** (handles
+  Akamai bot-protection + MFA transparently), then pastes the callback URL back.
+  The integration extracts the `code` and POSTs to `/oauth/token`.
+  - `redirect_uri`: `https://secure.agl.com.au/ios/au.com.agl.mobile/callback`
+  - `scope`: `openid profile email offline_access`
+  - `audience`: `https://api.platform.agl.com.au/` (trailing slash required)
+- **Ongoing grant**: `refresh_token` (stored in `entry.data`).
 - **Token endpoint**: `POST /oauth/token`
-- **Grant**: `refresh_token`
 - **client_id**: `2mDkNcC8gkDLL7FTT1ZxF5rrQHrLTHL3` (iOS app — captured 2026-04-30)
 - **Required headers**: `Client-Flavor: app.iOS.public.8.38.0-531`
-- **Access token**: JWT (RS256), `exp` ≈ 24 h. Decode `exp`; refresh 5 min early.
+- **Access token**: JWT (RS256), `exp` = **15 min** (`expires_in: 900` — confirmed 2026-05-01). Decode `exp`; refresh 2 min early.
 - **CRITICAL — token rotation**: Auth0 **rotates** the refresh token on every
   exchange. The integration MUST persist the new refresh token via
   `_persist_refresh_token` callback after every exchange or it will lock
@@ -156,7 +173,7 @@ Each worktree shares `.venv` and `.claude/settings.local.json` via symlink.
 | 30-min intervals | 24 h | AGL data is delayed 24-48 h (AEMO feed lag) |
 | Daily series | 6 h | Picks up newly available days |
 | Plan / overview | 7 days | Rarely changes |
-| Token refresh | Just-in-time (< 5 min to `exp`) | |
+| Token refresh | Just-in-time (< 2 min to `exp`) | tokens expire at 15 min |
 
 **Do not poll for today's hourly data** — it will be empty. Fetch *yesterday*.
 
@@ -183,12 +200,16 @@ is a `c/day` entry with `title` containing "Supply charge".
 
 The HA Energy dashboard requires:
 - `device_class = ENERGY`, `state_class = TOTAL_INCREASING`, `native_unit_of_measurement = kWh`
-- Historical data MUST be fed via `recorder.import_statistics()` (not live state updates).
-  AGL data is always historical — `import_statistics()` attributes it to the interval it
-  actually occurred in, not "now". Skipping this means the Energy dashboard shows a spike
-  at poll time, not a smooth historical chart.
-- Statistic ID format: `haggle:{entity_id_suffix}` (e.g. `haggle:electricity_consumption`).
-- Each import call should be idempotent: use `last_stats` to avoid double-counting.
+- Historical data MUST be fed via `async_add_external_statistics()` (not live state updates).
+  AGL data is always historical — the recorder writes it to the correct UTC hour slot
+  regardless of when the API call happened. Skipping this means the Energy dashboard shows
+  a spike at poll time, not a smooth historical chart.
+- Statistic IDs per contract:
+  - `haggle:consumption_<contract_number>` — kWh, `has_sum=True`
+  - `haggle:cost_<contract_number>` — AUD, `has_sum=True`
+- Resume point: `get_last_statistics(hass, 1, stat_id, True, {"start", "sum"})` — returns
+  the last-imported hour so incremental updates don't re-import already-stored rows.
+- Each import call is idempotent: `(statistic_id, start)` updates in place.
 
 ---
 
@@ -196,10 +217,10 @@ The HA Energy dashboard requires:
 
 - **No `requests`** — always `aiohttp`. Blocking I/O in the event loop will freeze HA.
 - **No blocking I/O in the coordinator** — `_async_update_data` must be fully async.
-- **No OTP flow** — auth is Auth0 refresh token, not portal scraping with OTP.
+- **No OTP/portal flow** — auth is PKCE via the user's real browser, not portal scraping.
 - **No hardcoded contract numbers** — they come from `/v3/overview` at config time.
 - **No polling faster than 24 h for interval data** — AGL won't have newer data.
-- **Don't store `access_token` in `entry.data`** long-term — it's transient (24 h).
+- **Don't store `access_token` in `entry.data`** — it's transient (15 min).
   Persist only `refresh_token` to `entry.data`; keep `access_token` in memory only.
 - **Don't use `async_add_executor_job`** for AGL API calls — they're already async.
 - **No committing directly to `main`** — the `guard-main-branch` hook blocks it.
