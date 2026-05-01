@@ -16,6 +16,16 @@ running a full documentation audit.
    If dirty, stop and tell the user to commit or stash first.
 2. Not on `main` — never open a PR from main.
    If on main, stop and report the error.
+3. Branch is rebased onto current `main`.
+   Run `git fetch origin`, then check `git rev-list HEAD..origin/main --count`.
+   If the count is > 0 (main has commits this branch doesn't have):
+   - Run `git rebase origin/main`.
+   - If it succeeds (exit 0), continue — but note that history was rewritten,
+     so a `git push --force-with-lease origin <branch>` will be needed in Step 3.
+   - If it has conflicts, stop immediately: list the conflicting files from
+     `git diff --name-only --diff-filter=U`, tell the user to resolve them
+     manually and re-run `/pr` when done.
+   If count is 0 (already up to date), continue with a regular push in Step 3.
 
 ## Steps
 
@@ -67,6 +77,11 @@ Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>"
 
 ### 3. Push
 
+If the rebase in pre-condition 3 rewrote history, use:
+```
+git push --force-with-lease -u origin <current-branch>
+```
+Otherwise use a regular push:
 ```
 git push -u origin <current-branch>
 ```
