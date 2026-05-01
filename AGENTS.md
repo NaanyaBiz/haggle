@@ -78,7 +78,7 @@ scripts/
 
 .claude/
 ├── settings.json        # committed hooks config
-├── agents/              # 5 subagent definitions
+├── agents/              # 8 subagent definitions (5 domain + 3 review)
 └── commands/            # 5 slash commands (new-entity, wt, release, hassfest, pr)
 ```
 
@@ -115,6 +115,9 @@ all of the following before it can be merged. The `/pr` command enforces this.
 | `energy-domain-expert` | `.claude/agents/energy-domain-expert.md` | `state_class`, `device_class`, `unit_of_measurement` changes; `import_statistics()` usage |
 | `ha-test-writer` | `.claude/agents/ha-test-writer.md` | After every change in `custom_components/haggle/`; proactively |
 | `release-manager` | `.claude/agents/release-manager.md` | Only via `/release` command |
+| `code-quality-reviewer` | `.claude/agents/code-quality-reviewer.md` | Non-trivial edits in `custom_components/haggle/`; before opening a PR |
+| `security-reviewer` | `.claude/agents/security-reviewer.md` | Edits in `config_flow.py`, `agl/`, `__init__.py`; any change touching tokens, auth, HTTP, or logging |
+| `async-performance-reviewer` | `.claude/agents/async-performance-reviewer.md` | Edits in `coordinator.py`, `agl/client.py`, or any async function |
 
 ---
 
