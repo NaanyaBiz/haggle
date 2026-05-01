@@ -1,9 +1,9 @@
 {
   "domain": "haggle",
   "name": "AGL Haggle",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@davosparent"],
   "config_flow": true,
-  "after_dependencies": ["recorder"],
   "dependencies": [],
   "documentation": "https://github.com/NaanyaBiz/haggle",
   "integration_type": "hub",
