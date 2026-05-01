@@ -1,0 +1,24 @@
+{
+  "resourceType": "electricity",
+  "billPeriod": {
+    "state": "valid",
+    "current": {
+      "start": {
+        "day": "20",
+        "month": "Apr",
+        "date": "2026-04-20"
+      },
+      "end": {
+        "day": "19",
+        "month": "May",
+        "date": "2026-05-19"
+      },
+      "usage": {
+        "title": "Usage So Far",
+        "amount": "$87.38",
+        "quantity": "259 kWh"
+      }
+    }
+  },
+  "additionalLabelValue": "$139.15"
+}
