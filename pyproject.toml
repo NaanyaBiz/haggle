@@ -80,7 +80,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**/*.py" = ["S", "PLR", "PT011"]
+"tests/**/*.py" = ["S", "PLR", "PLC0415", "PT011"]
 "scripts/**/*.py" = ["S603", "S607"]   # subprocess usage in dev scripts
 "custom_components/haggle/const.py" = ["S105"]   # CONF_*_TOKEN strings are key names, not secrets
 
