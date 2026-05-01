@@ -9,7 +9,7 @@ description = "AGL Australia smart meter -> Home Assistant Energy dashboard"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Naanya Biz", email = "davosparent@gmail.com" }]
-requires-python = ">=3.13"
+requires-python = ">=3.13.2"
 keywords = ["home-assistant", "hacs", "agl", "energy", "smart-meter", "australia"]
 classifiers = [
     "Development Status :: 2 - Pre-Alpha",
@@ -23,9 +23,9 @@ classifiers = [
 dependencies = [
     # Runtime deps mirror what's in custom_components/haggle/manifest.json
     # so editor tooling resolves imports. HA installs from manifest at runtime.
-    "homeassistant>=2025.1",
+    "homeassistant>=2026.2.3",
     "aiohttp>=3.10",
-    "beautifulsoup4>=4.12",
+    "beautifulsoup4>=4.14.3",
 ]
 
 [project.optional-dependencies]
@@ -33,7 +33,7 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
-    "pytest-homeassistant-custom-component>=0.13.316",
+    "pytest-homeassistant-custom-component>=0.13.316,<0.13.317",
     "ruff>=0.7",
     "mypy>=1.13",
     "types-beautifulsoup4",
