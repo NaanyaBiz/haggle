@@ -8,25 +8,65 @@ Architecture (§7 of AGL-API-FINDINGS.md):
               Client-Flavor, User-Agent) and retries once on 401 by forcing
               an auth refresh.
 
-Both classes are stubs here. Real implementation is Sprint 1.
-See AGENTS.md > AGL gotchas and ~/tests/fixtures/AGL-API-FINDINGS.md.
-The actual API responses are captured in ~/tests/fixtures/flows/agl-json/
-and should be used as pytest fixtures (real captures = real tests).
 Token endpoint: POST https://secure.agl.com.au/oauth/token (grant=refresh_token).
+Access tokens expire in 900 s (15 min); refresh when exp - now < 120 s (2 min).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+import base64
+import json
+import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from ..const import AGL_CLIENT_FLAVOR, AGL_USER_AGENT
+from ..const import AGL_AUTH_HOST, AGL_CLIENT_FLAVOR, AGL_CLIENT_ID, AGL_USER_AGENT
+from .models import (
+    BillPeriod,
+    Contract,
+    DailyReading,
+    IntervalReading,
+    PlanRates,
+    TokenSet,
+)
+from .parser import (
+    parse_bill_period,
+    parse_daily_readings,
+    parse_interval_readings,
+    parse_overview,
+    parse_plan,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
-    from datetime import date, datetime
+    from datetime import date
 
     import aiohttp
+
+_LOGGER = logging.getLogger(__name__)
+
+# auth0-client header value — base64-encoded SDK identity blob (Auth0.swift 2.12.0).
+_AUTH0_CLIENT = "eyJlbnYiOnsic3dpZnQiOiI2LngiLCJpT1MiOiIyNi40In0sIm5hbWUiOiJBdXRoMC5zd2lmdCIsInZlcnNpb24iOiIyLjEyLjAifQ"  # gitleaks:allow
+
+# Refresh when this many seconds remain before expiry.
+_REFRESH_MARGIN_SECONDS = 120
+
+TOKEN_ENDPOINT = f"{AGL_AUTH_HOST}/oauth/token"
+
+# Re-export models so callers can import from client (backward compat).
+__all__ = [
+    "AGLAuthError",
+    "AGLError",
+    "AGLRateLimitError",
+    "AglAuth",
+    "AglClient",
+    "BillPeriod",
+    "Contract",
+    "DailyReading",
+    "IntervalReading",
+    "PlanRates",
+    "TokenSet",
+]
 
 
 class AGLError(Exception):
@@ -42,77 +82,22 @@ class AGLRateLimitError(AGLError):
 
 
 # ---------------------------------------------------------------------------
-# Auth0 token models
+# Internal helpers
 # ---------------------------------------------------------------------------
 
 
-@dataclass(slots=True)
-class TokenSet:
-    """Holds a live access token + the current (rotated) refresh token."""
-
-    access_token: str
-    refresh_token: str  # MUST be persisted after every rotation
-    expires_at: datetime  # UTC; derived from `expires_in`
-    id_token: str = ""  # for identity claims if needed
-
-
-# ---------------------------------------------------------------------------
-# Data models — each wraps one API response section.
-# Defined as dataclasses so the rest of the integration never touches raw
-# dicts (and type-checking catches field-name changes at compile time).
-# ---------------------------------------------------------------------------
-
-
-@dataclass(slots=True)
-class Contract:
-    """One fuel/service contract from /api/v3/overview."""
-
-    contract_number: str
-    account_number: str
-    address: str
-    fuel_type: str  # "electricityContract" | "gasContract"
-    status: str  # "active" | ...
-    has_solar: bool = False
-    meter_type: str = "smart"
-
-
-@dataclass(slots=True)
-class IntervalReading:
-    """One 30-minute interval reading from /Hourly."""
-
-    dt: datetime  # slot start, UTC
-    kwh: float  # consumption.values.quantity — source of truth
-    cost_aud: float  # consumption.amount
-    rate_type: str  # "normal" | "peak" | "offpeak" | "shoulder" | "none"
-
-
-@dataclass(slots=True)
-class DailyReading:
-    """One day aggregate from /Daily."""
-
-    day: date
-    kwh: float
-    cost_aud: float
-
-
-@dataclass(slots=True)
-class BillPeriod:
-    """Current bill period boundaries + totals from /usage summary."""
-
-    start: date
-    end: date
-    consumption_kwh: float
-    cost_label: str  # e.g. "$87.38"
-    projection_label: str  # e.g. "$139.15"
-
-
-@dataclass(slots=True)
-class PlanRates:
-    """Tariff rates from /api/v2/plan/energy/{contractNumber}."""
-
-    product_name: str
-    unit_rates: list[dict[str, Any]] = field(default_factory=list)
-    supply_charge_cents_per_day: float = 0.0
+def _decode_jwt_exp(token: str) -> int | None:
+    """Return the `exp` claim from a JWT, or None if it cannot be decoded."""
+    try:
+        payload_b64 = token.split(".")[1]
+        # Base64url — pad to multiple of 4.
+        padding = 4 - len(payload_b64) % 4
+        if padding != 4:
+            payload_b64 += "=" * padding
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return int(payload["exp"])
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +109,7 @@ class AglAuth:
     """Manages Auth0 refresh-token grant for AGL.
 
     - Proactively refreshes when the access token is within
-      TOKEN_REFRESH_MARGIN_MINUTES of expiry.
+      _REFRESH_MARGIN_SECONDS of expiry.
     - Rotates the refresh token on every exchange and calls
       `persist_callback(new_refresh_token)` so the caller can persist it.
       Failure to persist = lockout within one cycle.
@@ -141,11 +126,71 @@ class AglAuth:
 
     async def async_ensure_valid_token(self, session: aiohttp.ClientSession) -> str:
         """Return a live access token, refreshing proactively if needed."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        if self._token_set is not None:
+            exp = _decode_jwt_exp(self._token_set.access_token)
+            now = int(datetime.now(tz=UTC).timestamp())
+            if exp is not None and (exp - now) >= _REFRESH_MARGIN_SECONDS:
+                return self._token_set.access_token
+
+        await self.async_force_refresh(session)
+        return self._token_set.access_token  # type: ignore[union-attr]
 
     async def async_force_refresh(self, session: aiohttp.ClientSession) -> str:
-        """Force a token refresh (called after a 401 on a data request)."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        """Force a token refresh. Persists the rotated refresh token.
+
+        Raises AGLAuthError on 401 / invalid_grant.
+        Returns the new access token.
+        """
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "*/*",
+            "Accept-Language": "en-AU,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Client-Flavor": AGL_CLIENT_FLAVOR,
+            "User-Agent": AGL_USER_AGENT,
+            "auth0-client": _AUTH0_CLIENT,
+        }
+        body = {
+            "grant_type": "refresh_token",
+            "client_id": AGL_CLIENT_ID,
+            "refresh_token": self._refresh_token,
+        }
+
+        async with session.post(TOKEN_ENDPOINT, json=body, headers=headers) as resp:
+            if resp.status == 401:
+                raise AGLAuthError("Token refresh rejected (401) — reauth required")
+            if resp.status != 200:
+                text = await resp.text()
+                raise AGLAuthError(
+                    f"Token refresh failed HTTP {resp.status}: {text[:200]}"
+                )
+            data: dict[str, Any] = await resp.json(content_type=None)
+
+        error = data.get("error")
+        if error:
+            raise AGLAuthError(
+                f"Token refresh error: {error} — {data.get('error_description', '')}"
+            )
+
+        access_token: str = data["access_token"]
+        new_refresh_token: str = data["refresh_token"]
+        expires_in: int = int(data.get("expires_in", 900))
+        expires_at = datetime.fromtimestamp(
+            int(datetime.now(tz=UTC).timestamp()) + expires_in,
+            tz=UTC,
+        )
+
+        self._token_set = TokenSet(
+            access_token=access_token,
+            refresh_token=new_refresh_token,
+            expires_at=expires_at,
+            id_token=data.get("id_token", ""),
+        )
+        self._refresh_token = new_refresh_token
+        await self._persist(new_refresh_token)
+
+        _LOGGER.debug("AGL token refreshed; expires_in=%d", expires_in)
+        return access_token
 
 
 # ---------------------------------------------------------------------------
@@ -175,21 +220,58 @@ class AglClient:
             "Accept-Encoding": "gzip, deflate, br",
         }
 
+    async def _get(self, url: str) -> Any:
+        """GET a URL with auth, retrying once on 401."""
+        token = await self._auth.async_ensure_valid_token(self._session)
+        headers = {**self._default_headers, "Authorization": f"Bearer {token}"}
+
+        async with self._session.get(url, headers=headers) as resp:
+            if resp.status == 429:
+                raise AGLRateLimitError(f"Rate limited on {url}")
+            if resp.status == 401:
+                _LOGGER.debug("Got 401 on %s; forcing token refresh", url)
+            elif resp.status >= 400:
+                text = await resp.text()
+                raise AGLError(f"HTTP {resp.status} on {url}: {text[:200]}")
+            else:
+                return await resp.json(content_type=None)
+
+        # Only reached on 401 — force refresh and retry once.
+        await self._auth.async_force_refresh(self._session)
+        token = self._auth._token_set.access_token  # type: ignore[union-attr]
+        headers = {**self._default_headers, "Authorization": f"Bearer {token}"}
+
+        async with self._session.get(url, headers=headers) as resp2:
+            if resp2.status == 401:
+                raise AGLAuthError(f"Still 401 after token refresh on {url}")
+            if resp2.status == 429:
+                raise AGLRateLimitError(f"Rate limited on {url}")
+            if resp2.status >= 400:
+                text = await resp2.text()
+                raise AGLError(f"HTTP {resp2.status} on {url}: {text[:200]}")
+            return await resp2.json(content_type=None)
+
     # --- Discovery ---
 
     async def async_get_overview(self) -> list[Contract]:
         """Fetch /api/v3/overview and return a Contract per fuel service."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        url = f"{self.BASE_URL}/api/v3/overview"
+        data = await self._get(url)
+        return parse_overview(data)
 
-    async def async_get_servicehub(self, contract_number: str) -> dict[str, str]:
+    async def async_get_servicehub(self, contract_number: str) -> dict[str, Any]:
         """Fetch /api/v1/servicehub/energy/{contractNumber} hyperlinks."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        url = f"{self.BASE_URL}/api/v1/servicehub/energy/{contract_number}"
+        data: dict[str, Any] = await self._get(url)
+        return {k: str(v) for k, v in data.items() if isinstance(v, str)}
 
     # --- Usage ---
 
     async def async_get_usage_summary(self, contract_number: str) -> BillPeriod:
         """Fetch /api/v2/usage/smart/Electricity/{contractNumber}."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}?isRestricted=False"
+        data = await self._get(url)
+        return parse_bill_period(data)
 
     async def async_get_usage_hourly(
         self, contract_number: str, day: date
@@ -200,26 +282,37 @@ class AglClient:
         Field to use: consumption.values.quantity (kWh), NOT consumption.quantity.
         dateTime is slot-start in UTC.
         """
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        period = f"{day}_{day}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}"
+        data = await self._get(url)
+        return parse_interval_readings(data)
 
     async def async_get_usage_daily(
         self, contract_number: str, start: date, end: date
     ) -> list[DailyReading]:
         """Fetch /Daily for a date range."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        period = f"{start}_{end}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Daily?period={period}"
+        data = await self._get(url)
+        return parse_daily_readings(data)
 
     async def async_get_usage_hourly_previous(
         self, contract_number: str, day: date
     ) -> list[IntervalReading]:
         """Fetch /Previous/Hourly — useful for backfill on first install."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        period = f"{day}_{day}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Previous/Hourly?period={period}"
+        data = await self._get(url)
+        return parse_interval_readings(data)
 
     # --- Plan ---
 
     async def async_get_plan(self, contract_number: str) -> PlanRates:
         """Fetch /api/v2/plan/energy/{contractNumber} tariff rates."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        url = f"{self.BASE_URL}/api/v2/plan/energy/{contract_number}"
+        data = await self._get(url)
+        return parse_plan(data)
 
     async def async_close(self) -> None:
         """Close the underlying aiohttp session if we own it."""
-        raise NotImplementedError("agl-api: implement in Sprint 1")
+        await self._session.close()

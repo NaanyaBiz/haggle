@@ -15,6 +15,7 @@ from custom_components.haggle.const import (
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
+from custom_components.haggle.coordinator import HaggleData
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
@@ -27,14 +28,15 @@ _ENTRY_DATA = {
     CONF_ACCOUNT_NUMBER: "1234567890",
 }
 
-_COORDINATOR_DATA = {
-    "consumption_kwh": 259.0,
-    "consumption_today": 8.5,
-    "consumption_period": 259.0,
-    "bill_projection": 139.15,
-    "unit_rate": 0.33792,
-    "supply_charge": 1.31714,
-}
+_COORDINATOR_DATA = HaggleData(
+    consumption_today_kwh=0.0,
+    consumption_period_kwh=259.0,
+    consumption_period_cost_aud=87.38,
+    bill_projection_aud=139.15,
+    unit_rate_aud_per_kwh=0.33792,
+    supply_charge_aud_per_day=1.31714,
+    latest_cumulative_kwh=259.0,
+)
 
 
 async def test_setup_and_unload(hass: HomeAssistant) -> None:
@@ -53,7 +55,7 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
         patch(
             "custom_components.haggle.aiohttp.ClientSession",
             return_value=mock_session,
-        ),  # aiohttp imported at top-level of __init__ so this path resolves
+        ),
         patch(
             "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
             new_callable=AsyncMock,

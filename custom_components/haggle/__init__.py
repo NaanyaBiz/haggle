@@ -14,7 +14,7 @@ import aiohttp
 from homeassistant.const import Platform
 
 from .agl.client import AglAuth, AglClient
-from .const import CONF_REFRESH_TOKEN
+from .const import CONF_CONTRACT_NUMBER, CONF_REFRESH_TOKEN
 from .coordinator import HaggleCoordinator
 
 if TYPE_CHECKING:
@@ -42,6 +42,7 @@ class HaggleRuntimeData:
 async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
     """Set up haggle from a config entry."""
     refresh_token = entry.data[CONF_REFRESH_TOKEN]
+    contract_number: str = entry.data.get(CONF_CONTRACT_NUMBER, "")
 
     async def _persist_refresh_token(new_token: str) -> None:
         """Persist rotated refresh token back to config entry data."""
@@ -52,7 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     session = aiohttp.ClientSession()
     auth = AglAuth(refresh_token, _persist_refresh_token)
     client = AglClient(auth, session)
-    coordinator = HaggleCoordinator(hass, entry, client)
+    coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
     await coordinator.async_config_entry_first_refresh()
 
