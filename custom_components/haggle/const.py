@@ -16,14 +16,31 @@ AGL_CLIENT_ID: Final = "2mDkNcC8gkDLL7FTT1ZxF5rrQHrLTHL3"
 AGL_CLIENT_FLAVOR: Final = "app.iOS.public.8.38.0-531"
 AGL_USER_AGENT: Final = "AGL/531 CFNetwork/3860.500.112 Darwin/25.4.0"
 
+# Auth0 PKCE / OAuth2 redirect
+AGL_AUTH0_CLIENT: Final = (
+    "eyJuYW1lIjoiQXV0aDAuc3dpZnQiLCJ2ZXJzaW9uIjoiMi4xMi4wIiwiZW52Ijp7ImlPUyI6IjI2"
+    "LjQiLCJzd2lmdCI6IjYueCJ9fQ"
+)
+AGL_REDIRECT_URI: Final = "https://secure.agl.com.au/ios/au.com.agl.mobile/callback"
+AGL_OAUTH_SCOPE: Final = "openid profile email offline_access"
+AGL_OAUTH_AUDIENCE: Final = "https://api.platform.agl.com.au/"
+
 # Polling cadences.
 # AGL interval data is delayed 24-48 h from the meter (AEMO feed lag).
 SCAN_INTERVAL_HOURLY: Final = timedelta(hours=24)  # 30-min intervals: fetch yesterday
 SCAN_INTERVAL_DAILY: Final = timedelta(hours=6)  # daily series: pick up new days
 SCAN_INTERVAL_PLAN: Final = timedelta(days=7)  # plan/rates: rarely changes
 
-# How many minutes before access-token expiry to proactively refresh.
-TOKEN_REFRESH_MARGIN_MINUTES: Final = 5
+# How many seconds before access-token expiry to proactively refresh.
+# AGL access tokens expire at ~15 min; refresh 2 min early.
+TOKEN_REFRESH_MARGIN_SECONDS: Final = 120
+
+# Number of days of history to backfill on first install.
+BACKFILL_DAYS: Final = 30
+
+# Statistic ID suffixes — full ID is f"{DOMAIN}:{STAT_*}_{contract_number}"
+STAT_CONSUMPTION: Final = "consumption"  # → haggle:consumption_{contract}
+STAT_COST: Final = "cost"  # → haggle:cost_{contract}
 
 # Config-entry keys.
 # CONF_EMAIL / CONF_PASSWORD are NOT used — auth is via refresh token.
@@ -33,13 +50,11 @@ CONF_ACCESS_TOKEN_EXPIRY: Final = "access_token_expiry"
 CONF_CONTRACT_NUMBER: Final = "contract_number"
 CONF_ACCOUNT_NUMBER: Final = "account_number"
 
-# Coordinator data keys.
-DATA_CONSUMPTION_KWH: Final = "consumption_kwh"  # cumulative kWh (total_increasing)
-DATA_CONSUMPTION_COST: Final = "consumption_cost"  # cumulative AUD cost
-DATA_CONSUMPTION_TODAY: Final = (
-    "consumption_today"  # kWh this local day (resets midnight)
-)
-DATA_CONSUMPTION_PERIOD: Final = "consumption_period"  # kWh this bill period
-DATA_BILL_PROJECTION: Final = "bill_projection"  # AUD forecast for current period
-DATA_UNIT_RATE: Final = "unit_rate"  # c/kWh
-DATA_SUPPLY_CHARGE: Final = "supply_charge"  # c/day
+# Coordinator data attribute names — must match HaggleData field names exactly.
+DATA_CONSUMPTION_KWH: Final = "latest_cumulative_kwh"  # TOTAL_INCREASING sensor
+DATA_CONSUMPTION_TODAY: Final = "consumption_today_kwh"  # kWh this local day
+DATA_CONSUMPTION_PERIOD: Final = "consumption_period_kwh"  # kWh this bill period
+DATA_CONSUMPTION_COST: Final = "consumption_period_cost_aud"  # cumulative AUD cost
+DATA_BILL_PROJECTION: Final = "bill_projection_aud"  # AUD forecast for current period
+DATA_UNIT_RATE: Final = "unit_rate_aud_per_kwh"  # AUD/kWh
+DATA_SUPPLY_CHARGE: Final = "supply_charge_aud_per_day"  # AUD/day

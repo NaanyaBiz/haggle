@@ -2,10 +2,10 @@
   "config": {
     "step": {
       "user": {
-        "title": "AGL refresh token",
-        "description": "Paste the `refresh_token` from your AGL iOS app session (captured via a proxy — see README). This is temporary; a browser-based login will replace this in a future version.",
+        "title": "Log in to AGL",
+        "description": "Open the URL below in your browser and log in with your AGL credentials. After login you will see a 'Not Found' page -- copy the full URL from the address bar and paste it in the field below.\n\n`{authorize_url}`",
         "data": {
-          "refresh_token": "Refresh token"
+          "callback_url": "Callback URL (from address bar after login)"
         }
       },
       "select_contract": {
@@ -17,7 +17,7 @@
       }
     },
     "error": {
-      "invalid_auth": "Refresh token is invalid or has been revoked.",
+      "invalid_auth": "Login failed or callback URL is invalid. Try opening the authorize URL again.",
       "cannot_connect": "Could not reach AGL. Check your internet connection."
     },
     "abort": {
@@ -27,12 +27,24 @@
   },
   "entity": {
     "sensor": {
-      "consumption":        { "name": "Consumption" },
-      "consumption_today":  { "name": "Consumption today" },
-      "consumption_period": { "name": "Consumption this period" },
-      "bill_projection":    { "name": "Bill projection" },
-      "unit_rate":          { "name": "Unit rate" },
-      "supply_charge":      { "name": "Supply charge" }
+      "consumption": {
+        "name": "Consumption"
+      },
+      "consumption_today": {
+        "name": "Consumption today"
+      },
+      "consumption_period": {
+        "name": "Consumption this period"
+      },
+      "bill_projection": {
+        "name": "Bill projection"
+      },
+      "unit_rate": {
+        "name": "Unit rate"
+      },
+      "supply_charge": {
+        "name": "Supply charge"
+      }
     }
   }
 }
