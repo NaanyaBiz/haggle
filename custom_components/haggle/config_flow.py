@@ -27,8 +27,10 @@ import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
-from .agl.client import AglAuth, AGLAuthError, AglClient, AGLError, Contract
+from .agl.client import AGLAuthError, AGLError, Contract
+from .agl.parser import parse_overview
 from .const import (
+    AGL_API_HOST,
     AGL_AUTH0_CLIENT,
     AGL_AUTH_HOST,
     AGL_CLIENT_FLAVOR,
@@ -139,21 +141,29 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str]:
 
 
 async def _fetch_contracts(access_token: str) -> list[Contract]:
-    """Fetch /api/v3/overview with the given access token.
+    """Fetch /api/v3/overview with the freshly-obtained access token.
 
-    Used during config flow before the coordinator session is set up.
-    Raises AGLError / NotImplementedError on stub -- callers handle gracefully.
+    Uses aiohttp directly rather than AglAuth/AglClient: AglAuth always calls
+    async_force_refresh on first use (token_set is None on construction), which
+    would POST the access_token as a refresh_token to Auth0 and fail.
     """
-
-    async def _noop_persist(_token: str) -> None:
-        pass
-
-    # AglAuth is used here only as a container; token rotation won\'t trigger
-    # because async_ensure_valid_token is a stub in the current sprint.
-    auth = AglAuth(access_token, _noop_persist)
-    async with aiohttp.ClientSession() as session:
-        client = AglClient(auth, session)
-        return await client.async_get_overview()
+    url = f"{AGL_API_HOST}/mobile/bff/api/v3/overview"
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Client-Flavor": AGL_CLIENT_FLAVOR,
+        "User-Agent": AGL_USER_AGENT,
+        "Accept": "*/*",
+        "Accept-Encoding": "gzip, deflate, br",
+    }
+    async with (
+        aiohttp.ClientSession() as session,
+        session.get(url, headers=headers) as resp,
+    ):
+        if resp.status >= 400:
+            text = await resp.text()
+            raise AGLError(f"HTTP {resp.status} on {url}: {text[:200]}")
+        data = await resp.json(content_type=None)
+    return parse_overview(data)
 
 
 class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
