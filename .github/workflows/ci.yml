@@ -43,7 +43,7 @@ jobs:
         run: uv run pytest --cov=custom_components/haggle --cov-report=xml
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         if: matrix.python-version == '3.13'
         with:
           files: coverage.xml
