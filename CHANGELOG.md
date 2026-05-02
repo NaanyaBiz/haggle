@@ -7,38 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (Phase A — pre-flight logging)
-- **config_flow.py**: `_fetch_contracts` failure no longer silently creates a
-  broken entry with empty contract/account numbers. Now shows a `cannot_connect`
-  error on the `select_contract` step so the user can retry.
-- **config_flow.py**: INFO log after `_async_create_entry` records account +
-  contract numbers.
-- **__init__.py**: INFO log at top of `async_setup_entry` records contract
-  number. `_persist_refresh_token` wrapped in try/except — ERROR on failure,
-  DEBUG (token length only) on success.
-- **coordinator.py**: INFO log at start of 30-day backfill (contract + day
-  count); INFO at end (interval count, day count, both statistic IDs). INFO
-  log on incremental path (date range + interval count).
-- **agl/client.py**: Token-refresh log promoted DEBUG → INFO; now includes
-  `expires_at` ISO timestamp.
-- **info.md / README.md**: Install steps rewritten to document the actual PKCE
-  flow (authorize URL → browser login → paste callback URL) instead of the
-  stale email+OTP flow.
-
-### Added (infrastructure)
-- Three new review subagents under `.claude/agents/`: `code-quality-reviewer`,
-  `security-reviewer`, `async-performance-reviewer`. Auto-trigger on edits to
-  the relevant areas of `custom_components/haggle/`; complement the existing
-  five domain agents.
-
-### Targets for next sprint
-- Configurable backfill depth (date picker in config flow, defaulting to 30 days).
-- Solar/feed-in sensor (needs a solar-customer mitmproxy capture).
-- ToU (time-of-use) rate display — `rate_type` is already on each `IntervalReading`.
+_No unreleased changes yet._
 
 ---
 
-## [0.1.0-dev] — 2026-05-02 (Sprint 2 — live-install validation)
+## [0.1.0] — 2026-05-02
 
 ### Fixed
 - **`_fetch_contracts` token-type bug**: config flow was passing the short-lived
@@ -73,6 +46,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (captured from iOS app 8.38.0-531 via mitmproxy).
 - **`BACKFILL_CHUNK_DAYS`** constant (default 7) controlling how many days are
   fetched per poll cycle.
+- **config_flow.py**: `_fetch_contracts` failure no longer silently creates a
+  broken entry with empty contract/account numbers. Now shows a `cannot_connect`
+  error on the `select_contract` step so the user can retry.
+- **config_flow.py**: INFO log after `_async_create_entry` records account +
+  contract numbers.
+- **__init__.py**: INFO log at top of `async_setup_entry` records contract
+  number. `_persist_refresh_token` wrapped in try/except — ERROR on failure,
+  DEBUG (token length only) on success.
+- **coordinator.py**: INFO log at start of 30-day backfill (contract + day
+  count); INFO at end (interval count, day count, both statistic IDs). INFO
+  log on incremental path (date range + interval count).
+- **agl/client.py**: Token-refresh log promoted DEBUG → INFO; now includes
+  `expires_at` ISO timestamp.
+- **info.md / README.md**: Install steps rewritten to document the actual PKCE
+  flow (authorize URL → browser login → paste callback URL) instead of the
+  stale email+OTP flow.
+- **Three new review subagents** under `.claude/agents/`: `code-quality-reviewer`,
+  `security-reviewer`, `async-performance-reviewer`. Auto-trigger on edits to
+  the relevant areas of `custom_components/haggle/`; complement the existing
+  five domain agents.
+
+### Removed
+- **`consumption_today` sensor**: AGL data has a 24–48 h AEMO feed lag; this
+  sensor was always 0 and only caused confusion.
 
 ### Removed
 - **`consumption_today` sensor**: AGL data has a 24–48 h AEMO feed lag; this
