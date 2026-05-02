@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "haggle"
-version = "0.0.1"
+version = "0.1.0"
 description = "AGL Australia smart meter -> Home Assistant Energy dashboard"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -12,7 +12,7 @@ authors = [{ name = "Naanya Biz", email = "davosparent@gmail.com" }]
 requires-python = ">=3.13.2"
 keywords = ["home-assistant", "hacs", "agl", "energy", "smart-meter", "australia"]
 classifiers = [
-    "Development Status :: 2 - Pre-Alpha",
+    "Development Status :: 4 - Beta",
     "Framework :: AsyncIO",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: Apache Software License",

@@ -22,9 +22,9 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 _CONTRACT = Contract(
-    contract_number="9415356587",
-    account_number="7120740522",
-    address="61 Barlow Street CLAYFIELD QLD 4011",
+    contract_number="9999999999",
+    account_number="1234567890",
+    address="1 Sample Street SUBURB QLD 4000",
     fuel_type="electricityContract",
     status="active",
 )
@@ -75,7 +75,7 @@ async def test_user_flow_single_contract_creates_entry(hass: HomeAssistant) -> N
 
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_REFRESH_TOKEN] == "refresh_tok"
-    assert result["data"][CONF_CONTRACT_NUMBER] == "9415356587"
+    assert result["data"][CONF_CONTRACT_NUMBER] == "9999999999"
 
 
 async def test_user_flow_bad_state_shows_error(hass: HomeAssistant) -> None:
@@ -154,8 +154,8 @@ async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) 
     """Two discovered contracts show the select_contract form."""
     second = Contract(
         contract_number="1111111111",
-        account_number="7120740522",
-        address="61 Barlow Street CLAYFIELD QLD 4011",
+        account_number="1234567890",
+        address="1 Sample Street SUBURB QLD 4000",
         fuel_type="gasContract",
         status="active",
     )

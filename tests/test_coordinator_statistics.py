@@ -37,14 +37,14 @@ if TYPE_CHECKING:
 # Helpers
 # ---------------------------------------------------------------------------
 
-_CONTRACT = "9415356587"
+_CONTRACT = "9999999999"
 
 _ENTRY_DATA = {
     CONF_REFRESH_TOKEN: "v1.testtoken",
     CONF_ACCESS_TOKEN: "",
     CONF_ACCESS_TOKEN_EXPIRY: 0,
     CONF_CONTRACT_NUMBER: _CONTRACT,
-    CONF_ACCOUNT_NUMBER: "7120740522",
+    CONF_ACCOUNT_NUMBER: "1234567890",
 }
 
 
@@ -60,7 +60,7 @@ def _make_coordinator(
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=_ENTRY_DATA,
-        unique_id="7120740522_9415356587",
+        unique_id="1234567890_9999999999",
     )
     entry.add_to_hass(hass)
     if client is None:
@@ -529,7 +529,7 @@ class TestFetchAndImport:
                 coord,
                 "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=(259.0, yesterday),
+                return_value=(200.0, yesterday),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
@@ -553,7 +553,7 @@ class TestFetchAndImport:
                 coord,
                 "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=(259.0, yesterday),
+                return_value=(200.0, yesterday),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):

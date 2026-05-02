@@ -24,17 +24,17 @@ _ENTRY_DATA = {
     CONF_REFRESH_TOKEN: "v1.testtoken",
     CONF_ACCESS_TOKEN: "",
     CONF_ACCESS_TOKEN_EXPIRY: 0,
-    CONF_CONTRACT_NUMBER: "9415356587",
-    CONF_ACCOUNT_NUMBER: "7120740522",
+    CONF_CONTRACT_NUMBER: "9999999999",
+    CONF_ACCOUNT_NUMBER: "1234567890",
 }
 
 _COORDINATOR_DATA = HaggleData(
-    consumption_period_kwh=259.0,
-    consumption_period_cost_aud=87.38,
-    bill_projection_aud=139.15,
+    consumption_period_kwh=200.0,
+    consumption_period_cost_aud=45.00,
+    bill_projection_aud=90.00,
     unit_rate_aud_per_kwh=0.33792,
     supply_charge_aud_per_day=1.31714,
-    latest_cumulative_kwh=259.0,
+    latest_cumulative_kwh=200.0,
 )
 
 
@@ -43,7 +43,7 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=_ENTRY_DATA,
-        unique_id="7120740522_9415356587",
+        unique_id="1234567890_9999999999",
     )
     entry.add_to_hass(hass)
 

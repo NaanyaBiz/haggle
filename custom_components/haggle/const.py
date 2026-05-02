@@ -10,9 +10,9 @@ DOMAIN: Final = "haggle"
 # Auth0 / AGL API
 AGL_AUTH_HOST: Final = "https://secure.agl.com.au"
 AGL_API_HOST: Final = "https://api.platform.agl.com.au"
-# iOS app client_id — captured from mitmproxy session (app.iOS.public.8.38.0-531).
+# iOS app client_id — matches AGL mobile app 8.38.0-531 (documented 2026-04-30).
 AGL_CLIENT_ID: Final = "2mDkNcC8gkDLL7FTT1ZxF5rrQHrLTHL3"
-# Match the captured client-flavor; AGL servers may reject unknown clients.
+# Match the AGL mobile app client-flavor; AGL servers may reject unknown clients.
 AGL_CLIENT_FLAVOR: Final = "app.iOS.public.8.38.0-531"
 AGL_USER_AGENT: Final = "AGL/531 CFNetwork/3860.500.112 Darwin/25.4.0"
 
@@ -41,7 +41,7 @@ BACKFILL_DAYS: Final = 30
 BACKFILL_CHUNK_DAYS: Final = 7
 
 # AGL BFF requires these headers on Hourly/Daily usage endpoints (HTTP 500 without them).
-# Captured from iOS app 8.38.0-531 via mitmproxy — 2026-05-01.
+# Documented from AGL mobile app 8.38.0-531 — 2026-05-01.
 AGL_ACCEPT_FEATURES: Final = (
     "AccountEnableCarbonNeutral, AccountEnableCarbonNeutralMessagingRemoval,"
     " AccountEnableConcessionMessaging, AccountEnableConsumerDataRight,"
@@ -82,7 +82,7 @@ AGL_ACCEPT_FEATURES: Final = (
     " UsageEnableVirtualPowerPlant, UsageInsightEnableSolarRecommendation,"
     " VirtualPowerPlantEnableByobV3"
 )
-AGL_CLIENT_DEVICE: Final = "Apple-iPhone-iPhone14,7-iOS-26.4.2"
+AGL_CLIENT_DEVICE: Final = "Apple-iPhone-iPhone14,7-iOS-26.4.2"  # documented 2026-05-01
 # Screen scaling vector required by the BFF for usage chart rendering.
 AGL_SCALING: Final = "36.514404_108.057_40.670903_120.357_0_0_0_0"
 

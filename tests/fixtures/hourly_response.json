@@ -4,64 +4,64 @@
   "timeZone": "Australia/Sydney",
   "sections": [
     {
-      "startDate": "2026-04-28",
+      "startDate": "2024-01-15",
       "items": [
         {
-          "dateTime": "2026-04-28T13:30:00Z",
+          "dateTime": "2024-01-15T13:30:00Z",
           "consumption": {
-            "values": {"amount": 0.1534, "quantity": 0.1534},
-            "amount": 0.081096,
-            "quantity": 0.24,
+            "values": {"amount": 0.112, "quantity": 0.112},
+            "amount": 0.059,
+            "quantity": 0.175,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-04-28T13:00:00Z",
+          "dateTime": "2024-01-15T13:00:00Z",
           "consumption": {
-            "values": {"amount": 0.1629, "quantity": 0.1629},
-            "amount": 0.086164,
-            "quantity": 0.255,
+            "values": {"amount": 0.119, "quantity": 0.119},
+            "amount": 0.063,
+            "quantity": 0.186,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-04-28T12:30:00Z",
+          "dateTime": "2024-01-15T12:30:00Z",
           "consumption": {
-            "values": {"amount": 0.1572, "quantity": 0.1572},
-            "amount": 0.083124,
-            "quantity": 0.246,
+            "values": {"amount": 0.115, "quantity": 0.115},
+            "amount": 0.061,
+            "quantity": 0.180,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-04-28T12:00:00Z",
+          "dateTime": "2024-01-15T12:00:00Z",
           "consumption": {
-            "values": {"amount": 0.1527, "quantity": 0.1527},
-            "amount": 0.080758,
-            "quantity": 0.239,
+            "values": {"amount": 0.111, "quantity": 0.111},
+            "amount": 0.059,
+            "quantity": 0.174,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-04-28T03:30:00Z",
+          "dateTime": "2024-01-15T03:30:00Z",
           "consumption": {
-            "values": {"amount": 0.9252, "quantity": 0.9252},
-            "amount": 0.48928,
-            "quantity": 1.448,
+            "values": {"amount": 0.675, "quantity": 0.675},
+            "amount": 0.357,
+            "quantity": 1.057,
             "type": "peak"
           }
         },
         {
-          "dateTime": "2026-04-28T03:00:00Z",
+          "dateTime": "2024-01-15T03:00:00Z",
           "consumption": {
-            "values": {"amount": 0.5738, "quantity": 0.5738},
-            "amount": 0.303434,
-            "quantity": 0.898,
+            "values": {"amount": 0.419, "quantity": 0.419},
+            "amount": 0.221,
+            "quantity": 0.656,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-04-28T14:00:00Z",
+          "dateTime": "2024-01-15T14:00:00Z",
           "consumption": {
             "values": {"amount": 0.0, "quantity": 0.0},
             "amount": 0.0,

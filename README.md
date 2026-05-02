@@ -4,16 +4,24 @@ Home Assistant custom integration that pulls smart-meter usage from
 [AGL Australia](https://www.agl.com.au/) and feeds it into the HA Energy
 dashboard.
 
+> **Unofficial community integration.** Not affiliated with, endorsed by, or
+> supported by AGL Energy Limited. The API contract used by this integration is
+> not publicly documented and may change at any time; any breakage will be
+> addressed on a best-effort basis.
+>
+> **Australia only.** Requires an AGL Energy electricity account with a smart
+> meter (most Australian metropolitan installations).
+
 > **Status:** beta — core data path working, HACS submission pending.
 > See [`CHANGELOG.md`](./CHANGELOG.md) for milestone progress.
 
 ## Why
 
-AGL is one of Australia's largest electricity retailers. They expose
-half-hourly interval data to customers via their mobile app. `haggle`
-authenticates as the AGL iOS app (PKCE OAuth2), fetches your smart-meter
-intervals, and surfaces consumption and cost as proper HA energy sensors
-(`device_class=energy`, `state_class=total_increasing`).
+AGL is one of Australia's largest electricity retailers. Their mobile app
+exposes half-hourly interval data for smart-meter accounts. `haggle` uses the
+same authenticated API endpoints that AGL's own mobile clients use, fetches
+your smart-meter intervals, and surfaces consumption and cost as proper HA
+energy sensors (`device_class=energy`, `state_class=total_increasing`).
 
 ## Install
 
@@ -33,17 +41,8 @@ once per day. AGL interval data lags 24–48 h.
 
 ## Develop
 
-```sh
-uv sync                                # install deps + dev deps
-uv run pytest                          # run tests
-uv run ruff check custom_components/ tests/ && uv run ruff format --check .
-uv run mypy custom_components/haggle
-python scripts/validate_manifest.py custom_components/haggle/manifest.json
-```
-
-This repo uses sibling git worktrees for parallel feature work — see
-[`AGENTS.md`](./AGENTS.md) for the full dev workflow, subagent index,
-and AGL domain notes.
+See [`AGENTS.md`](./AGENTS.md) for the full dev workflow, subagent index,
+and AGL API contract documentation.
 
 ## Provenance
 

@@ -4,20 +4,20 @@
       "contracts": [
         {
           "hasSolar": false,
-          "contractNumber": "9415356587",
-          "title": "20 Apr - 19 May 2026",
+          "contractNumber": "9999999999",
+          "title": "1 Jan - 31 Jan 2024",
           "label": "Cost So Far",
-          "labelValue": "$99.24",
+          "labelValue": "$45.00",
           "additionalLabel": "Bill Projection",
-          "additionalLabelValue": "$139.15",
+          "additionalLabelValue": "$90.00",
           "meterType": "smart",
           "type": "electricityContract",
           "status": "active"
         }
       ],
-      "address": "61 Barlow Street CLAYFIELD QLD 4011",
+      "address": "1 Sample Street SUBURB QLD 4000",
       "type": "energyAccount",
-      "accountNumber": "7120740522"
+      "accountNumber": "1234567890"
     }
   ]
 }
