@@ -8,6 +8,11 @@ Historical data (past intervals) is pushed to HA's recorder via
 async_add_external_statistics() rather than a live state update. This
 ensures the Energy dashboard attributes consumption to the interval it
 actually occurred in, not to the time of the poll.
+
+Backfill strategy: first install pulls up to BACKFILL_DAYS of history, but
+throttled to BACKFILL_CHUNK_DAYS per 24 h poll so we don't hammer the AGL
+BFF on startup. Smart endpoint selection per day: days inside the current
+billing period use Current/Hourly; older days use Previous/Hourly.
 """
 
 from __future__ import annotations
@@ -26,6 +31,7 @@ from homeassistant.helpers.update_coordinator import (
 
 from .agl.client import AGLAuthError, AGLError
 from .const import (
+    BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
     DOMAIN,
     SCAN_INTERVAL_HOURLY,
@@ -46,7 +52,6 @@ _LOGGER = logging.getLogger(__name__)
 class HaggleData:
     """Typed coordinator data returned from _async_update_data."""
 
-    consumption_today_kwh: float
     consumption_period_kwh: float
     consumption_period_cost_aud: float
     bill_projection_aud: float | None
@@ -79,43 +84,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         self._latest_cumulative_kwh: float = 0.0
 
     async def _async_setup(self) -> None:
-        """One-time setup: 30-day backfill on first install.
-
-        Called by async_config_entry_first_refresh before the first
-        _async_update_data. Fetches up to BACKFILL_DAYS of Previous/Hourly
-        intervals and imports them into the recorder statistics table.
-        """
-        today = date.today()
-        _LOGGER.info(
-            "Starting %d-day backfill for contract %s",
-            BACKFILL_DAYS,
-            self.contract_number,
-        )
-        all_intervals: list[IntervalReading] = []
-        for i in range(1, BACKFILL_DAYS + 1):
-            day = today - timedelta(days=i)
-            try:
-                readings = await self.client.async_get_usage_hourly_previous(
-                    self.contract_number, day
-                )
-                all_intervals.extend(readings)
-            except (AGLError, NotImplementedError) as err:
-                _LOGGER.debug("Backfill skip %s: %s", day, err)
-        if all_intervals:
-            stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
-            stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
-            _LOGGER.info(
-                "Backfill complete: %d intervals across %d days — pushing to %s, %s",
-                len(all_intervals),
-                BACKFILL_DAYS,
-                stat_id_cons,
-                stat_id_cost,
-            )
-            await self._import_intervals(
-                all_intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        """No-op: first-install backfill is handled incrementally in _fetch_and_import."""
 
     async def _async_update_data(self) -> HaggleData:
         """Fetch yesterday's intervals, import statistics, return sensor data."""
@@ -127,20 +96,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             raise UpdateFailed(str(err)) from err
 
     async def _fetch_and_import(self) -> HaggleData:
-        """Core update: fetch missing days + push to recorder, then return data."""
+        """Core update: fetch up to BACKFILL_CHUNK_DAYS missing intervals and return data."""
         stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
+        stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
 
-        # Determine resume point from existing statistics.
-        last_sum = await self._get_last_stat_sum(stat_id_cons)
-
-        if last_sum is None:
-            # No previous stats -- run backfill first.
-            await self._async_setup()
-        else:
-            # Fetch each missing day from day-after-last up to yesterday.
-            await self._fetch_missing_days(last_sum)
-
-        # Fetch live sensor data for the coordinator snapshot.
+        # Fetch live sensor data first — summary gives bill_start for endpoint selection.
         try:
             summary = await self.client.async_get_usage_summary(self.contract_number)
         except NotImplementedError:
@@ -151,7 +111,37 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         except NotImplementedError:
             plan = None
 
-        # Extract a flat unit rate: first c/kWh entry.
+        bill_start: date | None = summary.start if summary is not None else None
+
+        # Determine resume point.
+        last_cons_sum, last_stat_date = await self._get_last_stat(stat_id_cons)
+        last_cost_sum, _ = await self._get_last_stat(stat_id_cost)
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        if last_stat_date is None:
+            fetch_start = today - timedelta(days=BACKFILL_DAYS)
+        else:
+            fetch_start = last_stat_date + timedelta(days=1)
+
+        # Throttle: at most BACKFILL_CHUNK_DAYS per poll cycle.
+        fetch_end = min(
+            yesterday, fetch_start + timedelta(days=BACKFILL_CHUNK_DAYS - 1)
+        )
+
+        if fetch_start <= yesterday:
+            await self._fetch_range(
+                fetch_start,
+                fetch_end,
+                bill_start,
+                initial_cons_sum=last_cons_sum or 0.0,
+                initial_cost_sum=last_cost_sum or 0.0,
+            )
+        else:
+            self._latest_cumulative_kwh = last_cons_sum or 0.0
+
+        # Extract rates from plan.
         unit_rate_aud: float | None = None
         if plan is not None:
             for rate in plan.unit_rates:
@@ -180,7 +170,6 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 )
 
         return HaggleData(
-            consumption_today_kwh=0.0,
             consumption_period_kwh=period_kwh,
             consumption_period_cost_aud=period_cost,
             bill_projection_aud=projection,
@@ -189,9 +178,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             latest_cumulative_kwh=self._latest_cumulative_kwh,
         )
 
-    async def _get_last_stat_sum(self, stat_id: str) -> float | None:
-        """Return the last known cumulative sum for stat_id, or None."""
-        # Local imports: recorder is optional and may not be loaded yet.
+    async def _get_last_stat(self, stat_id: str) -> tuple[float | None, date | None]:
+        """Return (last_sum, last_date) for stat_id, or (None, None) if no rows."""
         from homeassistant.components.recorder.statistics import (
             get_last_statistics,
         )
@@ -201,72 +189,51 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             get_last_statistics, self.hass, 1, stat_id, True, {"start", "sum"}
         )
         if not last or stat_id not in last:
-            return None
+            return None, None
         rows = last[stat_id]
         if not rows:
-            return None
+            return None, None
         row = rows[0]
         val = row.get("sum")
-        return float(val) if val is not None else None
+        raw_start: float = row.get("start") or 0.0
+        last_sum = float(val) if val is not None else None
+        last_date: date | None = None
+        if raw_start:
+            last_date = datetime.fromtimestamp(raw_start, tz=UTC).date()
+        return last_sum, last_date
 
-    async def _fetch_missing_days(self, last_sum: float) -> None:
-        """Fetch each day since the last statistic and import intervals."""
-        # Local imports: recorder is optional and may not be loaded yet.
-        from homeassistant.components.recorder.statistics import (
-            get_last_statistics,
-        )
-        from homeassistant.helpers.recorder import get_instance
-
-        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
-        last = await get_instance(self.hass).async_add_executor_job(
-            get_last_statistics, self.hass, 1, stat_id_cons, True, {"start", "sum"}
-        )
-
-        last_start: datetime | None = None
-        if last and stat_id_cons in last and last[stat_id_cons]:
-            # StatisticsRow.start is a Unix timestamp (float).
-            raw_start: float = last[stat_id_cons][0].get("start") or 0.0
-            if raw_start:
-                last_start = datetime.fromtimestamp(raw_start, tz=UTC)
-
-        today = date.today()
-        yesterday = today - timedelta(days=1)
-
-        if last_start is None:
-            self._latest_cumulative_kwh = last_sum
-            return
-
-        next_day = last_start.date() + timedelta(days=1)
-        if next_day > yesterday:
-            self._latest_cumulative_kwh = last_sum
-            return
-
+    async def _fetch_range(
+        self,
+        start: date,
+        end: date,
+        bill_start: date | None,
+        initial_cons_sum: float,
+        initial_cost_sum: float,
+    ) -> None:
+        """Fetch [start..end] with smart endpoint selection, then import."""
         all_intervals: list[IntervalReading] = []
-        current = next_day
-        while current <= yesterday:
+        current = start
+        while current <= end:
             try:
-                readings = await self.client.async_get_usage_hourly(
-                    self.contract_number, current
-                )
+                if bill_start is not None and current < bill_start:
+                    readings = await self.client.async_get_usage_hourly_previous(
+                        self.contract_number, current
+                    )
+                else:
+                    readings = await self.client.async_get_usage_hourly(
+                        self.contract_number, current
+                    )
                 all_intervals.extend(readings)
             except (AGLError, NotImplementedError) as err:
-                _LOGGER.debug("Incremental fetch skip %s: %s", current, err)
+                _LOGGER.debug("Fetch skip %s: %s", current, err)
             current += timedelta(days=1)
 
         if all_intervals:
-            _LOGGER.info(
-                "Incremental update: %d intervals from %s to %s",
-                len(all_intervals),
-                next_day,
-                yesterday,
-            )
             await self._import_intervals(
-                all_intervals,
-                initial_cons_sum=last_sum,
-                initial_cost_sum=0.0,
+                all_intervals, initial_cons_sum, initial_cost_sum
             )
         else:
-            self._latest_cumulative_kwh = last_sum
+            self._latest_cumulative_kwh = initial_cons_sum
 
     async def _import_intervals(
         self,
@@ -313,7 +280,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             self.hass,
             StatisticMetaData(
                 mean_type=StatisticMeanType.NONE,
-                unit_class=None,
+                unit_class="energy",
                 has_sum=True,
                 name=f"AGL Electricity Consumption ({self.contract_number})",
                 source=DOMAIN,

@@ -29,7 +29,6 @@ _ENTRY_DATA = {
 }
 
 _COORDINATOR_DATA = HaggleData(
-    consumption_today_kwh=0.0,
     consumption_period_kwh=259.0,
     consumption_period_cost_aud=87.38,
     bill_projection_aud=139.15,

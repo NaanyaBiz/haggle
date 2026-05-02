@@ -1,7 +1,7 @@
 """Tests for HaggleCoordinator statistics import logic.
 
 Covers _import_intervals (aggregation, running sum, idempotency, none-filter),
-_async_setup (30-day backfill), and _fetch_and_import (resume from last stat).
+_fetch_range (smart endpoint selection), and _fetch_and_import (chunked resume).
 
 All recorder calls are patched at the boundary — async_add_external_statistics
 and get_last_statistics — so no real SQLite DB is needed.
@@ -9,7 +9,7 @@ and get_last_statistics — so no real SQLite DB is needed.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,6 +18,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.haggle.agl.models import IntervalReading
 from custom_components.haggle.const import (
+    BACKFILL_CHUNK_DAYS,
+    BACKFILL_DAYS,
     CONF_ACCESS_TOKEN,
     CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ACCOUNT_NUMBER,
@@ -284,81 +286,18 @@ class TestImportIntervalsAggregationFiltered:
 
 
 # ---------------------------------------------------------------------------
-# _async_setup — 30-day backfill
+# _async_setup — now a no-op
 # ---------------------------------------------------------------------------
 
 
-class TestAsyncSetupBackfill:
-    async def test_calls_previous_hourly_for_backfill_days(
-        self, hass: HomeAssistant
-    ) -> None:
-        """_async_setup must call async_get_usage_hourly_previous once per backfill day."""
-        from custom_components.haggle.const import BACKFILL_DAYS
-
+class TestAsyncSetupIsNoop:
+    async def test_setup_does_not_call_client(self, hass: HomeAssistant) -> None:
+        """_async_setup is a no-op; first-install backfill runs via _fetch_and_import."""
         mock_client = AsyncMock()
-        mock_client.async_get_usage_hourly_previous.return_value = []
         coord = _make_coordinator(hass, client=mock_client)
-
-        with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._async_setup()
-
-        assert mock_client.async_get_usage_hourly_previous.call_count == BACKFILL_DAYS
-
-    async def test_backfill_days_are_consecutive_ending_yesterday(
-        self, hass: HomeAssistant
-    ) -> None:
-        """Days requested span yesterday through (today - BACKFILL_DAYS)."""
-        from datetime import date
-
-        from custom_components.haggle.const import BACKFILL_DAYS
-
-        mock_client = AsyncMock()
-        mock_client.async_get_usage_hourly_previous.return_value = []
-        coord = _make_coordinator(hass, client=mock_client)
-
-        with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._async_setup()
-
-        today = date.today()
-        called_days = {
-            c.args[1]
-            for c in mock_client.async_get_usage_hourly_previous.call_args_list
-        }
-        expected_days = {today - timedelta(days=i) for i in range(1, BACKFILL_DAYS + 1)}
-        assert called_days == expected_days
-
-    async def test_backfill_aggregates_and_imports(self, hass: HomeAssistant) -> None:
-        """_async_setup passes all gathered readings to _import_intervals."""
-        mock_client = AsyncMock()
-        reading = _make_interval(datetime(2026, 4, 28, 0, 0, tzinfo=UTC), kwh=0.5)
-        mock_client.async_get_usage_hourly_previous.return_value = [reading]
-        coord = _make_coordinator(hass, client=mock_client)
-
-        with patch.object(
-            coord, "_import_intervals", new_callable=AsyncMock
-        ) as mock_import:
-            await coord._async_setup()
-
-        mock_import.assert_called_once()
-        imported = mock_import.call_args[0][0]
-        # 30 calls each returning 1 reading → 30 readings total
-        assert len(imported) == 30
-
-    async def test_backfill_skips_agl_error(self, hass: HomeAssistant) -> None:
-        """A failed day is skipped; remaining days are still fetched."""
-        from custom_components.haggle.agl.client import AGLError
-
-        mock_client = AsyncMock()
-        mock_client.async_get_usage_hourly_previous.side_effect = AGLError("timeout")
-        coord = _make_coordinator(hass, client=mock_client)
-
-        with patch.object(
-            coord, "_import_intervals", new_callable=AsyncMock
-        ) as mock_import:
-            await coord._async_setup()  # Must not raise
-
-        # Error means no intervals collected → _import_intervals not called
-        mock_import.assert_not_called()
+        await coord._async_setup()
+        mock_client.async_get_usage_hourly.assert_not_called()
+        mock_client.async_get_usage_hourly_previous.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -407,56 +346,196 @@ class TestUpdateDataAuthError:
 
 
 # ---------------------------------------------------------------------------
-# _fetch_and_import — resume from last stat
+# _fetch_range — smart endpoint selection
 # ---------------------------------------------------------------------------
 
 
-class TestFetchAndImportResume:
-    async def test_no_previous_stats_triggers_backfill(
+class TestFetchRange:
+    async def test_uses_previous_hourly_for_days_before_bill_start(
         self, hass: HomeAssistant
     ) -> None:
-        """When _get_last_stat_sum returns None, _async_setup is called."""
+        """Days strictly before bill_start must use Previous/Hourly."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly_previous.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        bill_start = today - timedelta(days=2)
+        start = today - timedelta(days=5)
+        end = today - timedelta(days=3)  # all days are before bill_start
+
+        with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
+            await coord._fetch_range(start, end, bill_start, 0.0, 0.0)
+
+        assert mock_client.async_get_usage_hourly_previous.call_count == 3
+        mock_client.async_get_usage_hourly.assert_not_called()
+
+    async def test_uses_current_hourly_for_days_on_or_after_bill_start(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Days on or after bill_start must use Current/Hourly."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        bill_start = today - timedelta(days=5)
+        start = today - timedelta(days=3)  # start is after bill_start
+        end = today - timedelta(days=1)
+
+        with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
+            await coord._fetch_range(start, end, bill_start, 0.0, 0.0)
+
+        assert mock_client.async_get_usage_hourly.call_count == 3
+        mock_client.async_get_usage_hourly_previous.assert_not_called()
+
+    async def test_uses_current_hourly_when_bill_start_is_none(
+        self, hass: HomeAssistant
+    ) -> None:
+        """When bill_start is None, always use Current/Hourly."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        start = today - timedelta(days=2)
+        end = today - timedelta(days=1)
+
+        with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
+            await coord._fetch_range(start, end, None, 0.0, 0.0)
+
+        assert mock_client.async_get_usage_hourly.call_count == 2
+        mock_client.async_get_usage_hourly_previous.assert_not_called()
+
+    async def test_fetch_range_skips_agl_error(self, hass: HomeAssistant) -> None:
+        """AGLError on a day is skipped; remaining days still fetched."""
+        from custom_components.haggle.agl.client import AGLError
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.side_effect = AGLError("timeout")
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        start = today - timedelta(days=3)
+        end = today - timedelta(days=1)
+
+        with patch.object(
+            coord, "_import_intervals", new_callable=AsyncMock
+        ) as mock_imp:
+            await coord._fetch_range(start, end, None, 0.0, 0.0)  # must not raise
+
+        # All days attempted despite errors; no intervals → _import_intervals not called
+        assert mock_client.async_get_usage_hourly.call_count == 3
+        mock_imp.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# _fetch_and_import — chunked resume behaviour
+# ---------------------------------------------------------------------------
+
+
+class TestFetchAndImport:
+    async def test_no_previous_stats_starts_from_backfill_days_ago(
+        self, hass: HomeAssistant
+    ) -> None:
+        """First install: fetch_start = today - BACKFILL_DAYS."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.side_effect = NotImplementedError
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
+        today = date.today()
+        expected_start = today - timedelta(days=BACKFILL_DAYS)
+
         with (
             patch.object(
                 coord,
-                "_get_last_stat_sum",
+                "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=None,
+                return_value=(None, None),
             ),
-            patch.object(coord, "_async_setup", new_callable=AsyncMock) as mock_setup,
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
 
-        mock_setup.assert_called_once()
+        assert mock_range.called
+        actual_start = mock_range.call_args[0][0]
+        assert actual_start == expected_start
 
-    async def test_existing_stats_triggers_fetch_missing_days(
-        self, hass: HomeAssistant
-    ) -> None:
-        """When stats exist, _fetch_missing_days is called with the last sum."""
+    async def test_chunk_limit_applied_to_range(self, hass: HomeAssistant) -> None:
+        """fetch_end must be at most fetch_start + BACKFILL_CHUNK_DAYS - 1."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.side_effect = NotImplementedError
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
+        today = date.today()
+        # last stat was long ago → big gap; chunk should cap the end
+        last_date = today - timedelta(days=BACKFILL_DAYS)
+
         with (
             patch.object(
                 coord,
-                "_get_last_stat_sum",
+                "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=259.0,
+                return_value=(100.0, last_date),
             ),
-            patch.object(
-                coord, "_fetch_missing_days", new_callable=AsyncMock
-            ) as mock_fetch,
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
 
-        mock_fetch.assert_called_once_with(259.0)
+        fetch_start = mock_range.call_args[0][0]
+        fetch_end = mock_range.call_args[0][1]
+        assert (fetch_end - fetch_start).days <= BACKFILL_CHUNK_DAYS - 1
+
+    async def test_existing_stats_resumes_from_next_day(
+        self, hass: HomeAssistant
+    ) -> None:
+        """When last_stat_date is 3 days ago, fetch_start = 2 days ago."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.side_effect = NotImplementedError
+        mock_client.async_get_plan.side_effect = NotImplementedError
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        last_date = today - timedelta(days=3)
+        expected_start = today - timedelta(days=2)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(50.0, last_date),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        assert mock_range.call_args[0][0] == expected_start
+
+    async def test_already_up_to_date_no_fetch(self, hass: HomeAssistant) -> None:
+        """If last stat is yesterday, _fetch_range is not called."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.side_effect = NotImplementedError
+        mock_client.async_get_plan.side_effect = NotImplementedError
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(259.0, yesterday),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        mock_range.assert_not_called()
 
     async def test_returns_haggle_data_instance(self, hass: HomeAssistant) -> None:
         from custom_components.haggle.coordinator import HaggleData
@@ -466,14 +545,17 @@ class TestFetchAndImportResume:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
         with (
             patch.object(
                 coord,
-                "_get_last_stat_sum",
+                "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=259.0,
+                return_value=(259.0, yesterday),
             ),
-            patch.object(coord, "_fetch_missing_days", new_callable=AsyncMock),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
             result = await coord._fetch_and_import()
 
@@ -493,110 +575,19 @@ class TestFetchAndImportResume:
         )
         coord = _make_coordinator(hass, client=mock_client)
 
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
         with (
             patch.object(
                 coord,
-                "_get_last_stat_sum",
+                "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=100.0,
+                return_value=(100.0, yesterday),
             ),
-            patch.object(coord, "_fetch_missing_days", new_callable=AsyncMock),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
             result = await coord._fetch_and_import()
 
         assert result.unit_rate_aud_per_kwh == pytest.approx(33.792 / 100.0)
         assert result.supply_charge_aud_per_day == pytest.approx(131.714 / 100.0)
-
-
-# ---------------------------------------------------------------------------
-# _fetch_missing_days — correct day range requested
-# ---------------------------------------------------------------------------
-
-
-class TestFetchMissingDays:
-    async def test_fetches_days_from_gap_to_yesterday(
-        self, hass: HomeAssistant
-    ) -> None:
-        """If last stat was 3 days ago, fetch day-2 and day-1 (yesterday)."""
-        from datetime import date
-
-        mock_client = AsyncMock()
-        mock_client.async_get_usage_hourly.return_value = []
-        coord = _make_coordinator(hass, client=mock_client)
-
-        today = date.today()
-        yesterday = today - timedelta(days=1)
-        last_stat_day = today - timedelta(days=3)  # 3 days ago
-
-        last_stats_raw = {
-            f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}": [
-                {
-                    "start": float(
-                        datetime.combine(last_stat_day, datetime.min.time())
-                        .replace(tzinfo=UTC)
-                        .timestamp()
-                    ),
-                    "sum": 50.0,
-                }
-            ]
-        }
-
-        with (
-            patch(_PATCH_GET_LAST, return_value=last_stats_raw),
-            patch(_PATCH_GET_INSTANCE, _mock_get_instance(last_stats_raw)),
-            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
-        ):
-            await coord._fetch_missing_days(last_sum=50.0)
-
-        called_days = {
-            c.args[1] for c in mock_client.async_get_usage_hourly.call_args_list
-        }
-        expected = {today - timedelta(days=2), yesterday}
-        assert called_days == expected
-
-    async def test_no_gap_does_not_fetch(self, hass: HomeAssistant) -> None:
-        """If last stat is already for yesterday, no new fetch needed."""
-        from datetime import date
-
-        mock_client = AsyncMock()
-        coord = _make_coordinator(hass, client=mock_client)
-
-        today = date.today()
-        yesterday = today - timedelta(days=1)
-
-        last_stats_raw = {
-            f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}": [
-                {
-                    "start": float(
-                        datetime.combine(yesterday, datetime.min.time())
-                        .replace(tzinfo=UTC)
-                        .timestamp()
-                    ),
-                    "sum": 50.0,
-                }
-            ]
-        }
-
-        with (
-            patch(_PATCH_GET_LAST, return_value=last_stats_raw),
-            patch(_PATCH_GET_INSTANCE, _mock_get_instance(last_stats_raw)),
-        ):
-            await coord._fetch_missing_days(last_sum=50.0)
-
-        mock_client.async_get_usage_hourly.assert_not_called()
-
-    async def test_empty_stats_sets_cumulative_and_returns(
-        self, hass: HomeAssistant
-    ) -> None:
-        """If get_last_statistics returns no rows, store last_sum and return."""
-        mock_client = AsyncMock()
-        coord = _make_coordinator(hass, client=mock_client)
-
-        with (
-            patch(_PATCH_GET_LAST, return_value={}),
-            patch(_PATCH_GET_INSTANCE, _mock_get_instance({})),
-        ):
-            await coord._fetch_missing_days(last_sum=42.0)
-
-        assert coord._latest_cumulative_kwh == pytest.approx(42.0)
-        mock_client.async_get_usage_hourly.assert_not_called()

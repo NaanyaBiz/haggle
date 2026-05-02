@@ -29,9 +29,9 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import (
     DATA_BILL_PROJECTION,
+    DATA_CONSUMPTION_COST,
     DATA_CONSUMPTION_KWH,
     DATA_CONSUMPTION_PERIOD,
-    DATA_CONSUMPTION_TODAY,
     DATA_SUPPLY_CHARGE,
     DATA_UNIT_RATE,
     DOMAIN,
@@ -56,15 +56,7 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),
-    # --- Sub-period sensors (reset at known boundaries) ---
-    SensorEntityDescription(
-        key=DATA_CONSUMPTION_TODAY,
-        translation_key="consumption_today",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
-        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
-        suggested_display_precision=2,
-    ),
+    # --- Sub-period sensors (reset at billing boundary) ---
     SensorEntityDescription(
         key=DATA_CONSUMPTION_PERIOD,
         translation_key="consumption_period",
@@ -73,7 +65,15 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
     ),
-    # --- Forecast / cost (monetary, measurement) ---
+    SensorEntityDescription(
+        key=DATA_CONSUMPTION_COST,
+        translation_key="consumption_cost",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="AUD",
+        suggested_display_precision=2,
+    ),
+    # --- Forecast / rates (monetary, measurement) ---
     SensorEntityDescription(
         key=DATA_BILL_PROJECTION,
         translation_key="bill_projection",

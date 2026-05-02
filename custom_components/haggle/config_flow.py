@@ -147,6 +147,7 @@ async def _fetch_contracts(access_token: str) -> list[Contract]:
     async_force_refresh on first use (token_set is None on construction), which
     would POST the access_token as a refresh_token to Auth0 and fail.
     """
+
     url = f"{AGL_API_HOST}/mobile/bff/api/v3/overview"
     headers = {
         "Authorization": f"Bearer {access_token}",
