@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Security
+- **Pin all GitHub Actions to commit SHAs** across `ci.yml`, `hacs.yml`,
+  `hassfest.yml`, `release.yml`. Closes the supply-chain branch-poisoning vector
+  on `hacs/action@main` and `home-assistant/actions/hassfest@master`.
+- **Add `permissions: read-all` to `ci.yml`, `hacs.yml`, `hassfest.yml`**.
+  `release.yml` retains its job-level `contents: write`.
+- **Remove `continue-on-error: true` from the HACS validation step**. The
+  underlying validation passes (`All (8) checks passed` confirmed against
+  `main`); the suppression flag was hiding real failures from CI.
+- **Switch `release.yml` to `body_path:`** instead of interpolating
+  `${{ steps.changelog.outputs.body }}` directly into the release body, removing
+  the shell-context injection vector.
 
 ---
 

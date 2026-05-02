@@ -13,7 +13,7 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -22,19 +22,15 @@ jobs:
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Extract changelog section
-        id: changelog
         run: |
           VERSION="${{ steps.version.outputs.version }}"
           # Extract the section between ## [VERSION] and the next ## [
           awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md > release_notes.txt
-          echo "body<<EOF" >> "$GITHUB_OUTPUT"
-          cat release_notes.txt >> "$GITHUB_OUTPUT"
-          echo "EOF" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v3
+        uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
           name: "v${{ steps.version.outputs.version }}"
-          body: ${{ steps.changelog.outputs.body }}
+          body_path: release_notes.txt
           draft: false
           prerelease: ${{ contains(github.ref_name, '-') }}
