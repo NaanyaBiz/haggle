@@ -591,3 +591,79 @@ class TestFetchAndImport:
 
         assert result.unit_rate_aud_per_kwh == pytest.approx(33.792 / 100.0)
         assert result.supply_charge_aud_per_day == pytest.approx(131.714 / 100.0)
+
+
+# ---------------------------------------------------------------------------
+# SAST-008: numeric bounds before recorder import
+# ---------------------------------------------------------------------------
+
+
+class TestNumericGuards:
+    """Adversarial summaries (inf/nan/negative) must clamp to 0.0, not poison stats."""
+
+    async def test_summary_with_inf_clamps_to_zero(self, hass: HomeAssistant) -> None:
+        from custom_components.haggle.agl.models import BillPeriod
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = BillPeriod(
+            start=date.today() - timedelta(days=15),
+            end=date.today() + timedelta(days=15),
+            consumption_kwh=float("inf"),
+            cost_label="$inf",
+            projection_label="$nan",
+        )
+        mock_client.async_get_plan.side_effect = NotImplementedError
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        # Adversarial values must not propagate to recorder-bound HaggleData.
+        assert result.consumption_period_kwh == 0.0
+        assert result.consumption_period_cost_aud == 0.0
+        # "$nan" parses to nan → clamped to 0.0 (not None — proj_label was non-empty).
+        assert result.bill_projection_aud == 0.0
+
+    async def test_summary_with_negative_clamps_to_zero(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.agl.models import BillPeriod
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = BillPeriod(
+            start=date.today() - timedelta(days=15),
+            end=date.today() + timedelta(days=15),
+            consumption_kwh=-5.0,
+            cost_label="$-99.99",
+            projection_label="",
+        )
+        mock_client.async_get_plan.side_effect = NotImplementedError
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = date.today()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        assert result.consumption_period_kwh == 0.0
+        assert result.consumption_period_cost_aud == 0.0

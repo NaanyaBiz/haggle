@@ -200,6 +200,40 @@ class TestAglAuth:
         with pytest.raises(AGLAuthError):
             await auth.async_force_refresh(session)
 
+    async def test_force_refresh_redacts_body_from_exception(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SAST-003: Auth0 error body must stay in DEBUG logs, not in the raised exception.
+
+        ConfigEntryAuthFailed(str(err)) reaches HA Persistent Notifications;
+        Auth0 error bodies may include diagnostic fields that should not surface
+        there.
+        """
+        # Synthetic body: must not look enough like a real JWT to trip secret
+        # scanners, but still contain a marker we can grep for in assertions.
+        sensitive_body = {
+            "error": "rate_limited",
+            "error_description": "MARKER-SHOULD-NOT-LEAK",
+        }
+        session = _make_session(sensitive_body, status=429)
+
+        async def persist(token: str) -> None:
+            pass
+
+        auth = AglAuth("v1.initial", persist)
+        with (
+            caplog.at_level("DEBUG", logger="custom_components.haggle.agl.client"),
+            pytest.raises(AGLAuthError) as exc_info,
+        ):
+            await auth.async_force_refresh(session)
+
+        # The exception message must mention the status code but NOT the body.
+        assert "429" in str(exc_info.value)
+        assert "MARKER-SHOULD-NOT-LEAK" not in str(exc_info.value)
+        assert "rate_limited" not in str(exc_info.value)
+        # Body was logged at DEBUG.
+        assert any("MARKER-SHOULD-NOT-LEAK" in r.message for r in caplog.records)
+
     async def test_force_refresh_raises_on_error_field(self) -> None:
         session = _make_session(
             {"error": "invalid_grant", "error_description": "Refresh token expired"},
@@ -318,3 +352,30 @@ class TestAglClient:
             pytest.raises(AGLError),
         ):
             await client.async_get_overview()
+
+    async def test_http_error_keeps_url_and_body_out_of_exception(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """SAST-004: contract_number-bearing URL + response body stay in DEBUG."""
+        sensitive_body = {"detail": "internal MARKER2-SHOULD-NOT-LEAK"}
+        client, _ = self._make_client(sensitive_body, status=500)
+
+        with (
+            caplog.at_level("DEBUG", logger="custom_components.haggle.agl.client"),
+            patch.object(
+                client._auth,
+                "async_ensure_valid_token",
+                new_callable=AsyncMock,
+                return_value="tok",
+            ),
+            pytest.raises(AGLError) as exc_info,
+        ):
+            # contract_number is part of the URL path
+            await client.async_get_usage_summary("9999999999_PII")
+
+        msg = str(exc_info.value)
+        assert "500" in msg
+        assert "9999999999_PII" not in msg  # URL not in exception
+        assert "MARKER2-SHOULD-NOT-LEAK" not in msg  # body not in exception
+        # But both are present in DEBUG.
+        assert any("9999999999_PII" in r.message for r in caplog.records)

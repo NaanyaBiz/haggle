@@ -69,8 +69,9 @@ tests/
 ├── test_init.py                     # setup/unload smoke tests
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods
-├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan (22 tests)
-└── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, aggregation (26 tests)
+├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, _safe_float
+└── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, numeric guards
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
@@ -276,6 +277,19 @@ The HA Energy dashboard requires:
   40-char commit SHA with a `# vX.Y` comment. `@main`, `@master`, and floating
   major tags (`@v6`) are all branch-poisonable supply-chain vectors. Dependabot
   (`github-actions` ecosystem) keeps the SHAs current.
+- **Don't surface raw AGL/Auth0 response bodies in exceptions** that propagate
+  to `ConfigEntryAuthFailed` / `UpdateFailed`. They reach HA Persistent
+  Notifications and `home-assistant.log` at ERROR level. Auth0 5xx/429 bodies
+  can include diagnostic fields (`mfa_token`, internal trace IDs); AGL BFF URLs
+  carry the contract number (PII). Pattern:
+  `_LOGGER.debug("…body: %s", text[:200]); raise AGLError(f"HTTP {status} …")`.
+- **Don't use unbounded `float()` coercion on AGL response values**. Use the
+  `_safe_float` helpers in `agl/parser.py` / `coordinator.py` so `inf`/`nan`/
+  negative values can't reach `async_add_external_statistics` and corrupt the
+  cumulative-sum series.
+- **Don't forward raw AGL response dicts** via `dict(rate)` or similar
+  open-schema passthrough. Allowlist exactly the fields the coordinator
+  consumes, so a MITM-crafted response can't smuggle keys into runtime state.
 
 ---
 

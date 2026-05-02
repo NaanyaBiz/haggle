@@ -50,16 +50,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     _LOGGER.info("Setting up haggle entry: contract=%s", contract_number or "unknown")
 
     async def _persist_refresh_token(new_token: str) -> None:
-        """Persist rotated refresh token back to config entry data."""
+        """Persist rotated refresh token back to config entry data.
+
+        Auth0 has already consumed the previous refresh token by the time this
+        callback runs; failing to persist the new one means the next HA restart
+        will load a stale (revoked) token. Surface that immediately via the
+        reauth flow rather than letting the user discover it on next restart.
+        """
         try:
             hass.config_entries.async_update_entry(
                 entry, data={**entry.data, CONF_REFRESH_TOKEN: new_token}
             )
             _LOGGER.debug("Refresh token persisted (len=%d)", len(new_token))
         except Exception:
-            _LOGGER.error(
-                "Failed to persist rotated refresh token — next restart will require reauth"
+            _LOGGER.exception(
+                "Failed to persist rotated refresh token — triggering reauth"
             )
+            entry.async_start_reauth(hass)
 
     session = aiohttp.ClientSession()
     auth = AglAuth(refresh_token, _persist_refresh_token)

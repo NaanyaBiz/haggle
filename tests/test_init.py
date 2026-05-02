@@ -79,3 +79,59 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
         mock_session.close.assert_called_once()
+
+
+async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:
+    """SAST-009: a failed config-entry update must start the reauth flow.
+
+    When Auth0 has rotated the refresh token but our persist call to
+    `async_update_entry` fails, in-memory state diverges from disk: the next HA
+    restart loads a stale (revoked) token. Surface that immediately rather than
+    letting the user discover it on next boot.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=_ENTRY_DATA,
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=_COORDINATOR_DATA,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        persist = entry.runtime_data.auth._persist
+
+        with (
+            patch.object(
+                hass.config_entries,
+                "async_update_entry",
+                side_effect=RuntimeError("storage layer unavailable"),
+            ),
+            patch.object(entry, "async_start_reauth") as mock_start_reauth,
+        ):
+            await persist("v1.rotated_new_token")
+
+        mock_start_reauth.assert_called_once_with(hass)

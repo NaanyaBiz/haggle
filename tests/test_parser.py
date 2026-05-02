@@ -31,6 +31,84 @@ def load_fixture(name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Numeric guard (SAST-008)
+# ---------------------------------------------------------------------------
+
+
+class TestSafeFloat:
+    """Adversarial / corrupt API values must clamp to 0.0 instead of poisoning stats."""
+
+    def test_finite_positive_passes_through(self) -> None:
+        from custom_components.haggle.agl.parser import _safe_float
+
+        assert _safe_float(0.5) == 0.5
+        assert _safe_float("12.34") == pytest.approx(12.34)
+
+    def test_inf_nan_negative_clamp_to_zero(self) -> None:
+        from custom_components.haggle.agl.parser import _safe_float
+
+        assert _safe_float(float("inf")) == 0.0
+        assert _safe_float(float("nan")) == 0.0
+        assert _safe_float(-1.0) == 0.0
+        assert _safe_float("1e308") == pytest.approx(1e308)  # finite, allowed
+        assert _safe_float(1e400) == 0.0  # overflow → inf → clamped
+
+    def test_unparseable_clamps_to_zero(self) -> None:
+        from custom_components.haggle.agl.parser import _safe_float
+
+        assert _safe_float(None) == 0.0
+        assert _safe_float("not a number") == 0.0
+        assert _safe_float({}) == 0.0
+
+
+# ---------------------------------------------------------------------------
+# parse_plan allowlist (SAST-007)
+# ---------------------------------------------------------------------------
+
+
+class TestParsePlanAllowlist:
+    """Open-schema dict(rate) is gone — only four documented keys propagate."""
+
+    def test_only_known_keys_land_in_unit_rates(self) -> None:
+        data = {
+            "productName": "Smart Saver",
+            "gstInclusiveRates": [
+                {
+                    "kind": "detail",
+                    "type": "c/kWh",
+                    "title": "Peak",
+                    "price": 33.792,
+                    "validTo": "9999-12-31",
+                    # Attacker-injected keys must NOT propagate.
+                    "evil_callback": "https://attacker.example/x",
+                    "__proto__": "polluted",
+                }
+            ],
+        }
+        plan = parse_plan(data)
+        assert len(plan.unit_rates) == 1
+        rate = plan.unit_rates[0]
+        assert set(rate.keys()) == {"kind", "type", "title", "price"}
+        assert "evil_callback" not in rate
+        assert "validTo" not in rate
+
+    def test_extreme_price_clamped_to_zero(self) -> None:
+        data = {
+            "productName": "Smart Saver",
+            "gstInclusiveRates": [
+                {
+                    "kind": "detail",
+                    "type": "c/kWh",
+                    "title": "Peak",
+                    "price": float("inf"),
+                }
+            ],
+        }
+        plan = parse_plan(data)
+        assert plan.unit_rates[0]["price"] == 0.0
+
+
+# ---------------------------------------------------------------------------
 # parse_interval_readings
 # ---------------------------------------------------------------------------
 

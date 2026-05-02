@@ -11,10 +11,30 @@ Critical fields:
 
 from __future__ import annotations
 
+import logging
+import math
 from datetime import UTC, date, datetime
 from typing import Any
 
 from .models import BillPeriod, Contract, DailyReading, IntervalReading, PlanRates
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _safe_float(raw: Any) -> float:
+    """Coerce raw API value to a non-negative finite float.
+
+    Treats inf/nan/negative as 0.0 with a warning, so adversarial or corrupt
+    AGL responses cannot poison the recorder via async_add_external_statistics.
+    """
+    try:
+        value = float(raw or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value) or value < 0:
+        _LOGGER.warning("Rejecting non-finite/negative AGL value: %r", raw)
+        return 0.0
+    return value
 
 
 def parse_overview(data: dict[str, Any]) -> list[Contract]:
@@ -59,8 +79,8 @@ def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
             except (ValueError, AttributeError):
                 continue
             values = consumption.get("values") or {}
-            kwh: float = float(values.get("quantity") or 0.0)
-            cost_aud: float = float(consumption.get("amount") or 0.0)
+            kwh = _safe_float(values.get("quantity"))
+            cost_aud = _safe_float(consumption.get("amount"))
             readings.append(
                 IntervalReading(
                     dt=dt,
@@ -92,8 +112,8 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
             except (ValueError, AttributeError):
                 continue
             values = consumption.get("values") or {}
-            kwh: float = float(values.get("quantity") or 0.0)
-            cost_aud: float = float(consumption.get("amount") or 0.0)
+            kwh = _safe_float(values.get("quantity"))
+            cost_aud = _safe_float(consumption.get("amount"))
             readings.append(DailyReading(day=day, kwh=kwh, cost_aud=cost_aud))
     return readings
 
@@ -124,10 +144,7 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
     projection_label: str = data.get("additionalLabelValue", "")
 
     quantity_str: str = (usage.get("quantity") or "0").replace(",", "").split()[0]
-    try:
-        consumption_kwh: float = float(quantity_str)
-    except (ValueError, IndexError):
-        consumption_kwh = 0.0
+    consumption_kwh = _safe_float(quantity_str)
 
     return BillPeriod(
         start=start,
@@ -148,10 +165,19 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
         if rate.get("kind") != "detail":
             continue
         rate_type: str = rate.get("type", "")
-        price: float = float(rate.get("price") or 0.0)
+        price = _safe_float(rate.get("price"))
         if rate_type == "c/day" and "supply" in (rate.get("title") or "").lower():
             supply_charge = price
-        unit_rates.append(dict(rate))
+        # Allowlist the four fields the coordinator actually consumes — drops
+        # any extra keys an attacker-controlled (MITM) response could inject.
+        unit_rates.append(
+            {
+                "kind": rate.get("kind"),
+                "type": rate_type,
+                "title": rate.get("title"),
+                "price": price,
+            }
+        )
 
     return PlanRates(
         product_name=product_name,

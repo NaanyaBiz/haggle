@@ -17,11 +17,11 @@ billing period use Current/Hourly; older days use Previous/Hourly.
 
 from __future__ import annotations
 
-import contextlib
 import logging
+import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import (
@@ -46,6 +46,18 @@ if TYPE_CHECKING:
     from .agl.client import AglClient, IntervalReading
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _safe_float(raw: Any) -> float:
+    """Coerce raw API value to a non-negative finite float, defaulting to 0.0."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if not math.isfinite(value) or value < 0:
+        _LOGGER.warning("Rejecting non-finite/negative coordinator value: %r", raw)
+        return 0.0
+    return value
 
 
 @dataclass
@@ -146,7 +158,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if plan is not None:
             for rate in plan.unit_rates:
                 if rate.get("type") == "c/kWh":
-                    cents = float(rate.get("price") or 0.0)
+                    cents = _safe_float(rate.get("price"))
                     unit_rate_aud = cents / 100.0
                     break
 
@@ -160,14 +172,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         projection: float | None = None
 
         if summary is not None:
-            with contextlib.suppress(TypeError, ValueError):
-                period_kwh = float(summary.consumption_kwh)
-            with contextlib.suppress(ValueError, AttributeError):
-                period_cost = float(summary.cost_label.lstrip("$").replace(",", ""))
-            with contextlib.suppress(ValueError, AttributeError):
-                projection = float(
-                    summary.projection_label.lstrip("$").replace(",", "")
-                )
+            period_kwh = _safe_float(summary.consumption_kwh)
+            period_cost = _safe_float(
+                (summary.cost_label or "").lstrip("$").replace(",", "")
+            )
+            proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
+            if proj_label:
+                projection = _safe_float(proj_label)
 
         return HaggleData(
             consumption_period_kwh=period_kwh,

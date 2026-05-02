@@ -150,6 +150,49 @@ async def test_fetch_contracts_failure_shows_cannot_connect(
     assert result["errors"]["base"] == "cannot_connect"
 
 
+async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> None:
+    """When _fetch_contracts returns nothing, unique_id must be a hash, not a token prefix.
+
+    SAST-001 / SEC-001: HA's entity registry is plaintext JSON on disk; a leaked
+    refresh-token prefix from there could be correlated against captured token
+    material. Hashing makes the on-disk identifier one-way.
+    """
+    import hashlib
+
+    refresh_token = "v1.MdLHBM9JNbgB4ABUpW5K_FAKE_token_for_test_only"
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    authorize_url: str = result["description_placeholders"]["authorize_url"]
+    callback_url = _make_callback_url(authorize_url)
+
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("access_tok", refresh_token),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=[],  # no contracts → fallback path
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CALLBACK_URL_FIELD: callback_url},
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    entry = result["result"]
+    expected_hash = hashlib.sha256(refresh_token.encode()).hexdigest()[:16]
+
+    assert entry.unique_id == expected_hash
+    assert entry.unique_id != refresh_token[:16]
+    assert refresh_token[:8] not in (entry.unique_id or "")
+
+
 async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) -> None:
     """Two discovered contracts show the select_contract form."""
     second = Contract(
