@@ -30,11 +30,11 @@
       "consumption": {
         "name": "Consumption"
       },
-      "consumption_today": {
-        "name": "Consumption today"
-      },
       "consumption_period": {
         "name": "Consumption this period"
+      },
+      "consumption_cost": {
+        "name": "Consumption cost"
       },
       "bill_projection": {
         "name": "Bill projection"

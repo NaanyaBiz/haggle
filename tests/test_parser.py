@@ -203,6 +203,11 @@ class TestParseBillPeriod:
         bp = parse_bill_period(data)
         assert bp.projection_label == "$139.15"
 
+    def test_consumption_kwh_parsed_from_quantity_string(self) -> None:
+        data = load_fixture("bill_period_response.json")
+        bp = parse_bill_period(data)
+        assert bp.consumption_kwh == pytest.approx(259.0)
+
     def test_missing_bill_period_returns_today_dates(self) -> None:
         """Empty response should not crash; dates fall back to today."""
         from datetime import date as _date

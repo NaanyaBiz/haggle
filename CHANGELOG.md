@@ -32,9 +32,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   five domain agents.
 
 ### Targets for next sprint
-- End-to-end live install test against a real AGL account.
+- Configurable backfill depth (date picker in config flow, defaulting to 30 days).
 - Solar/feed-in sensor (needs a solar-customer mitmproxy capture).
 - ToU (time-of-use) rate display — `rate_type` is already on each `IntervalReading`.
+
+---
+
+## [0.1.0-dev] — 2026-05-02 (Sprint 2 — live-install validation)
+
+### Fixed
+- **`_fetch_contracts` token-type bug**: config flow was passing the short-lived
+  `access_token` to `AglAuth` as a `refresh_token`; Auth0 rejected it, contracts
+  fell back to empty, and every API URL became `.../Electricity/?...` (HTTP 404).
+  `_fetch_contracts` now makes a direct `aiohttp` GET to `/v3/overview` with a
+  `Authorization: Bearer` header — no `AglAuth` involved.
+- **HTTP 500 on all Hourly/Daily usage endpoints**: AGL's BFF requires three
+  headers (`Accept-Features`, `Client-Device`, `Accept-Language`) and a `scaling`
+  query parameter that were missing from `AglClient._default_headers` and the
+  usage URL builders. Captured from mitmproxy iOS session 2026-05-01.
+- **`consumption_period_kwh` always 0**: `parse_bill_period` hardcoded
+  `consumption_kwh=0.0`; now parses `usage.quantity` ("259 kWh" → `259.0`).
+- **Consumption statistic invisible in Energy dashboard**: `StatisticMetaData`
+  was registered with `unit_class=None`; HA's Energy picker filters on
+  `unit_class="energy"`. Fixed — statistic now appears in the grid-consumption
+  source dropdown.
+
+### Changed
+- **Chunked throttled backfill**: first-install backfill no longer fires 30 API
+  calls at startup. `_async_setup` is now a no-op; `_fetch_and_import` fetches
+  at most `BACKFILL_CHUNK_DAYS=7` days per 24 h poll cycle, working backwards
+  from the most-recently-imported date.
+- **Smart endpoint selection**: days inside the current billing period use
+  `Current/Hourly`; older days use `Previous/Hourly`. Selection is driven by
+  `bill_period.start` returned by the usage-summary endpoint.
+
+### Added
+- **Consumption cost sensor** (`consumption_period_cost_aud`): AUD cost for the
+  current billing period, sourced from `usage.amount` in the AGL summary response.
+- **`AGL_ACCEPT_FEATURES`, `AGL_CLIENT_DEVICE`, `AGL_SCALING`** constants
+  (captured from iOS app 8.38.0-531 via mitmproxy).
+- **`BACKFILL_CHUNK_DAYS`** constant (default 7) controlling how many days are
+  fetched per poll cycle.
+
+### Removed
+- **`consumption_today` sensor**: AGL data has a 24–48 h AEMO feed lag; this
+  sensor was always 0 and only caused confusion.
 
 ---
 

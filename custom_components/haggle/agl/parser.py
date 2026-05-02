@@ -123,10 +123,16 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
     # return empty string if absent — callers can populate from overview.
     projection_label: str = data.get("additionalLabelValue", "")
 
+    quantity_str: str = (usage.get("quantity") or "0").replace(",", "").split()[0]
+    try:
+        consumption_kwh: float = float(quantity_str)
+    except (ValueError, IndexError):
+        consumption_kwh = 0.0
+
     return BillPeriod(
         start=start,
         end=end,
-        consumption_kwh=0.0,
+        consumption_kwh=consumption_kwh,
         cost_label=cost_label,
         projection_label=projection_label,
     )
