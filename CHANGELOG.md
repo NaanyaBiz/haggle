@@ -71,10 +71,6 @@ _No unreleased changes yet._
 - **`consumption_today` sensor**: AGL data has a 24–48 h AEMO feed lag; this
   sensor was always 0 and only caused confusion.
 
-### Removed
-- **`consumption_today` sensor**: AGL data has a 24–48 h AEMO feed lag; this
-  sensor was always 0 and only caused confusion.
-
 ---
 
 ## [0.0.1-dev] — 2026-05-01 (Sprint 1 — not yet formally released)
