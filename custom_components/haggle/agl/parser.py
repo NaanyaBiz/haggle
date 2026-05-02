@@ -1,7 +1,7 @@
 """Parsers: AGL JSON API responses -> domain dataclasses.
 
-Reference response shapes are in ~/tests/fixtures/flows/agl-json/.
-Reference: ~/tests/fixtures/AGL-API-FINDINGS.md section 2.
+Reference response shapes are mirrored under tests/fixtures/ (anonymised).
+Field semantics are documented in AGENTS.md §AGL API — Key Facts.
 
 Critical fields:
   - Interval kWh: consumption.values.quantity  (NOT consumption.quantity)

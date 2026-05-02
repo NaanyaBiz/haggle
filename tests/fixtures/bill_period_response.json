@@ -4,21 +4,21 @@
     "state": "valid",
     "current": {
       "start": {
-        "day": "20",
-        "month": "Apr",
-        "date": "2026-04-20"
+        "day": "1",
+        "month": "Jan",
+        "date": "2024-01-01"
       },
       "end": {
-        "day": "19",
-        "month": "May",
-        "date": "2026-05-19"
+        "day": "31",
+        "month": "Jan",
+        "date": "2024-01-31"
       },
       "usage": {
         "title": "Usage So Far",
-        "amount": "$87.38",
-        "quantity": "259 kWh"
+        "amount": "$45.00",
+        "quantity": "200 kWh"
       }
     }
   },
-  "additionalLabelValue": "$139.15"
+  "additionalLabelValue": "$90.00"
 }

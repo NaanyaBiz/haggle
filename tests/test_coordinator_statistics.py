@@ -529,7 +529,7 @@ class TestFetchAndImport:
                 coord,
                 "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=(259.0, yesterday),
+                return_value=(200.0, yesterday),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
@@ -553,7 +553,7 @@ class TestFetchAndImport:
                 coord,
                 "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=(259.0, yesterday),
+                return_value=(200.0, yesterday),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):

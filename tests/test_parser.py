@@ -1,8 +1,4 @@
-"""Tests for custom_components/haggle/agl/parser.py.
-
-Exercises the JSON-to-dataclass parsing layer using real captured AGL API
-response shapes from tests/fixtures/.
-"""
+"""Tests for custom_components/haggle/agl/parser.py."""
 
 from __future__ import annotations
 
@@ -49,18 +45,18 @@ class TestParseIntervalReadings:
     def test_uses_values_quantity_not_top_level_quantity(self) -> None:
         """kWh must come from consumption.values.quantity, not consumption.quantity.
 
-        The fixture has values.quantity=0.1534 but quantity=0.24 for the first
-        item — we must get 0.1534.
+        The fixture has values.quantity=0.112 but quantity=0.175 for the first
+        item — we must get 0.112.
         """
         data = load_fixture("hourly_response.json")
         readings = parse_interval_readings(data)
         kwhs = {r.kwh for r in readings}
         # These are values.quantity values from the fixture
-        assert 0.1534 in kwhs
-        assert 0.1629 in kwhs
-        # The rounded top-level quantities (0.24, 0.255 …) must NOT appear
-        assert 0.24 not in kwhs
-        assert 0.255 not in kwhs
+        assert 0.112 in kwhs
+        assert 0.119 in kwhs
+        # The rounded top-level quantities must NOT appear
+        assert 0.175 not in kwhs
+        assert 0.186 not in kwhs
 
     def test_dt_is_tz_aware_utc(self) -> None:
         """Every parsed datetime must be UTC-aware."""
@@ -72,7 +68,10 @@ class TestParseIntervalReadings:
             assert r.dt.tzinfo == UTC
 
     def test_expected_count_after_none_filter(self) -> None:
-        """Fixture has 7 items, 1 with type=none → 6 readings returned."""
+        """Fixture has 7 items, 1 with type=none → 6 readings returned.
+
+        6 = 4 normal + 1 peak + 1 normal. The none slot is filtered out.
+        """
         data = load_fixture("hourly_response.json")
         readings = parse_interval_readings(data)
         assert len(readings) == 6
@@ -88,7 +87,7 @@ class TestParseIntervalReadings:
         readings = parse_interval_readings(data)
         peak_readings = [r for r in readings if r.rate_type == "peak"]
         assert len(peak_readings) == 1
-        assert peak_readings[0].kwh == pytest.approx(0.9252)
+        assert peak_readings[0].kwh == pytest.approx(0.675)
 
     def test_empty_sections_returns_empty_list(self) -> None:
         readings = parse_interval_readings({"sections": []})
@@ -189,24 +188,24 @@ class TestParseBillPeriod:
     def test_correct_start_and_end_dates(self) -> None:
         data = load_fixture("bill_period_response.json")
         bp = parse_bill_period(data)
-        assert bp.start == date(2026, 4, 20)
-        assert bp.end == date(2026, 5, 19)
+        assert bp.start == date(2024, 1, 1)
+        assert bp.end == date(2024, 1, 31)
 
     def test_cost_label(self) -> None:
         data = load_fixture("bill_period_response.json")
         bp = parse_bill_period(data)
-        assert bp.cost_label == "$87.38"
+        assert bp.cost_label == "$45.00"
 
     def test_projection_label_from_root(self) -> None:
         """projection_label comes from root additionalLabelValue."""
         data = load_fixture("bill_period_response.json")
         bp = parse_bill_period(data)
-        assert bp.projection_label == "$139.15"
+        assert bp.projection_label == "$90.00"
 
     def test_consumption_kwh_parsed_from_quantity_string(self) -> None:
         data = load_fixture("bill_period_response.json")
         bp = parse_bill_period(data)
-        assert bp.consumption_kwh == pytest.approx(259.0)
+        assert bp.consumption_kwh == pytest.approx(200.0)
 
     def test_missing_bill_period_returns_today_dates(self) -> None:
         """Empty response should not crash; dates fall back to today."""

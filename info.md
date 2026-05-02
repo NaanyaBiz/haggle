@@ -1,5 +1,12 @@
 # Haggle
 
+**Unofficial community integration.** Not affiliated with, endorsed by, or
+supported by AGL Energy Limited. The API contract used by this integration is
+not publicly documented and may change at any time.
+
+**Australia only.** Requires an AGL Energy electricity account with a smart
+meter (most Australian metropolitan installations).
+
 Pulls smart-meter usage from AGL Australia and feeds it into the Home
 Assistant Energy dashboard using AGL's authenticated mobile API.
 
@@ -22,6 +29,7 @@ recently-used electricity may not appear immediately.
 - **Consumption** (`sensor.agl_consumption_*`) — cumulative kWh,
   fits the Energy dashboard *Grid consumption* slot.
 - **Consumption this period** — kWh for the current bill period.
+- **Consumption cost** — AUD cost for the current bill period.
 - **Bill projection** — AGL's estimated bill for the period.
 - **Unit rate** — your current c/kWh tariff.
 - **Supply charge** — daily supply charge in AUD.

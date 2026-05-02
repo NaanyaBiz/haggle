@@ -1,4 +1,4 @@
-"""Tests for AglAuth and AglClient using real captured API responses."""
+"""Tests for AglAuth and AglClient."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from custom_components.haggle.agl.client import (
 from custom_components.haggle.agl.models import Contract, IntervalReading, PlanRates
 
 # ---------------------------------------------------------------------------
-# Captured response fixtures (real AGL API responses from mitmproxy session)
+# Synthetic response fixtures (same shape as live AGL API responses)
 # ---------------------------------------------------------------------------
 
 _OVERVIEW_RESPONSE = {
@@ -30,7 +30,7 @@ _OVERVIEW_RESPONSE = {
                     "type": "electricityContract",
                     "status": "active",
                     "meterType": "smart",
-                    "additionalLabelValue": "$139.15",
+                    "additionalLabelValue": "$90.00",
                 }
             ],
             "address": "1 Sample Street SUBURB QLD 4000",
@@ -40,36 +40,35 @@ _OVERVIEW_RESPONSE = {
     ]
 }
 
-# Trimmed from 1777539820-48af52fb.json (real 30-min intervals for 2026-04-28)
 _HOURLY_RESPONSE = {
     "resourceType": "electricity",
     "granularity": "hourly",
     "timeZone": "Australia/Sydney",
     "sections": [
         {
-            "startDate": "2026-04-28",
+            "startDate": "2024-01-15",
             "items": [
                 {
-                    "dateTime": "2026-04-28T13:30:00Z",
+                    "dateTime": "2024-01-15T13:30:00Z",
                     "consumption": {
-                        "values": {"amount": 0.1534, "quantity": 0.1534},
-                        "amount": 0.081096,
-                        "quantity": 0.24,
+                        "values": {"amount": 0.112, "quantity": 0.112},
+                        "amount": 0.059,
+                        "quantity": 0.175,
                         "type": "normal",
                     },
                 },
                 {
-                    "dateTime": "2026-04-28T13:00:00Z",
+                    "dateTime": "2024-01-15T13:00:00Z",
                     "consumption": {
-                        "values": {"amount": 0.1629, "quantity": 0.1629},
-                        "amount": 0.086164,
-                        "quantity": 0.255,
+                        "values": {"amount": 0.119, "quantity": 0.119},
+                        "amount": 0.063,
+                        "quantity": 0.186,
                         "type": "normal",
                     },
                 },
                 {
                     # type=none should be filtered out
-                    "dateTime": "2026-04-28T14:00:00Z",
+                    "dateTime": "2024-01-15T14:00:00Z",
                     "consumption": {
                         "values": {"amount": 0.0, "quantity": 0.0},
                         "amount": 0.0,
@@ -266,7 +265,7 @@ class TestAglClient:
             return_value="tok",
         ):
             readings = await client.async_get_usage_hourly(
-                "9999999999", date(2026, 4, 28)
+                "9999999999", date(2024, 1, 15)
             )
 
         # type=none slot should be filtered out → 2 readings
@@ -274,8 +273,8 @@ class TestAglClient:
         assert all(isinstance(r, IntervalReading) for r in readings)
         # Values are from consumption.values.quantity (not consumption.quantity)
         kwhs = {r.kwh for r in readings}
-        assert 0.1534 in kwhs
-        assert 0.1629 in kwhs
+        assert 0.112 in kwhs
+        assert 0.119 in kwhs
         # Confirm dateTime is UTC
         assert all(r.dt.tzinfo == UTC for r in readings)
 

@@ -9,11 +9,11 @@ tools:
   - WebFetch
 ---
 
-You are an expert in the AGL Energy Australia mobile app API, reverse-engineered from mitmproxy captures.
+You are an expert in the AGL Energy Australia mobile app API.
 
 ## Source of truth
 
-The definitive reference is `~/tests/fixtures/AGL-API-FINDINGS.md`. Real captured responses are in `~/tests/fixtures/flows/agl-json/*.json`.
+The definitive reference is the `AGENTS.md` file in the repo root (§ AGL API — Key Facts). Anonymised response shapes are in `tests/fixtures/*.json`.
 
 ## API constants
 
@@ -65,7 +65,10 @@ GET /api/v2/plan/energy/{contractNumber}
 
 ## Test fixtures
 
-The `~/tests/fixtures/flows/agl-json/` files are real captures and should be used as pytest response fixtures. When writing tests, load the JSON files and feed them through `aioresponses` mocked routes.
+Anonymised fixtures are in `tests/fixtures/`. When writing tests, load these
+JSON files and feed them through `aioresponses` mocked routes. All fixtures use
+placeholder identifiers (`1234567890` / `9999999999`) — do not replace with
+real customer values.
 
 ## What you do NOT touch
 
