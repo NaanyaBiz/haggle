@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..const import (
     AGL_ACCEPT_FEATURES,
+    AGL_AUTH0_CLIENT,
     AGL_AUTH_HOST,
     AGL_CLIENT_DEVICE,
     AGL_CLIENT_FLAVOR,
@@ -52,9 +53,6 @@ if TYPE_CHECKING:
     import aiohttp
 
 _LOGGER = logging.getLogger(__name__)
-
-# auth0-client header value — base64-encoded SDK identity blob (Auth0.swift 2.12.0).
-_AUTH0_CLIENT = "eyJlbnYiOnsic3dpZnQiOiI2LngiLCJpT1MiOiIyNi40In0sIm5hbWUiOiJBdXRoMC5zd2lmdCIsInZlcnNpb24iOiIyLjEyLjAifQ"  # gitleaks:allow
 
 # Refresh when this many seconds remain before expiry.
 _REFRESH_MARGIN_SECONDS = 120
@@ -140,8 +138,7 @@ class AglAuth:
             if exp is not None and (exp - now) >= _REFRESH_MARGIN_SECONDS:
                 return self._token_set.access_token
 
-        await self.async_force_refresh(session)
-        return self._token_set.access_token  # type: ignore[union-attr]
+        return await self.async_force_refresh(session)
 
     async def async_force_refresh(self, session: aiohttp.ClientSession) -> str:
         """Force a token refresh. Persists the rotated refresh token.
@@ -156,7 +153,7 @@ class AglAuth:
             "Accept-Encoding": "gzip, deflate, br",
             "Client-Flavor": AGL_CLIENT_FLAVOR,
             "User-Agent": AGL_USER_AGENT,
-            "auth0-client": _AUTH0_CLIENT,
+            "auth0-client": AGL_AUTH0_CLIENT,
         }
         body = {
             "grant_type": "refresh_token",
@@ -168,17 +165,18 @@ class AglAuth:
             if resp.status == 401:
                 raise AGLAuthError("Token refresh rejected (401) — reauth required")
             if resp.status != 200:
+                # Auth0 error bodies can include diagnostic fields (mfa_token,
+                # error_description, internal trace IDs); keep them out of the
+                # exception that propagates to ConfigEntryAuthFailed → HA
+                # Persistent Notifications. Body lives in DEBUG only.
                 text = await resp.text()
-                raise AGLAuthError(
-                    f"Token refresh failed HTTP {resp.status}: {text[:200]}"
-                )
+                _LOGGER.debug("Token refresh non-200 body: %s", text[:200])
+                raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
             data: dict[str, Any] = await resp.json(content_type=None)
 
         error = data.get("error")
         if error:
-            raise AGLAuthError(
-                f"Token refresh error: {error} — {data.get('error_description', '')}"
-            )
+            raise AGLAuthError(f"Token refresh error: {error}")
 
         access_token: str = data["access_token"]
         new_refresh_token: str = data["refresh_token"]
@@ -241,28 +239,36 @@ class AglClient:
 
         async with self._session.get(url, headers=headers) as resp:
             if resp.status == 429:
-                raise AGLRateLimitError(f"Rate limited on {url}")
+                raise AGLRateLimitError(f"Rate limited (HTTP {resp.status})")
             if resp.status == 401:
                 _LOGGER.debug("Got 401 on %s; forcing token refresh", url)
             elif resp.status >= 400:
+                # URL contains contract_number (PII) and body may carry
+                # AGL-side diagnostics; keep both in DEBUG only.
                 text = await resp.text()
-                raise AGLError(f"HTTP {resp.status} on {url}: {text[:200]}")
+                _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
+                raise AGLError(f"HTTP {resp.status} fetching AGL data")
             else:
                 return await resp.json(content_type=None)
 
         # Only reached on 401 — force refresh and retry once.
-        await self._auth.async_force_refresh(self._session)
-        token = self._auth._token_set.access_token  # type: ignore[union-attr]
+        token = await self._auth.async_force_refresh(self._session)
         headers = {**self._default_headers, "Authorization": f"Bearer {token}"}
 
         async with self._session.get(url, headers=headers) as resp2:
             if resp2.status == 401:
-                raise AGLAuthError(f"Still 401 after token refresh on {url}")
+                raise AGLAuthError("Still 401 after token refresh")
             if resp2.status == 429:
-                raise AGLRateLimitError(f"Rate limited on {url}")
+                raise AGLRateLimitError(f"Rate limited (HTTP {resp2.status})")
             if resp2.status >= 400:
                 text = await resp2.text()
-                raise AGLError(f"HTTP {resp2.status} on {url}: {text[:200]}")
+                _LOGGER.debug(
+                    "HTTP %s on %s body (post-refresh): %s",
+                    resp2.status,
+                    url,
+                    text[:200],
+                )
+                raise AGLError(f"HTTP {resp2.status} fetching AGL data")
             return await resp2.json(content_type=None)
 
     # --- Discovery ---

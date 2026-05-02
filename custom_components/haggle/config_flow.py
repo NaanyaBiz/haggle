@@ -161,8 +161,11 @@ async def _fetch_contracts(access_token: str) -> list[Contract]:
         session.get(url, headers=headers) as resp,
     ):
         if resp.status >= 400:
+            # Body kept out of the exception so it doesn't surface in
+            # ConfigEntryAuthFailed → HA Persistent Notifications.
             text = await resp.text()
-            raise AGLError(f"HTTP {resp.status} on {url}: {text[:200]}")
+            _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
+            raise AGLError(f"HTTP {resp.status} fetching AGL overview")
         data = await resp.json(content_type=None)
     return parse_overview(data)
 
@@ -323,13 +326,15 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         account_number: str,
         title: str | None = None,
     ) -> ConfigFlowResult:
-        unique_id = (
-            f"{account_number}_{contract_number}"
-            if account_number and contract_number
-            else self._refresh_token[:16]
-            if self._refresh_token
-            else "unknown"
-        )
+        # Fall back to a SHA-256 hash of the refresh token (one-way) so the
+        # entity registry — written as plaintext JSON — never sees raw token
+        # material. The token itself stays in entry.data which HAOS encrypts.
+        if account_number and contract_number:
+            unique_id = f"{account_number}_{contract_number}"
+        elif self._refresh_token:
+            unique_id = hashlib.sha256(self._refresh_token.encode()).hexdigest()[:16]
+        else:
+            unique_id = "unknown"
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
         _LOGGER.info(

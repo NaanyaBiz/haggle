@@ -19,6 +19,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Switch `release.yml` to `body_path:`** instead of interpolating
   `${{ steps.changelog.outputs.body }}` directly into the release body, removing
   the shell-context injection vector.
+- **Hash refresh-token before using it as a fallback `unique_id`** in the config
+  flow. The HA entity registry is plaintext JSON on disk; previously the first
+  16 chars of the live OAuth2 refresh token landed there when contracts were
+  unavailable at setup time. Now uses `sha256(refresh_token)[:16]`. (SAST-001)
+- **Use the return value of `AglAuth.async_force_refresh`** on the 401-retry
+  path in `AglClient._get` instead of reading `_auth._token_set.access_token`
+  via private-attribute access. The retry path no longer silently masks auth
+  failures. (SAST-002)
+- **Redact AGL/Auth0 response bodies from exceptions** that propagate to
+  `ConfigEntryAuthFailed` / `UpdateFailed`. Bodies and PII-bearing URLs now go
+  to `_LOGGER.debug` only — they no longer surface in HA Persistent
+  Notifications or the default `home-assistant.log`. Affects token refresh,
+  the `_get` error path, and the config-flow `_fetch_contracts` overview call.
+  (SAST-003, SAST-004)
+- **Consolidate the `auth0-client` SDK identity blob** to a single
+  `AGL_AUTH0_CLIENT` constant in `const.py`. Previously the same JSON shape was
+  base64-encoded twice with different field ordering — once in `const.py`,
+  once in `agl/client.py` — risking inconsistent headers per call site.
+  (SAST-006)
+- **Allowlist plan-rate fields** in `parse_plan` instead of forwarding the
+  raw API rate dict via `dict(rate)`. Only `kind`, `type`, `title`, `price`
+  propagate into `PlanRates.unit_rates` — closes the open-schema vector that
+  a MITM AGL response could exploit to inject keys into coordinator state.
+  (SAST-007)
+- **Bound numeric API values** with a shared `_safe_float()` helper in
+  `agl/parser.py` and `coordinator.py`. Non-finite (`inf`, `nan`) and negative
+  values clamp to `0.0` with a warning so adversarial AGL responses can no
+  longer poison the recorder via `async_add_external_statistics`. (SAST-008)
+- **Trigger reauth on persist failure**: if `async_update_entry` raises while
+  saving a rotated refresh token, `__init__.py::_persist_refresh_token` now
+  calls `entry.async_start_reauth(hass)` immediately instead of silently
+  continuing in split-brain state. (SAST-009)
 
 ---
 
