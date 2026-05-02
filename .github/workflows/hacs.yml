@@ -6,16 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+permissions: read-all
+
 jobs:
   validate:
     name: HACS validation
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      # hacsjson and integration_manifest checks will fail until the repo is
-      # registered in the HACS store (requires public repo + hacs/default PR).
-      # brands, topics, archived, issues, description, information pass now.
-      - uses: hacs/action@main
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: hacs/action@dcb30e72781db3f207d5236b861172774ab0b485 # main@2026-01-26
         with:
           category: integration
-        continue-on-error: true

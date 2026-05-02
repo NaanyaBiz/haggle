@@ -272,6 +272,10 @@ The HA Energy dashboard requires:
   consumption picker filters by `unit_class="energy"`. `None` silently hides the statistic.
 - **No committing directly to `main`** — the `guard-main-branch` hook blocks it.
   Use a feature branch + PR.
+- **No mutable GitHub Action refs** — pin every `uses: owner/action@…` to a
+  40-char commit SHA with a `# vX.Y` comment. `@main`, `@master`, and floating
+  major tags (`@v6`) are all branch-poisonable supply-chain vectors. Dependabot
+  (`github-actions` ecosystem) keeps the SHAs current.
 
 ---
 
