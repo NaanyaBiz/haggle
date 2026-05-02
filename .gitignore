@@ -39,6 +39,8 @@ Thumbs.db
 # Claude Code (per-machine settings stay local)
 .claude/settings.local.json
 .claude/.credentials.json
+# Local-only devops notes and private context (never reaches public repo)
+.claude/local/
 
 # Home Assistant dev artefacts
 .HA_VERSION
