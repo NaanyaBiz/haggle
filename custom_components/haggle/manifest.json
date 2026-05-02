@@ -11,8 +11,6 @@
   "issue_tracker": "https://github.com/NaanyaBiz/haggle/issues",
   "loggers": ["custom_components.haggle"],
   "quality_scale": "bronze",
-  "requirements": [
-    "beautifulsoup4>=4.12"
-  ],
+  "requirements": [],
   "version": "0.1.0"
 }

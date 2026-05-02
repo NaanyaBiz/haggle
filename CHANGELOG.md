@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **`beautifulsoup4` runtime dependency**. Zero call sites in
+  `custom_components/`; was a dead dep that every HACS installer downloaded for
+  no reason. Removed from `manifest.json` and `pyproject.toml` (also drops
+  `types-beautifulsoup4` from dev deps and the `soupsieve` / typed-stub
+  transitives from `uv.lock`). Resolves SCA noise plus HACS-posture B1/B2
+  from `security/2026-05-02T04-43Z/`.
+
 ### Security
+- **Note on `aiohttp` CVE coverage**: the 9 CVEs against `aiohttp==3.13.3`
+  flagged in the security review (SCA-M01, SCA-M04, SCA-L01..L06) are fixed in
+  `aiohttp>=3.13.4`, which Home Assistant bundles starting with `2026.4.0`. HA
+  `2026.4.0` also bumps the Python floor to `3.14.2`, so a hard `aiohttp>=3.13.4`
+  pin would force a Python platform bump for every HACS user. Deferred to a
+  v0.2.x release that promotes the platform floor deliberately. Users on
+  HA `2026.4.0+` already receive the patched runtime.
 - **Pin all GitHub Actions to commit SHAs** across `ci.yml`, `hacs.yml`,
   `hassfest.yml`, `release.yml`. Closes the supply-chain branch-poisoning vector
   on `hacs/action@main` and `home-assistant/actions/hassfest@master`.

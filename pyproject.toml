@@ -23,9 +23,12 @@ classifiers = [
 dependencies = [
     # Runtime deps mirror what's in custom_components/haggle/manifest.json
     # so editor tooling resolves imports. HA installs from manifest at runtime.
+    # NOTE: aiohttp tracks whatever Home Assistant bundles. HA<2026.4 ships
+    # aiohttp==3.13.3 (9 CVEs); HA>=2026.4 ships >=3.13.5 (CVE-fixed) but
+    # also bumps the Python floor to 3.14.2. Bumping the floor is a separate
+    # platform decision tracked under v0.2.x.
     "homeassistant>=2026.2.3",
     "aiohttp>=3.10",
-    "beautifulsoup4>=4.14.3",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +39,6 @@ dev = [
     "pytest-homeassistant-custom-component>=0.13.316,<0.13.317",
     "ruff>=0.7",
     "mypy>=1.13",
-    "types-beautifulsoup4",
     "pre-commit>=4.0",
 ]
 

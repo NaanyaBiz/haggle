@@ -420,19 +420,6 @@ wheels = [
 ]
 
 [[package]]
-name = "beautifulsoup4"
-version = "4.14.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "soupsieve" },
-    { name = "typing-extensions" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/c3/b0/1c6a16426d389813b48d95e26898aff79abbde42ad353958ad95cc8c9b21/beautifulsoup4-4.14.3.tar.gz", hash = "sha256:6292b1c5186d356bba669ef9f7f051757099565ad9ada5dd630bd9de5fa7fb86", size = 627737, upload-time = "2025-11-30T15:08:26.084Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/1a/39/47f9197bdd44df24d67ac8893641e16f386c984a0619ef2ee4c51fbbc019/beautifulsoup4-4.14.3-py3-none-any.whl", hash = "sha256:0918bfe44902e6ad8d57732ba310582e98da931428d231a5ecb9e7c703a735bb", size = 107721, upload-time = "2025-11-30T15:08:24.087Z" },
-]
-
-[[package]]
 name = "bleak"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1168,7 +1155,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
-    { name = "beautifulsoup4" },
     { name = "homeassistant" },
 ]
 
@@ -1181,13 +1167,11 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-homeassistant-custom-component" },
     { name = "ruff" },
-    { name = "types-beautifulsoup4" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10" },
-    { name = "beautifulsoup4", specifier = ">=4.14.3" },
     { name = "homeassistant", specifier = ">=2026.2.3" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },
@@ -1196,7 +1180,6 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "pytest-homeassistant-custom-component", marker = "extra == 'dev'", specifier = ">=0.13.316,<0.13.317" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.7" },
-    { name = "types-beautifulsoup4", marker = "extra == 'dev'" },
 ]
 provides-extras = ["dev"]
 
@@ -2741,15 +2724,6 @@ wheels = [
 ]
 
 [[package]]
-name = "soupsieve"
-version = "2.8.3"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/7b/ae/2d9c981590ed9999a0d91755b47fc74f74de286b0f5cee14c9269041e6c4/soupsieve-2.8.3.tar.gz", hash = "sha256:3267f1eeea4251fb42728b6dfb746edc9acaffc4a45b27e19450b676586e8349", size = 118627, upload-time = "2026-01-20T04:27:02.457Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/46/2c/1462b1d0a634697ae9e55b3cecdcb64788e8b7d63f54d923fcd0bb140aed/soupsieve-2.8.3-py3-none-any.whl", hash = "sha256:ed64f2ba4eebeab06cc4962affce381647455978ffc1e36bb79a545b91f45a95", size = 37016, upload-time = "2026-01-20T04:27:01.012Z" },
-]
-
-[[package]]
 name = "sqlalchemy"
 version = "2.0.41"
 source = { registry = "https://pypi.org/simple" }
@@ -2841,39 +2815,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/a8/4b/29b4ef32e036bb34e4ab51796dd745cdba7ed47ad142a9f4a1eb8e0c744d/tqdm-4.67.1.tar.gz", hash = "sha256:f8aef9c52c08c13a65f30ea34f4e5aac3fd1a34959879d7e59e63027286627f2", size = 169737, upload-time = "2024-11-24T20:12:22.481Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d0/30/dc54f88dd4a2b5dc8a0279bdd7270e735851848b762aeb1c1184ed1f6b14/tqdm-4.67.1-py3-none-any.whl", hash = "sha256:26445eca388f82e72884e0d580d5464cd801a3ea01e63e5601bdff9ba6a48de2", size = 78540, upload-time = "2024-11-24T20:12:19.698Z" },
-]
-
-[[package]]
-name = "types-beautifulsoup4"
-version = "4.12.0.20250516"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "types-html5lib" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/d1/32b410f6d65eda94d3dfb0b3d0ca151f12cb1dc4cef731dcf7cbfd8716ff/types_beautifulsoup4-4.12.0.20250516.tar.gz", hash = "sha256:aa19dd73b33b70d6296adf92da8ab8a0c945c507e6fb7d5db553415cc77b417e", size = 16628, upload-time = "2025-05-16T03:09:09.93Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7c/79/d84de200a80085b32f12c5820d4fd0addcbe7ba6dce8c1c9d8605e833c8e/types_beautifulsoup4-4.12.0.20250516-py3-none-any.whl", hash = "sha256:5923399d4a1ba9cc8f0096fe334cc732e130269541d66261bb42ab039c0376ee", size = 16879, upload-time = "2025-05-16T03:09:09.051Z" },
-]
-
-[[package]]
-name = "types-html5lib"
-version = "1.1.11.20260408"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "types-webencodings" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/16/59/914d00107c770e49fa57d4c4572e0371bbce14321385fd2ea3e06691b62d/types_html5lib-1.1.11.20260408.tar.gz", hash = "sha256:8a281aa367bc77dbc758358cd9bef79530f2d154eeed9b33705bb035a0dab9e4", size = 18316, upload-time = "2026-04-08T04:35:49.581Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/61/19/12d95e98e42e120522665ec6850b38df8d2c1cca94e21c4d7f8578acb64e/types_html5lib-1.1.11.20260408-py3-none-any.whl", hash = "sha256:d18dc4b90d6d6745585790b920db13ede43e1f8ff6ee1ac0ceb0dec4223a06fa", size = 24313, upload-time = "2026-04-08T04:35:48.679Z" },
-]
-
-[[package]]
-name = "types-webencodings"
-version = "0.5.0.20260408"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/1c/d2/21567fac142315580ce3ee37d08a4e8819921dae833bbcd27b9f8b373799/types_webencodings-0.5.0.20260408.tar.gz", hash = "sha256:28c596619f367e43eee393d85f63e8d2fdb6874c654a8d441c37f8afe29c6d0d", size = 7504, upload-time = "2026-04-08T04:28:51.735Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/8f/e4/f13be8f6d9a561166f7d963012d0ccc833e13aee3044c4f1a8fb1fee462a/types_webencodings-0.5.0.20260408-py3-none-any.whl", hash = "sha256:19a2afe5c22d9b1e880b49ff823c7b531f473a390fe47ac903c0bdb5cd677dd9", size = 8717, upload-time = "2026-04-08T04:28:50.943Z" },
 ]
 
 [[package]]
