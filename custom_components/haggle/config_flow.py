@@ -25,17 +25,20 @@ import base64
 import hashlib
 import logging
 import secrets
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
-from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .agl.client import AGLAuthError, AGLError, Contract
 from .agl.parser import parse_overview
-from .agl.pinning import get_peer_spki_hash
+from .agl.pinning import (
+    AGL_AUTH_HOST_NAME,
+    AGL_BFF_HOST_NAME,
+    HagglePinningConnector,
+)
 from .const import (
     AGL_API_HOST,
     AGL_AUTH0_CLIENT,
@@ -53,9 +56,6 @@ from .const import (
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
-
-if TYPE_CHECKING:
-    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,15 +112,16 @@ def _extract_code(
     return (code or None), None
 
 
-async def _exchange_code(
-    hass: HomeAssistant, code: str, verifier: str
-) -> tuple[str, str, str]:
-    """POST /oauth/token via HA's shared aiohttp client.
+async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
+    """POST /oauth/token and return (access_token, refresh_token, auth_spki).
 
-    Returns (access_token, refresh_token, auth_spki). `auth_spki` is the
-    SHA-256 hex of the leaf-cert SPKI for secure.agl.com.au, captured from
-    the live TLS connection. Empty string if introspection fails (degrades
-    to no-pin, never blocks the install).
+    `auth_spki` is the SHA-256 hex of the leaf-cert SPKI for
+    secure.agl.com.au, captured by `HagglePinningConnector` during the
+    TLS handshake. Empty string if capture fails (degrades to no-pin).
+
+    Uses a short-lived `aiohttp.ClientSession` with our own pinning
+    connector — HA's shared session uses HA's TCPConnector which we cannot
+    subclass, so we own this one and close it on exit.
 
     Raises AGLAuthError on 4xx auth errors, AGLError on other failures.
     """
@@ -139,17 +140,15 @@ async def _exchange_code(
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
     }
-    auth_spki = ""
-    session = async_get_clientsession(hass)
-    async with session.post(url, data=payload, headers=headers) as resp:
+    connector = HagglePinningConnector()
+    async with (
+        aiohttp.ClientSession(connector=connector) as session,
+        session.post(url, data=payload, headers=headers) as resp,
+    ):
         if resp.status in (400, 401, 403):
             raise AGLAuthError(f"Token exchange failed: HTTP {resp.status}")
         if not resp.ok:
             raise AGLError(f"Token exchange error: HTTP {resp.status}")
-        try:
-            auth_spki = get_peer_spki_hash(resp) or ""
-        except Exception:
-            _LOGGER.debug("SPKI capture failed during token exchange", exc_info=True)
         body: dict[str, Any] = await resp.json()
 
     access_token: str = body.get("access_token", "")
@@ -157,16 +156,15 @@ async def _exchange_code(
     if not access_token or not refresh_token:
         raise AGLAuthError("Token response missing access_token or refresh_token")
 
+    auth_spki = connector.observed.get(AGL_AUTH_HOST_NAME, "")
     return access_token, refresh_token, auth_spki
 
 
-async def _fetch_contracts(
-    hass: HomeAssistant, access_token: str
-) -> tuple[list[Contract], str]:
-    """Fetch /api/v3/overview via HA's shared aiohttp client.
+async def _fetch_contracts(access_token: str) -> tuple[list[Contract], str]:
+    """Fetch /api/v3/overview and return (contracts, bff_spki).
 
-    Returns (contracts, bff_spki). `bff_spki` is the SHA-256 hex of the
-    leaf-cert SPKI for api.platform.agl.com.au. Empty string if capture fails.
+    `bff_spki` is the SHA-256 hex of the leaf-cert SPKI for
+    api.platform.agl.com.au. Empty string if capture fails.
 
     Uses aiohttp directly rather than AglAuth/AglClient: AglAuth always calls
     async_force_refresh on first use (token_set is None on construction), which
@@ -180,20 +178,20 @@ async def _fetch_contracts(
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br",
     }
-    bff_spki = ""
-    session = async_get_clientsession(hass)
-    async with session.get(url, headers=headers) as resp:
+    connector = HagglePinningConnector()
+    async with (
+        aiohttp.ClientSession(connector=connector) as session,
+        session.get(url, headers=headers) as resp,
+    ):
         if resp.status >= 400:
             # Body kept out of the exception so it doesn't surface in
             # ConfigEntryAuthFailed → HA Persistent Notifications.
             text = await resp.text()
             _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
             raise AGLError(f"HTTP {resp.status} fetching AGL overview")
-        try:
-            bff_spki = get_peer_spki_hash(resp) or ""
-        except Exception:
-            _LOGGER.debug("SPKI capture failed during overview fetch", exc_info=True)
         data = await resp.json(content_type=None)
+
+    bff_spki = connector.observed.get(AGL_BFF_HOST_NAME, "")
     return parse_overview(data), bff_spki
 
 
@@ -261,7 +259,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         try:
             access_token, refresh_token, auth_spki = await _exchange_code(
-                self.hass, code, self._pkce_verifier
+                code, self._pkce_verifier
             )
         except AGLAuthError:
             return self.async_show_form(
@@ -302,7 +300,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._contracts:
             try:
                 self._contracts, self._bff_spki = await _fetch_contracts(
-                    self.hass, self._access_token
+                    self._access_token
                 )
             except Exception:
                 errors["base"] = "cannot_connect"

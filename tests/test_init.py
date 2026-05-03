@@ -48,7 +48,7 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.haggle.async_create_clientsession",
+            "custom_components.haggle.aiohttp.ClientSession",
             return_value=mock_session,
         ),
         patch(
@@ -74,9 +74,9 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
-        # async_create_clientsession registers an HA-managed session; we no
-        # longer call session.close() ourselves on unload.
-        mock_session.close.assert_not_called()
+        # The integration owns its session (HagglePinningConnector cannot run
+        # under HA's shared connector), so unload must close it.
+        mock_session.close.assert_called_once()
 
 
 async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:
@@ -99,7 +99,7 @@ async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.haggle.async_create_clientsession",
+            "custom_components.haggle.aiohttp.ClientSession",
             return_value=mock_session,
         ),
         patch(
@@ -164,7 +164,7 @@ async def test_pin_mismatch_emits_persistent_notification(hass: HomeAssistant) -
 
     with (
         patch(
-            "custom_components.haggle.async_create_clientsession",
+            "custom_components.haggle.aiohttp.ClientSession",
             return_value=mock_session,
         ),
         patch(
@@ -185,7 +185,7 @@ async def test_pin_mismatch_emits_persistent_notification(hass: HomeAssistant) -
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        pin_check = entry.runtime_data.auth._pin_check
+        pin_check = entry.runtime_data.connector.on_new_connection
         assert pin_check is not None
 
         # Match: no notification.
@@ -222,7 +222,7 @@ async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.haggle.async_create_clientsession",
+            "custom_components.haggle.aiohttp.ClientSession",
             return_value=mock_session,
         ),
         patch(
@@ -243,7 +243,7 @@ async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-        pin_check = entry.runtime_data.auth._pin_check
+        pin_check = entry.runtime_data.connector.on_new_connection
         assert pin_check is not None
         with patch(
             "custom_components.haggle.persistent_notification.async_create"
