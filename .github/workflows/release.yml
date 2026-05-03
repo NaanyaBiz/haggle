@@ -11,6 +11,10 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      # Required for actions/attest-build-provenance to mint Sigstore-rooted
+      # attestations against the integration's source tree.
+      id-token: write
+      attestations: write
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -26,6 +30,15 @@ jobs:
           VERSION="${{ steps.version.outputs.version }}"
           # Extract the section between ## [VERSION] and the next ## [
           awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md > release_notes.txt
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          # Attest the published source tree under custom_components/haggle/.
+          # HACS installs from GitHub Release tarballs; the attestation lets
+          # downstream consumers verify the tag's content via `gh attestation`.
+          subject-path: |
+            custom_components/haggle/**/*
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
