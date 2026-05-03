@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **TOFU SPKI pinning was silently broken on every install.** The first
+  attempt (#45) extracted the SPKI from `resp.connection.transport` after
+  the response context entered, but aiohttp had already released the
+  Connection back to its pool — `resp.connection` was `None` and the
+  capture silently degraded to no-pin (verified empty in live `entry.data`
+  on 2026-05-03). Replaced with a `HagglePinningConnector` (`TCPConnector`
+  subclass) that overrides `_wrap_create_connection` to capture the SPKI
+  during the TLS handshake itself, before any response object exists.
+  The connector exposes `observed[host]` and an optional
+  `on_new_connection(host, spki)` callback for warn-on-mismatch validation.
+  New regression tests stand up a real local TLS server with a known cert
+  and assert the connector populates `observed` correctly — these would
+  have caught the lifecycle bug. The integration owns its own
+  `aiohttp.ClientSession(connector=HagglePinningConnector)` rather than
+  HA's shared session (HA's shared connector cannot be subclassed); the
+  session is closed in `async_unload_entry`.
+
 ### Added
 - **Trust-On-First-Use TLS certificate pinning** for `secure.agl.com.au` and
   `api.platform.agl.com.au`. The SHA-256 SPKI hash of each AGL host's leaf

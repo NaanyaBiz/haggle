@@ -3,6 +3,13 @@
 Fetches smart-meter data from the AGL Energy API and feeds it into the
 HA Energy dashboard. See AGENTS.md for design notes (Auth0 refresh-token
 rotation, daily polling, import_statistics for historical data).
+
+The integration owns its own `aiohttp.ClientSession` (rather than using
+HA's shared `async_get_clientsession`) because the TOFU TLS pinning needs
+a custom `TCPConnector` subclass — `HagglePinningConnector` — that captures
+the leaf-cert SPKI for every new connection. HA's shared session uses HA's
+own connector which we cannot subclass. The session is closed in
+`async_unload_entry`.
 """
 
 from __future__ import annotations
@@ -11,12 +18,12 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import aiohttp
 from homeassistant.components import persistent_notification
 from homeassistant.const import Platform
-from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .agl.client import AglAuth, AglClient
-from .agl.pinning import AGL_AUTH_HOST_NAME
+from .agl.pinning import AGL_AUTH_HOST_NAME, HagglePinningConnector
 from .const import (
     CONF_CONTRACT_NUMBER,
     CONF_PINNED_SPKI_AUTH,
@@ -46,6 +53,8 @@ class HaggleRuntimeData:
     auth: AglAuth
     client: AglClient
     coordinator: HaggleCoordinator
+    session: aiohttp.ClientSession
+    connector: HagglePinningConnector
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
@@ -81,11 +90,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
             )
             entry.async_start_reauth(hass)
 
-    # Pin-check is fire-and-forget per request: compare observed SPKI against
-    # the TOFU value captured at config-flow time. Mismatch surfaces as a HA
-    # persistent notification + WARNING log, but does NOT block the request —
-    # legitimate AGL cert rotations should not brick HACS users. Re-pin via
-    # the standard Reconfigure flow.
+    # Pin-check fires synchronously when HagglePinningConnector creates a new
+    # connection (after the TLS handshake completes). Mismatch surfaces as a
+    # HA persistent notification + WARNING log, but does NOT raise — legitimate
+    # AGL cert rotations should not brick HACS users. Re-pin via Reconfigure.
     def _check_pin(host: str, observed: str) -> None:
         expected = pinned_auth if host == AGL_AUTH_HOST_NAME else pinned_bff
         if not expected or observed == expected:
@@ -108,12 +116,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
             notification_id=f"haggle_pin_mismatch_{host}",
         )
 
-    # async_create_clientsession returns an HA-managed aiohttp session that
-    # inherits HA's SSL trust bundle and TCP connector pool, and is
-    # auto-closed when the entry unloads — no manual session.close() needed.
-    session = async_create_clientsession(hass)
-    auth = AglAuth(refresh_token, _persist_refresh_token, pin_check=_check_pin)
-    client = AglClient(auth, session, pin_check=_check_pin)
+    connector = HagglePinningConnector(on_new_connection=_check_pin)
+    session = aiohttp.ClientSession(connector=connector)
+    auth = AglAuth(refresh_token, _persist_refresh_token)
+    client = AglClient(auth, session)
     coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
     await coordinator.async_config_entry_first_refresh()
@@ -122,6 +128,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
         auth=auth,
         client=client,
         coordinator=coordinator,
+        session=session,
+        connector=connector,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -129,5 +137,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
-    """Unload a config entry."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    """Unload a config entry — close the owned aiohttp session on the way out."""
+    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        await entry.runtime_data.session.close()
+    return unload_ok

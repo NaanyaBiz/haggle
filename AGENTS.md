@@ -236,22 +236,37 @@ is a `c/day` entry with `title` containing "Supply charge".
 ### TLS pinning (Trust-On-First-Use)
 
 Both `secure.agl.com.au` and `api.platform.agl.com.au` are pinned by SPKI hash.
-The hashes are captured during the initial PKCE config flow (in
-`config_flow._exchange_code` and `config_flow._fetch_contracts`) by extracting
-the leaf cert from the live aiohttp response via
-`agl/pinning.py::get_peer_spki_hash` and persisted to `entry.data` under
-`CONF_PINNED_SPKI_AUTH` / `CONF_PINNED_SPKI_BFF`.
+Capture happens inside `agl/pinning.py::HagglePinningConnector` — a
+`TCPConnector` subclass that overrides `_wrap_create_connection`. After every
+new TLS handshake the connector extracts the leaf-cert SPKI from
+`transport.get_extra_info("ssl_object")` and stores it in `connector.observed[host]`.
+An optional `on_new_connection(host, spki)` callback fires synchronously so
+callers can validate against a stored TOFU pin.
 
-Every subsequent request observes the live SPKI and compares against the
-stored value. **Mismatch is warn-only** — log a WARNING + raise an HA
-persistent notification (`haggle_pin_mismatch_<host>`) — but the request still
-succeeds. This keeps a legitimate AGL cert rotation from bricking HACS users;
-the documented remediation is to re-run Reconfigure on the integration card,
-which re-captures both hashes.
+The persisted hashes live in `entry.data` under `CONF_PINNED_SPKI_AUTH` and
+`CONF_PINNED_SPKI_BFF`. They are read in `config_flow._exchange_code` /
+`_fetch_contracts` (each uses a one-shot `aiohttp.ClientSession(connector=…)`
+and reads `connector.observed[host]` after the call) and validated at runtime
+by the long-lived session in `__init__.py::async_setup_entry`.
+
+**Mismatch is warn-only** — log a WARNING + emit an HA persistent notification
+(`haggle_pin_mismatch_<host>`) — but the request still succeeds. This keeps a
+legitimate AGL cert rotation from bricking HACS users; the documented
+remediation is to re-run Reconfigure on the integration card, which re-captures
+both hashes.
 
 Empty stored values (`""`) mean "no pin yet" — the validator is a no-op.
 Older entries created before this feature land in this state and silently
 upgrade on next Reconfigure.
+
+**Why a connector subclass and not `resp.connection`?** aiohttp releases the
+`Connection` back to its pool the moment a response is constructed, so
+`resp.connection` (and `resp._protocol.transport`) are already `None` by the
+time `async with session.get(...) as resp:` enters. The first cut of TOFU
+pinning shipped with that bug — every live install was running with empty
+SPKI strings (verified 2026-05-03) — until the connector subclass redesign.
+Tests must use a real local TLS server (see `tests/test_pinning.py`); mocking
+`resp.connection` will not catch this lifecycle issue.
 
 ---
 
