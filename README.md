@@ -1,5 +1,7 @@
 # haggle
 
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=NaanyaBiz&repository=haggle&category=integration)
+
 Home Assistant custom integration that pulls smart-meter usage from
 [AGL Australia](https://www.agl.com.au/) and feeds it into the HA Energy
 dashboard.
@@ -25,7 +27,11 @@ energy sensors (`device_class=energy`, `state_class=total_increasing`).
 
 ## Install
 
-> Not yet HACS-listed. Install via HACS *Custom repository*.
+> Not yet HACS-listed (PR queued). Install via HACS *Custom repository*.
+
+The fastest path is the badge above — click it on a machine with [My Home
+Assistant](https://my.home-assistant.io/) configured and HACS will open the
+"add repository" dialog pre-filled. Otherwise:
 
 1. HACS → *Integrations* → *Custom repositories* → add this repo URL → category **Integration**.
 2. Install **Haggle**, then restart Home Assistant.
