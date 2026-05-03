@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Platform floor bumped to Python 3.14.2 + Home Assistant 2026.4.4.**
+  HA 2026.4 ships `aiohttp==3.13.5` (closes 9 CVEs in SCA-M01..M04 +
+  SCA-L01..L06), `cryptography>=46.0.7` (closes SCA-M05 + SCA-L08), and
+  `orjson>=3.11.7` (closes SCA-H02). HA 2026.4 itself requires Python
+  3.14.2, so the integration's `requires-python` and CI matrix follow.
+  Net effect: 13 of the 21 Dependabot alerts auto-close as `state=fixed`
+  on the next scan; the remaining 8 were already dismissed as not-used
+  on 2026-05-03. Bumps `hacs.json:homeassistant` to `2026.4.4`, so HACS
+  refuses to install on older HA. CHANGELOG previously deferred this to
+  v0.2.x; the live install verified clean on 2026-05-03 so we bring it
+  forward.
+- **`pyproject.toml`** — `requires-python>=3.14.2`, `homeassistant>=2026.4.4`,
+  `aiohttp>=3.13.4`, `pytest-homeassistant-custom-component>=0.13.325,<0.13.326`.
+  Ruff `target-version = "py314"`; mypy `python_version = "3.14"`.
+- **`.github/workflows/ci.yml`** — matrix `python-version: ["3.14"]`.
+- **Three `test_config_flow` tests** now patch `async_setup_entry` to a
+  no-op stub. pytest-HA 0.13.325 is stricter about socket use during
+  `flow.CREATE_ENTRY` teardown; previously the coordinator's first
+  refresh leaked through. Patch is harmless — the tests assert
+  flow-level state (entry data shape, PKCE secret zeroing), not setup
+  behaviour.
+
 ### Fixed
 - **`DeviceInfo` no longer claims AGL authorship.** `sensor.py` previously
   set `manufacturer="AGL Australia"` and `model="AGL Energy API"`, which

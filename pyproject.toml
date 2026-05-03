@@ -9,7 +9,7 @@ description = "AGL Australia smart meter -> Home Assistant Energy dashboard"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [{ name = "Naanya Biz", email = "davosparent@gmail.com" }]
-requires-python = ">=3.13.2"
+requires-python = ">=3.14.2"
 keywords = ["home-assistant", "hacs", "agl", "energy", "smart-meter", "australia"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -17,18 +17,17 @@ classifiers = [
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
-    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Home Automation",
 ]
 dependencies = [
     # Runtime deps mirror what's in custom_components/haggle/manifest.json
     # so editor tooling resolves imports. HA installs from manifest at runtime.
-    # NOTE: aiohttp tracks whatever Home Assistant bundles. HA<2026.4 ships
-    # aiohttp==3.13.3 (9 CVEs); HA>=2026.4 ships >=3.13.5 (CVE-fixed) but
-    # also bumps the Python floor to 3.14.2. Bumping the floor is a separate
-    # platform decision tracked under v0.2.x.
-    "homeassistant>=2026.2.3",
-    "aiohttp>=3.10",
+    # HA 2026.4.4 bundles aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6
+    # which together close the 13 CVEs that v0.1.0 inherited (SCA-M01..M05,
+    # SCA-L01..L08, SCA-H02). HA 2026.4 also requires Python 3.14.2.
+    "homeassistant>=2026.4.4",
+    "aiohttp>=3.13.4",
 ]
 
 [project.optional-dependencies]
@@ -36,7 +35,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
-    "pytest-homeassistant-custom-component>=0.13.316,<0.13.317",
+    # 0.13.325 pins homeassistant==2026.4.4 — keep test harness aligned with
+    # the runtime floor above so transitive resolution stays consistent.
+    "pytest-homeassistant-custom-component>=0.13.325,<0.13.326",
     "ruff>=0.7",
     "mypy>=1.13",
     "pre-commit>=4.0",
@@ -93,7 +94,7 @@ known-first-party = ["custom_components.haggle"]
 
 # ---------- mypy ----------
 [tool.mypy]
-python_version = "3.13"
+python_version = "3.14"
 strict = true
 warn_unreachable = true
 warn_unused_ignores = true
