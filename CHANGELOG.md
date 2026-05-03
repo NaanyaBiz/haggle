@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`SECURITY.md`** at the repo root — disclosure path
+  (`security@naanya.biz` and GitHub private security advisories), threat
+  model summary including the TOFU pinning behaviour, scope, and
+  coordinated-disclosure expectations.
+- **`CONTRIBUTING.md`** — dev loop, commit conventions, branch and PR
+  workflow, and a pointer to `AGENTS.md` for AGL-specific contribution
+  steps.
+- **`CODE_OF_CONDUCT.md`** — Contributor Covenant 2.1 with private
+  reporting via `security@naanya.biz`.
+- **`.github/CODEOWNERS`** — `@naanyabiz` owns everything; auto-routes
+  PR review requests once branch protection requires them.
+- **`.github/workflows/codeql.yml`** — Python CodeQL scan on every push
+  to `main`, every PR, and weekly on Monday. Uses the
+  `security-extended,security-and-quality` query packs.
+- **Build-provenance attestation in `release.yml`** — every tag-triggered
+  GitHub Release now ships a Sigstore-rooted attestation against the
+  `custom_components/haggle/` source tree via
+  `actions/attest-build-provenance`. Verify with `gh attestation verify`.
+- **AGENTS.md "GitHub Issues Workflow" section** documenting when to
+  open an issue vs PR, the `Closes #N` convention, and that issues are
+  the canonical place for "do this next round" items (closes #22).
+
+### Added (previous)
 - **Trust-On-First-Use TLS certificate pinning** for `secure.agl.com.au` and
   `api.platform.agl.com.au`. The SHA-256 SPKI hash of each AGL host's leaf
   certificate is captured during the initial PKCE config flow and persisted

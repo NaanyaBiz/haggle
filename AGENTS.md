@@ -83,6 +83,21 @@ scripts/
 ├── settings.json        # committed hooks config
 ├── agents/              # 8 subagent definitions (5 domain + 3 review)
 └── commands/            # 5 slash commands (new-entity, wt, release, hassfest, pr)
+
+.github/
+├── workflows/
+│   ├── ci.yml           # ruff + mypy + pytest matrix (Python 3.13)
+│   ├── hacs.yml         # HACS validation
+│   ├── hassfest.yml     # Home Assistant integration manifest validation
+│   ├── release.yml      # tag-triggered GitHub Release + build-provenance attestation
+│   └── codeql.yml       # weekly + per-PR CodeQL Python scan
+├── CODEOWNERS           # @naanyabiz owns everything
+└── dependabot.yml       # weekly pip + github-actions updates
+
+# Repo-root posture files
+SECURITY.md              # disclosure path + threat-model summary
+CONTRIBUTING.md          # dev loop + commit conventions + PR checklist
+CODE_OF_CONDUCT.md       # Contributor Covenant 2.1
 ```
 
 ---
@@ -153,6 +168,39 @@ Never commit directly to `main` from a feature worktree — always open a PR.
 ```
 
 Each worktree shares `.venv` and `.claude/settings.local.json` via symlink.
+
+---
+
+## GitHub Issues Workflow
+
+GitHub issues are the canonical place to track non-trivial work that
+isn't being done right now. This is deliberate: a CHANGELOG entry, a
+memory note, or an inline `# TODO` comment all rot quickly and are
+invisible to anyone who doesn't already know to look.
+
+**Open an issue when:**
+- A docs gap, chore, or process improvement is discovered mid-sprint and
+  is not in scope of the current PR.
+- A footgun is found that future agents need to be warned about (also
+  add it to "What NOT to Do" if it's actionable).
+- A code-review note is "do this next round" rather than "do this now".
+- A bug reproduces but you don't have time to fix it this PR.
+
+**Don't:**
+- Use `# TODO` comments in committed code for tracking work — they have
+  no due date and no owner.
+- Use CHANGELOG `## [Unreleased]` as a TODO list — it ships in the next
+  release notes; bullets there should describe done work.
+- Use memory files for tracking — memory captures durable design
+  decisions and confirmed API behaviour, not work items.
+
+**PRs close issues explicitly.** Use `Closes #N` in the PR body so
+GitHub auto-closes on merge. If a PR partially addresses an issue,
+comment on the issue rather than closing it.
+
+When mid-sprint code-review or audit work surfaces a tail of items,
+spawn issues for each one and label-and-prioritise them rather than
+trying to fold everything into the current PR.
 
 ---
 
