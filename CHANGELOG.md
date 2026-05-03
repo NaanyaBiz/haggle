@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+---
+
+## [0.2.0-beta.1] — 2026-05-04
+
+First post-flip beta. Major work since v0.1.0:
+
+- **Trust-On-First-Use TLS pinning** for both AGL hosts (closes AP-1
+  from `security/2026-05-02T04-43Z/`).
+- **14-finding SAST sweep** addressing AP-2/AP-4/AP-6 chains.
+- **Supply-chain hardening**: all GitHub Actions SHA-pinned;
+  workflow-level `permissions: read-all`; HACS validation gate
+  un-suppressed; release.yml hardened against changelog interpolation.
+- **Repo posture files**: `SECURITY.md`, `CODEOWNERS`,
+  `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, weekly CodeQL scan,
+  build-provenance attestations on release.
+- **Platform bump** to Python 3.14.2 / HA 2026.4.4 — closes the 13
+  outstanding aiohttp/cryptography/orjson CVEs at the source.
+- **Branding correction**: `DeviceInfo.manufacturer` no longer
+  claims AGL Energy authorship.
+
+This is the first version intended for HACS submission. Marked beta
+until it has soak-time on independent installs.
+
 ### Changed
 - **Platform floor bumped to Python 3.14.2 + Home Assistant 2026.4.4.**
   HA 2026.4 ships `aiohttp==3.13.5` (closes 9 CVEs in SCA-M01..M04 +

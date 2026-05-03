@@ -287,11 +287,11 @@ class TestParseBillPeriod:
 
     def test_missing_bill_period_returns_today_dates(self) -> None:
         """Empty response should not crash; dates fall back to today."""
-        from datetime import date as _date
+        from datetime import UTC, datetime as _dt
 
         bp = parse_bill_period({})
-        assert bp.start == _date.today()
-        assert bp.end == _date.today()
+        assert bp.start == _dt.now(UTC).date()
+        assert bp.end == _dt.now(UTC).date()
 
 
 # ---------------------------------------------------------------------------

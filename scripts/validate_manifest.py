@@ -21,7 +21,12 @@ def _ok(msg: str) -> None:
     print(f"[validate_manifest] OK: {msg}")
 
 
-SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# SemVer 2.0.0 with optional pre-release identifier:
+#   1.2.3
+#   1.2.3-beta.1
+#   1.2.3-rc.0
+# Build metadata (`+build.42`) is not used here.
+SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+(?:-(?:[0-9a-zA-Z-]+)(?:\.[0-9a-zA-Z-]+)*)?$")
 DOMAIN_RE = re.compile(r"^[a-z0-9_]+$")
 CODEOWNER_RE = re.compile(r"^@[A-Za-z0-9_\-]+$")
 
