@@ -76,6 +76,47 @@ async def test_user_flow_single_contract_creates_entry(hass: HomeAssistant) -> N
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_REFRESH_TOKEN] == "refresh_tok"
     assert result["data"][CONF_CONTRACT_NUMBER] == "9999999999"
+    # #26: only the refresh token should land on disk. The short-lived
+    # access_token has no business in entry.data.
+    assert "access_token" not in result["data"]
+    assert "access_token_expiry" not in result["data"]
+
+
+async def test_pkce_verifier_cleared_after_successful_exchange(
+    hass: HomeAssistant,
+) -> None:
+    """#27: PKCE verifier+challenge are zeroed once the exchange consumes them."""
+    flows = hass.config_entries.flow
+    result = await flows.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    flow_id = result["flow_id"]
+    flow = next(f for f in flows._progress.values() if f.flow_id == flow_id)
+
+    authorize_url: str = result["description_placeholders"]["authorize_url"]
+    assert flow._pkce_verifier  # populated on entry to async_step_user
+    assert flow._pkce_challenge
+
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("access_tok", "refresh_tok", "deadbeef" * 8),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=([_CONTRACT], "cafef00d" * 8),
+        ),
+    ):
+        await flows.async_configure(
+            flow_id,
+            user_input={CALLBACK_URL_FIELD: _make_callback_url(authorize_url)},
+        )
+
+    # Both PKCE secrets must be cleared once consumed.
+    assert flow._pkce_verifier == ""
+    assert flow._pkce_challenge == ""
 
 
 async def test_user_flow_bad_state_shows_error(hass: HomeAssistant) -> None:

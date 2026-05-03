@@ -19,7 +19,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   module `custom_components/haggle/agl/pinning.py`. Closes AP-1 from
   `security/2026-05-02T04-43Z/`.
 
+### Fixed
+- **`coordinator.py` uses UTC for the fetch range** instead of the OS local
+  date. AGL `dateTime` slots are UTC; `date.today()` on a non-UTC HA host
+  could fetch tomorrow's empty data or skip yesterday entirely around
+  midnight. (#31)
+- **`config_flow._exchange_code` and `_fetch_contracts` use HA's shared
+  aiohttp client** (`async_get_clientsession(hass)`) instead of creating a
+  throwaway `aiohttp.ClientSession()` per call. Inherits HA's TCP connector
+  pool. (#28)
+- **`__init__.py::async_setup_entry` uses `async_create_clientsession(hass)`**;
+  the manual `session.close()` in `async_unload_entry` is gone — HA owns the
+  session lifecycle now. The `session` field on `HaggleRuntimeData` is
+  removed since callers no longer need to reach for it. (#29)
+
 ### Removed
+- **Three never-called `AglClient` methods**: `async_get_servicehub`,
+  `async_get_usage_daily`, `async_close`. (#32)
+- **`CONF_ACCESS_TOKEN` and `CONF_ACCESS_TOKEN_EXPIRY` constants** from
+  `const.py` and the empty-string/zero values that were being written into
+  `entry.data` on creation. AGENTS.md already prohibited persisting access
+  tokens; the code was a footgun for future contributors. (#26)
 - **`beautifulsoup4` runtime dependency**. Zero call sites in
   `custom_components/`; was a dead dep that every HACS installer downloaded for
   no reason. Removed from `manifest.json` and `pyproject.toml` (also drops
@@ -28,6 +48,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from `security/2026-05-02T04-43Z/`.
 
 ### Security
+- **PKCE verifier and challenge are zeroed after a successful exchange**.
+  The flow object can persist in memory across multi-step retries; a stale
+  one-shot verifier is one less secret to leak. (#27)
 - **Note on `aiohttp` CVE coverage**: the 9 CVEs against `aiohttp==3.13.3`
   flagged in the security review (SCA-M01, SCA-M04, SCA-L01..L06) are fixed in
   `aiohttp>=3.13.4`, which Home Assistant bundles starting with `2026.4.0`. HA

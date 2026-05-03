@@ -476,3 +476,15 @@ class TestPinCheckWiring:
             contracts = await client.async_get_overview()
 
         assert len(contracts) == 1
+
+
+# ---------------------------------------------------------------------------
+# #32: stale, never-called AglClient methods are gone
+# ---------------------------------------------------------------------------
+
+
+def test_unused_methods_removed_from_client() -> None:
+    """Belt-and-braces: re-introducing these without a caller is a regression."""
+    assert not hasattr(AglClient, "async_get_servicehub")
+    assert not hasattr(AglClient, "async_get_usage_daily")
+    assert not hasattr(AglClient, "async_close")

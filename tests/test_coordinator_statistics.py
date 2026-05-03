@@ -20,8 +20,6 @@ from custom_components.haggle.agl.models import IntervalReading
 from custom_components.haggle.const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
-    CONF_ACCESS_TOKEN,
-    CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
@@ -41,8 +39,6 @@ _CONTRACT = "9999999999"
 
 _ENTRY_DATA = {
     CONF_REFRESH_TOKEN: "v1.testtoken",
-    CONF_ACCESS_TOKEN: "",
-    CONF_ACCESS_TOKEN_EXPIRY: 0,
     CONF_CONTRACT_NUMBER: _CONTRACT,
     CONF_ACCOUNT_NUMBER: "1234567890",
 }
@@ -667,3 +663,49 @@ class TestNumericGuards:
 
         assert result.consumption_period_kwh == 0.0
         assert result.consumption_period_cost_aud == 0.0
+
+
+# ---------------------------------------------------------------------------
+# #31: fetch range is computed from UTC, not OS local time
+# ---------------------------------------------------------------------------
+
+
+class TestUTCDateBoundary:
+    async def test_fetch_uses_utc_today_not_local(self, hass: HomeAssistant) -> None:
+        """When UTC and OS local date differ, the integration must follow UTC.
+
+        AGL `dateTime` slots are UTC; using `date.today()` on a non-UTC OS
+        could fetch tomorrow's empty data or skip yesterday entirely.
+        """
+        from custom_components.haggle import coordinator as coord_mod
+
+        # 14:30 UTC on 2026-05-02 → in Sydney (UTC+10) it is already
+        # 00:30 on 2026-05-03. `date.today()` (local) would say 5/3 here;
+        # `datetime.now(UTC).date()` correctly says 5/2.
+        fixed_utc = datetime(2026, 5, 2, 14, 30, 0, tzinfo=UTC)
+
+        class _FrozenDateTime(datetime):
+            @classmethod
+            def now(cls, tz=None):  # type: ignore[override]
+                return fixed_utc.astimezone(tz) if tz else fixed_utc
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.side_effect = NotImplementedError
+        mock_client.async_get_plan.side_effect = NotImplementedError
+        coord = _make_coordinator(hass, client=mock_client)
+
+        with (
+            patch.object(coord_mod, "datetime", _FrozenDateTime),
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        # The UTC `today` is 2026-05-02; backfill starts BACKFILL_DAYS earlier.
+        expected_start = date(2026, 5, 2) - timedelta(days=BACKFILL_DAYS)
+        assert mock_range.call_args[0][0] == expected_start
