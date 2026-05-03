@@ -355,7 +355,7 @@ class TestFetchRange:
         mock_client.async_get_usage_hourly_previous.return_value = []
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         bill_start = today - timedelta(days=2)
         start = today - timedelta(days=5)
         end = today - timedelta(days=3)  # all days are before bill_start
@@ -374,7 +374,7 @@ class TestFetchRange:
         mock_client.async_get_usage_hourly.return_value = []
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         bill_start = today - timedelta(days=5)
         start = today - timedelta(days=3)  # start is after bill_start
         end = today - timedelta(days=1)
@@ -393,7 +393,7 @@ class TestFetchRange:
         mock_client.async_get_usage_hourly.return_value = []
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         start = today - timedelta(days=2)
         end = today - timedelta(days=1)
 
@@ -411,7 +411,7 @@ class TestFetchRange:
         mock_client.async_get_usage_hourly.side_effect = AGLError("timeout")
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         start = today - timedelta(days=3)
         end = today - timedelta(days=1)
 
@@ -440,7 +440,7 @@ class TestFetchAndImport:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         expected_start = today - timedelta(days=BACKFILL_DAYS)
 
         with (
@@ -465,7 +465,7 @@ class TestFetchAndImport:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         # last stat was long ago → big gap; chunk should cap the end
         last_date = today - timedelta(days=BACKFILL_DAYS)
 
@@ -493,7 +493,7 @@ class TestFetchAndImport:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         last_date = today - timedelta(days=3)
         expected_start = today - timedelta(days=2)
 
@@ -517,7 +517,7 @@ class TestFetchAndImport:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         with (
@@ -541,7 +541,7 @@ class TestFetchAndImport:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         with (
@@ -571,7 +571,7 @@ class TestFetchAndImport:
         )
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         with (
@@ -611,7 +611,7 @@ class TestNumericGuards:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         with (
@@ -647,7 +647,7 @@ class TestNumericGuards:
         mock_client.async_get_plan.side_effect = NotImplementedError
         coord = _make_coordinator(hass, client=mock_client)
 
-        today = date.today()
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         with (
