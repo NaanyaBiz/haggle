@@ -202,7 +202,25 @@ until it has soak-time on independent installs.
 
 ---
 
-## [0.1.0] — 2026-05-02
+## [0.1.0] [YANKED] — 2026-05-02
+
+> **Withdrawn 2026-05-04.** The GitHub Release for `v0.1.0` was deleted from
+> https://github.com/NaanyaBiz/haggle/releases. The git tag `v0.1.0`
+> (`fb25813`) is preserved for history. Reasons:
+>
+> - Trust-On-First-Use TLS pinning was silently a no-op — `entry.data` was
+>   verified empty on the live install on 2026-05-03 — meaning installs
+>   accepted any AGL-presented certificate without comparison. Fixed in
+>   v0.2.0-beta.1.
+> - `DeviceInfo` rendered as `AGL Energy API by AGL Australia` in HA's
+>   Service info card, falsely implying official AGL authorship. Fixed in
+>   v0.2.0-beta.1.
+> - 13 unpatched CVEs against the bundled `aiohttp` / `cryptography` /
+>   `orjson` (all gated on the HA platform floor at the time). Closed by
+>   the Python 3.14.2 / HA 2026.4.4 bump in v0.2.0-beta.1.
+>
+> Anyone running v0.1.0 should reinstall from v0.2.0-beta.1 (HACS users:
+> enable "Show beta versions" or wait for v0.2.0 stable).
 
 ### Fixed
 - **`_fetch_contracts` token-type bug**: config flow was passing the short-lived
