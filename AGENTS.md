@@ -375,6 +375,13 @@ The HA Energy dashboard requires:
 - **Don't forward raw AGL response dicts** via `dict(rate)` or similar
   open-schema passthrough. Allowlist exactly the fields the coordinator
   consumes, so a MITM-crafted response can't smuggle keys into runtime state.
+- **Don't put `AGL` (or any close variant) in `DeviceInfo.manufacturer`.**
+  HA's "Service info" card renders `model by manufacturer`; this is an
+  unofficial third-party integration and labelling the device as if AGL
+  Energy authored it is misleading and a possible trademark concern. Keep
+  `manufacturer="Haggle"`. AGL's name belongs only in `model`/docs as a
+  factual description of the upstream service. Regression test:
+  `tests/test_init.py::test_device_info_does_not_claim_agl_authorship`.
 
 ---
 

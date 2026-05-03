@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **`DeviceInfo` no longer claims AGL authorship.** `sensor.py` previously
+  set `manufacturer="AGL Australia"` and `model="AGL Energy API"`, which
+  HA's "Service info" card rendered as `AGL Energy API by AGL Australia`
+  — implying the integration was an official AGL product. It is not.
+  Updated to `manufacturer="Haggle"` and
+  `model="AGL smart-meter (unofficial integration)"`. Added a regression
+  test that asserts neither field contains the AGL name. README and
+  info.md already carry the "unofficial / not affiliated with AGL"
+  disclaimer; this fix brings the in-app HA UI into line with the docs.
 - **TOFU SPKI pinning was silently broken on every install.** The first
   attempt (#45) extracted the SPKI from `resp.connection.transport` after
   the response context entered, but aiohttp had already released the

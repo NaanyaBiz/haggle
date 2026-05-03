@@ -250,3 +250,39 @@ async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
         ) as mock_notify:
             pin_check(AGL_AUTH_HOST_NAME, "anything")
         mock_notify.assert_not_called()
+
+
+def test_device_info_does_not_claim_agl_authorship() -> None:
+    """HA's Service-info card renders DeviceInfo as `model by manufacturer`.
+
+    This is an unofficial third-party integration, so neither field may
+    contain `AGL Australia` or claim AGL as the integration author. AGL
+    is the upstream service the integration *talks to*, not the publisher.
+    A future contributor restoring `manufacturer="AGL Australia"` or
+    `model="AGL Energy API"` would silently re-introduce the v0.1.0 leak.
+    """
+    from custom_components.haggle.sensor import HaggleEnergySensor
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=_ENTRY_DATA,
+        unique_id="1234567890_9999999999",
+        title="61 Sample Street SAMPLEVILLE QLD 4000",
+    )
+    coord = MagicMock()
+    desc = MagicMock()
+    desc.key = "latest_cumulative_kwh"
+    sensor = HaggleEnergySensor(coord, entry, desc)
+    info = sensor._attr_device_info
+    assert info is not None
+    manufacturer = info.get("manufacturer")
+    model = info.get("model") or ""
+
+    # Hard-line: we do not claim AGL identity.
+    assert manufacturer != "AGL Australia"
+    assert "AGL Australia" not in (manufacturer or "")
+    assert model != "AGL Energy API"
+
+    # Soft-line: the disclaimer must be visible somewhere in the device card.
+    assert manufacturer == "Haggle"
+    assert "unofficial" in model.lower()

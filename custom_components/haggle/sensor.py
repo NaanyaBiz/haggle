@@ -124,11 +124,16 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
+        # `manufacturer` and `model` here drive HA's "Service info" card.
+        # This is an unofficial third-party integration — AGL Energy did not
+        # write, sanction, or endorse it. Don't put "AGL" in `manufacturer`
+        # even with a qualifier; the surface is too easily mistaken for an
+        # official AGL product.
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
             name=entry.title,
-            manufacturer="AGL Australia",
-            model="AGL Energy API",
+            manufacturer="Haggle",
+            model="AGL smart-meter (unofficial integration)",
             entry_type=DeviceEntryType.SERVICE,
         )
 
