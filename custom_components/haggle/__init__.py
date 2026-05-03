@@ -11,9 +11,9 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import aiohttp
 from homeassistant.components import persistent_notification
 from homeassistant.const import Platform
+from homeassistant.helpers.aiohttp_client import async_create_clientsession
 
 from .agl.client import AglAuth, AglClient
 from .agl.pinning import AGL_AUTH_HOST_NAME
@@ -46,7 +46,6 @@ class HaggleRuntimeData:
     auth: AglAuth
     client: AglClient
     coordinator: HaggleCoordinator
-    session: aiohttp.ClientSession
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
@@ -109,7 +108,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
             notification_id=f"haggle_pin_mismatch_{host}",
         )
 
-    session = aiohttp.ClientSession()
+    # async_create_clientsession returns an HA-managed aiohttp session that
+    # inherits HA's SSL trust bundle and TCP connector pool, and is
+    # auto-closed when the entry unloads — no manual session.close() needed.
+    session = async_create_clientsession(hass)
     auth = AglAuth(refresh_token, _persist_refresh_token, pin_check=_check_pin)
     client = AglClient(auth, session, pin_check=_check_pin)
     coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
@@ -120,7 +122,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
         auth=auth,
         client=client,
         coordinator=coordinator,
-        session=session,
     )
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -129,6 +130,4 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
 
 async def async_unload_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
     """Unload a config entry."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        await entry.runtime_data.session.close()
-    return unload_ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)

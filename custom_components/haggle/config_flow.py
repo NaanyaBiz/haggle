@@ -25,12 +25,13 @@ import base64
 import hashlib
 import logging
 import secrets
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .agl.client import AGLAuthError, AGLError, Contract
 from .agl.parser import parse_overview
@@ -45,8 +46,6 @@ from .const import (
     AGL_OAUTH_SCOPE,
     AGL_REDIRECT_URI,
     AGL_USER_AGENT,
-    CONF_ACCESS_TOKEN,
-    CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
     CONF_PINNED_SPKI_AUTH,
@@ -54,6 +53,9 @@ from .const import (
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,12 +112,15 @@ def _extract_code(
     return (code or None), None
 
 
-async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
-    """POST /oauth/token and return (access_token, refresh_token, auth_spki).
+async def _exchange_code(
+    hass: HomeAssistant, code: str, verifier: str
+) -> tuple[str, str, str]:
+    """POST /oauth/token via HA's shared aiohttp client.
 
-    `auth_spki` is the SHA-256 hex of the leaf-cert SPKI for secure.agl.com.au,
-    captured from the live TLS connection. Empty string if introspection fails
-    (degrades to no-pin, never blocks the install).
+    Returns (access_token, refresh_token, auth_spki). `auth_spki` is the
+    SHA-256 hex of the leaf-cert SPKI for secure.agl.com.au, captured from
+    the live TLS connection. Empty string if introspection fails (degrades
+    to no-pin, never blocks the install).
 
     Raises AGLAuthError on 4xx auth errors, AGLError on other failures.
     """
@@ -135,10 +140,8 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
         "Accept": "application/json",
     }
     auth_spki = ""
-    async with (
-        aiohttp.ClientSession() as session,
-        session.post(url, data=payload, headers=headers) as resp,
-    ):
+    session = async_get_clientsession(hass)
+    async with session.post(url, data=payload, headers=headers) as resp:
         if resp.status in (400, 401, 403):
             raise AGLAuthError(f"Token exchange failed: HTTP {resp.status}")
         if not resp.ok:
@@ -157,11 +160,13 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
     return access_token, refresh_token, auth_spki
 
 
-async def _fetch_contracts(access_token: str) -> tuple[list[Contract], str]:
-    """Fetch /api/v3/overview and return (contracts, bff_spki).
+async def _fetch_contracts(
+    hass: HomeAssistant, access_token: str
+) -> tuple[list[Contract], str]:
+    """Fetch /api/v3/overview via HA's shared aiohttp client.
 
-    `bff_spki` is the SHA-256 hex of the leaf-cert SPKI for
-    api.platform.agl.com.au. Empty string if capture fails.
+    Returns (contracts, bff_spki). `bff_spki` is the SHA-256 hex of the
+    leaf-cert SPKI for api.platform.agl.com.au. Empty string if capture fails.
 
     Uses aiohttp directly rather than AglAuth/AglClient: AglAuth always calls
     async_force_refresh on first use (token_set is None on construction), which
@@ -176,10 +181,8 @@ async def _fetch_contracts(access_token: str) -> tuple[list[Contract], str]:
         "Accept-Encoding": "gzip, deflate, br",
     }
     bff_spki = ""
-    async with (
-        aiohttp.ClientSession() as session,
-        session.get(url, headers=headers) as resp,
-    ):
+    session = async_get_clientsession(hass)
+    async with session.get(url, headers=headers) as resp:
         if resp.status >= 400:
             # Body kept out of the exception so it doesn't surface in
             # ConfigEntryAuthFailed → HA Persistent Notifications.
@@ -258,7 +261,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         try:
             access_token, refresh_token, auth_spki = await _exchange_code(
-                code, self._pkce_verifier
+                self.hass, code, self._pkce_verifier
             )
         except AGLAuthError:
             return self.async_show_form(
@@ -274,6 +277,12 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 description_placeholders={"authorize_url": authorize_url},
                 errors={"base": "cannot_connect"},
             )
+
+        # Clear PKCE material now that the one-shot exchange has consumed it.
+        # The flow object can persist in memory across multi-step retries; a
+        # stale verifier is no longer useful and is one less secret to leak.
+        self._pkce_verifier = ""
+        self._pkce_challenge = ""
 
         self._access_token = access_token
         self._refresh_token = refresh_token
@@ -293,7 +302,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._contracts:
             try:
                 self._contracts, self._bff_spki = await _fetch_contracts(
-                    self._access_token
+                    self.hass, self._access_token
                 )
             except Exception:
                 errors["base"] = "cannot_connect"
@@ -373,12 +382,12 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             "set" if self._auth_spki else "missing",
             "set" if self._bff_spki else "missing",
         )
+        # Only refresh_token is persisted as a credential. The short-lived
+        # access_token (15 min) must never live on disk per AGENTS.md.
         return self.async_create_entry(
             title=title or f"AGL {contract_number or 'account'}",
             data={
                 CONF_REFRESH_TOKEN: self._refresh_token,
-                CONF_ACCESS_TOKEN: "",
-                CONF_ACCESS_TOKEN_EXPIRY: 0,
                 CONF_CONTRACT_NUMBER: contract_number,
                 CONF_ACCOUNT_NUMBER: account_number,
                 CONF_PINNED_SPKI_AUTH: self._auth_spki,

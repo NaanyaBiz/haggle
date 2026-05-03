@@ -129,7 +129,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         last_cons_sum, last_stat_date = await self._get_last_stat(stat_id_cons)
         last_cost_sum, _ = await self._get_last_stat(stat_id_cost)
 
-        today = date.today()
+        # AGL `dateTime` slots are UTC; using `date.today()` (OS local time)
+        # would skew the fetch range by a day around midnight in non-UTC zones.
+        today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
         if last_stat_date is None:

@@ -45,7 +45,6 @@ from .models import (
 )
 from .parser import (
     parse_bill_period,
-    parse_daily_readings,
     parse_interval_readings,
     parse_overview,
     parse_plan,
@@ -320,12 +319,6 @@ class AglClient:
         data = await self._get(url)
         return parse_overview(data)
 
-    async def async_get_servicehub(self, contract_number: str) -> dict[str, Any]:
-        """Fetch /api/v1/servicehub/energy/{contractNumber} hyperlinks."""
-        url = f"{self.BASE_URL}/api/v1/servicehub/energy/{contract_number}"
-        data: dict[str, Any] = await self._get(url)
-        return {k: str(v) for k, v in data.items() if isinstance(v, str)}
-
     # --- Usage ---
 
     async def async_get_usage_summary(self, contract_number: str) -> BillPeriod:
@@ -348,15 +341,6 @@ class AglClient:
         data = await self._get(url)
         return parse_interval_readings(data)
 
-    async def async_get_usage_daily(
-        self, contract_number: str, start: date, end: date
-    ) -> list[DailyReading]:
-        """Fetch /Daily for a date range."""
-        period = f"{start}_{end}"
-        url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Daily?period={period}&scaling={AGL_SCALING}"
-        data = await self._get(url)
-        return parse_daily_readings(data)
-
     async def async_get_usage_hourly_previous(
         self, contract_number: str, day: date
     ) -> list[IntervalReading]:
@@ -373,7 +357,3 @@ class AglClient:
         url = f"{self.BASE_URL}/api/v2/plan/energy/{contract_number}"
         data = await self._get(url)
         return parse_plan(data)
-
-    async def async_close(self) -> None:
-        """Close the underlying aiohttp session if we own it."""
-        await self._session.close()

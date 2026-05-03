@@ -93,8 +93,6 @@ STAT_COST: Final = "cost"  # → haggle:cost_{contract}
 # Config-entry keys.
 # CONF_EMAIL / CONF_PASSWORD are NOT used — auth is via refresh token.
 CONF_REFRESH_TOKEN: Final = "refresh_token"  # ← it IS a token key
-CONF_ACCESS_TOKEN: Final = "access_token"
-CONF_ACCESS_TOKEN_EXPIRY: Final = "access_token_expiry"
 CONF_CONTRACT_NUMBER: Final = "contract_number"
 CONF_ACCOUNT_NUMBER: Final = "account_number"
 # SHA-256 hex of the leaf-cert SPKI captured at config-flow time. Empty string

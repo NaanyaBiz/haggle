@@ -127,14 +127,15 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
 
     start_str: str = (current.get("start") or {}).get("date", "")
     end_str: str = (current.get("end") or {}).get("date", "")
+    today_utc = datetime.now(UTC).date()
     try:
         start = date.fromisoformat(start_str)
     except (ValueError, TypeError):
-        start = date.today()
+        start = today_utc
     try:
         end = date.fromisoformat(end_str)
     except (ValueError, TypeError):
-        end = date.today()
+        end = today_utc
 
     usage = current.get("usage") or {}
     cost_label: str = usage.get("amount", "$0.00")

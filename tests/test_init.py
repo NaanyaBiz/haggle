@@ -8,8 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.haggle.const import (
-    CONF_ACCESS_TOKEN,
-    CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
@@ -22,8 +20,6 @@ if TYPE_CHECKING:
 
 _ENTRY_DATA = {
     CONF_REFRESH_TOKEN: "v1.testtoken",
-    CONF_ACCESS_TOKEN: "",
-    CONF_ACCESS_TOKEN_EXPIRY: 0,
     CONF_CONTRACT_NUMBER: "9999999999",
     CONF_ACCOUNT_NUMBER: "1234567890",
 }
@@ -52,7 +48,7 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.haggle.aiohttp.ClientSession",
+            "custom_components.haggle.async_create_clientsession",
             return_value=mock_session,
         ),
         patch(
@@ -78,7 +74,9 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
 
         assert await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
-        mock_session.close.assert_called_once()
+        # async_create_clientsession registers an HA-managed session; we no
+        # longer call session.close() ourselves on unload.
+        mock_session.close.assert_not_called()
 
 
 async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:
@@ -101,7 +99,7 @@ async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.haggle.aiohttp.ClientSession",
+            "custom_components.haggle.async_create_clientsession",
             return_value=mock_session,
         ),
         patch(
@@ -166,7 +164,7 @@ async def test_pin_mismatch_emits_persistent_notification(hass: HomeAssistant) -
 
     with (
         patch(
-            "custom_components.haggle.aiohttp.ClientSession",
+            "custom_components.haggle.async_create_clientsession",
             return_value=mock_session,
         ),
         patch(
@@ -224,7 +222,7 @@ async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
 
     with (
         patch(
-            "custom_components.haggle.aiohttp.ClientSession",
+            "custom_components.haggle.async_create_clientsession",
             return_value=mock_session,
         ),
         patch(
