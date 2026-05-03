@@ -8,6 +8,11 @@ Architecture (§7 of AGL-API-FINDINGS.md):
               Client-Flavor, User-Agent) and retries once on 401 by forcing
               an auth refresh.
 
+Both classes accept an optional `pin_check` callback that receives
+(host, observed_spki_hex) after every successful TLS response. The callback
+is wired up in __init__.py to compare against the persisted Trust-On-First-Use
+pin and surface an HA persistent notification on mismatch. See agl/pinning.py.
+
 Token endpoint: POST https://secure.agl.com.au/oauth/token (grant=refresh_token).
 Access tokens expire in 900 s (15 min); refresh when exp - now < 120 s (2 min).
 """
@@ -45,6 +50,7 @@ from .parser import (
     parse_overview,
     parse_plan,
 )
+from .pinning import AGL_AUTH_HOST_NAME, AGL_BFF_HOST_NAME, get_peer_spki_hash
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -106,6 +112,32 @@ def _decode_jwt_exp(token: str) -> int | None:
         return None
 
 
+def _safe_pin_check(
+    callback: Callable[[str, str], None] | None,
+    host: str,
+    resp: aiohttp.ClientResponse,
+) -> None:
+    """Capture SPKI from `resp` and invoke `callback`, swallowing any error.
+
+    Pin checks must never raise — a transient introspection failure should not
+    take down the coordinator. Mismatches are signalled by the callback itself
+    (warning + persistent notification), not by exceptions from this helper.
+    """
+    if callback is None:
+        return
+    try:
+        observed = get_peer_spki_hash(resp)
+    except Exception:
+        _LOGGER.debug("SPKI extraction failed for %s", host, exc_info=True)
+        return
+    if observed is None:
+        return
+    try:
+        callback(host, observed)
+    except Exception:
+        _LOGGER.debug("Pin-check callback raised for %s", host, exc_info=True)
+
+
 # ---------------------------------------------------------------------------
 # AglAuth — Auth0 token lifecycle
 # ---------------------------------------------------------------------------
@@ -119,15 +151,19 @@ class AglAuth:
     - Rotates the refresh token on every exchange and calls
       `persist_callback(new_refresh_token)` so the caller can persist it.
       Failure to persist = lockout within one cycle.
+    - Optionally invokes `pin_check(host, observed_spki)` after each successful
+      token exchange so callers can validate against a TOFU pin.
     """
 
     def __init__(
         self,
         refresh_token: str,
         persist_callback: Callable[[str], Awaitable[None]],
+        pin_check: Callable[[str, str], None] | None = None,
     ) -> None:
         self._refresh_token = refresh_token
         self._persist = persist_callback
+        self._pin_check = pin_check
         self._token_set: TokenSet | None = None
 
     async def async_ensure_valid_token(self, session: aiohttp.ClientSession) -> str:
@@ -172,6 +208,7 @@ class AglAuth:
                 text = await resp.text()
                 _LOGGER.debug("Token refresh non-200 body: %s", text[:200])
                 raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
+            _safe_pin_check(self._pin_check, AGL_AUTH_HOST_NAME, resp)
             data: dict[str, Any] = await resp.json(content_type=None)
 
         error = data.get("error")
@@ -216,9 +253,11 @@ class AglClient:
         self,
         auth: AglAuth,
         session: aiohttp.ClientSession,
+        pin_check: Callable[[str, str], None] | None = None,
     ) -> None:
         self._auth = auth
         self._session = session
+        self._pin_check = pin_check
 
     @property
     def _default_headers(self) -> dict[str, str]:
@@ -249,6 +288,7 @@ class AglClient:
                 _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
                 raise AGLError(f"HTTP {resp.status} fetching AGL data")
             else:
+                _safe_pin_check(self._pin_check, AGL_BFF_HOST_NAME, resp)
                 return await resp.json(content_type=None)
 
         # Only reached on 401 — force refresh and retry once.
@@ -269,6 +309,7 @@ class AglClient:
                     text[:200],
                 )
                 raise AGLError(f"HTTP {resp2.status} fetching AGL data")
+            _safe_pin_check(self._pin_check, AGL_BFF_HOST_NAME, resp2)
             return await resp2.json(content_type=None)
 
     # --- Discovery ---

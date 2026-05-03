@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Trust-On-First-Use TLS certificate pinning** for `secure.agl.com.au` and
+  `api.platform.agl.com.au`. The SHA-256 SPKI hash of each AGL host's leaf
+  certificate is captured during the initial PKCE config flow and persisted
+  to the config entry; every subsequent token refresh and BFF request is
+  observed and compared. Mismatches surface as a HA persistent notification
+  (`haggle_pin_mismatch_<host>`) plus a WARNING log — they do **not** block
+  the request, so a legitimate AGL cert rotation cannot brick HACS users.
+  Re-pin via the standard Reconfigure flow on the integration card. New
+  module `custom_components/haggle/agl/pinning.py`. Closes AP-1 from
+  `security/2026-05-02T04-43Z/`.
+
 ### Removed
 - **`beautifulsoup4` runtime dependency**. Zero call sites in
   `custom_components/`; was a dead dep that every HACS installer downloaded for

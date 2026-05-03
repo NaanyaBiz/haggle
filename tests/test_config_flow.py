@@ -60,12 +60,12 @@ async def test_user_flow_single_contract_creates_entry(hass: HomeAssistant) -> N
         patch(
             "custom_components.haggle.config_flow._exchange_code",
             new_callable=AsyncMock,
-            return_value=("access_tok", "refresh_tok"),
+            return_value=("access_tok", "refresh_tok", "deadbeef" * 8),
         ),
         patch(
             "custom_components.haggle.config_flow._fetch_contracts",
             new_callable=AsyncMock,
-            return_value=[_CONTRACT],
+            return_value=([_CONTRACT], "cafef00d" * 8),
         ),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -132,7 +132,7 @@ async def test_fetch_contracts_failure_shows_cannot_connect(
         patch(
             "custom_components.haggle.config_flow._exchange_code",
             new_callable=AsyncMock,
-            return_value=("access_tok", "refresh_tok"),
+            return_value=("access_tok", "refresh_tok", "deadbeef" * 8),
         ),
         patch(
             "custom_components.haggle.config_flow._fetch_contracts",
@@ -171,12 +171,12 @@ async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> N
         patch(
             "custom_components.haggle.config_flow._exchange_code",
             new_callable=AsyncMock,
-            return_value=("access_tok", refresh_token),
+            return_value=("access_tok", refresh_token, "deadbeef" * 8),
         ),
         patch(
             "custom_components.haggle.config_flow._fetch_contracts",
             new_callable=AsyncMock,
-            return_value=[],  # no contracts → fallback path
+            return_value=([], "cafef00d" * 8),  # no contracts → fallback path
         ),
     ):
         result = await hass.config_entries.flow.async_configure(
@@ -212,12 +212,12 @@ async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) 
         patch(
             "custom_components.haggle.config_flow._exchange_code",
             new_callable=AsyncMock,
-            return_value=("access_tok", "refresh_tok"),
+            return_value=("access_tok", "refresh_tok", "deadbeef" * 8),
         ),
         patch(
             "custom_components.haggle.config_flow._fetch_contracts",
             new_callable=AsyncMock,
-            return_value=[_CONTRACT, second],
+            return_value=([_CONTRACT, second], "cafef00d" * 8),
         ),
     ):
         result = await hass.config_entries.flow.async_configure(

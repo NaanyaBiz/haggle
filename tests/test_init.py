@@ -135,3 +135,120 @@ async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:
             await persist("v1.rotated_new_token")
 
         mock_start_reauth.assert_called_once_with(hass)
+
+
+async def test_pin_mismatch_emits_persistent_notification(hass: HomeAssistant) -> None:
+    """SPKI mismatch must surface via HA persistent notification, not block the request.
+
+    Closes AP-1: a LAN-MITM serving a different cert post-install is observable
+    through this notification path. Match path stays silent.
+    """
+    from custom_components.haggle.agl.pinning import AGL_AUTH_HOST_NAME
+    from custom_components.haggle.const import (
+        CONF_PINNED_SPKI_AUTH,
+        CONF_PINNED_SPKI_BFF,
+    )
+
+    pinned_data = {
+        **_ENTRY_DATA,
+        CONF_PINNED_SPKI_AUTH: "a" * 64,
+        CONF_PINNED_SPKI_BFF: "b" * 64,
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=pinned_data,
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=_COORDINATOR_DATA,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        pin_check = entry.runtime_data.auth._pin_check
+        assert pin_check is not None
+
+        # Match: no notification.
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "a" * 64)
+        mock_notify.assert_not_called()
+
+        # Mismatch: notification fires with deterministic notification_id.
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+        mock_notify.assert_called_once()
+        kwargs = mock_notify.call_args.kwargs
+        assert kwargs["notification_id"] == f"haggle_pin_mismatch_{AGL_AUTH_HOST_NAME}"
+        assert AGL_AUTH_HOST_NAME in kwargs["message"]
+
+
+async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
+    """Legacy entries (pre-TOFU, empty stored pins) must not warn on every poll."""
+    from custom_components.haggle.agl.pinning import AGL_AUTH_HOST_NAME
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=_ENTRY_DATA,  # no CONF_PINNED_SPKI_* keys
+        unique_id="legacy",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=_COORDINATOR_DATA,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        pin_check = entry.runtime_data.auth._pin_check
+        assert pin_check is not None
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "anything")
+        mock_notify.assert_not_called()
