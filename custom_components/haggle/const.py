@@ -97,6 +97,10 @@ CONF_ACCESS_TOKEN: Final = "access_token"
 CONF_ACCESS_TOKEN_EXPIRY: Final = "access_token_expiry"
 CONF_CONTRACT_NUMBER: Final = "contract_number"
 CONF_ACCOUNT_NUMBER: Final = "account_number"
+# SHA-256 hex of the leaf-cert SPKI captured at config-flow time. Empty string
+# = no pin yet (older entries pre-PR4 / capture failed at install time).
+CONF_PINNED_SPKI_AUTH: Final = "pinned_spki_auth"  # secure.agl.com.au
+CONF_PINNED_SPKI_BFF: Final = "pinned_spki_bff"  # api.platform.agl.com.au
 
 # Coordinator data attribute names — must match HaggleData field names exactly.
 DATA_CONSUMPTION_KWH: Final = "latest_cumulative_kwh"  # TOTAL_INCREASING sensor

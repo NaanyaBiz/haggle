@@ -7,11 +7,16 @@ Onboarding strategy:
             URL from the address bar and paste it back into HA.
   Step 2 (exchange) -- extract the authorization code from the pasted URL,
             POST /oauth/token (authorization_code grant + PKCE), store tokens.
+            Captures the SHA-256 SPKI hash of secure.agl.com.au's leaf cert
+            for Trust-On-First-Use pinning (see agl/pinning.py).
   Step 3 (select_contract) -- fetch /api/v3/overview, let user pick a contract
-            if multiple electricity contracts are found.
-  Step 4 -- create entry.
+            if multiple electricity contracts are found. Captures the SPKI
+            hash of api.platform.agl.com.au at the same time.
+  Step 4 -- create entry. Both pinned SPKI hashes are persisted to entry.data
+            and validated on every subsequent request from coordinator polling.
 
-Reauth re-enters at Step 1 with fresh PKCE params.
+Reauth re-enters at Step 1 with fresh PKCE params, which naturally re-pins
+both endpoints — the recommended remediation for legitimate AGL cert rotation.
 """
 
 from __future__ import annotations
@@ -29,6 +34,7 @@ from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
 from .agl.client import AGLAuthError, AGLError, Contract
 from .agl.parser import parse_overview
+from .agl.pinning import get_peer_spki_hash
 from .const import (
     AGL_API_HOST,
     AGL_AUTH0_CLIENT,
@@ -43,6 +49,8 @@ from .const import (
     CONF_ACCESS_TOKEN_EXPIRY,
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
+    CONF_PINNED_SPKI_AUTH,
+    CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
@@ -102,8 +110,12 @@ def _extract_code(
     return (code or None), None
 
 
-async def _exchange_code(code: str, verifier: str) -> tuple[str, str]:
-    """POST /oauth/token and return (access_token, refresh_token).
+async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
+    """POST /oauth/token and return (access_token, refresh_token, auth_spki).
+
+    `auth_spki` is the SHA-256 hex of the leaf-cert SPKI for secure.agl.com.au,
+    captured from the live TLS connection. Empty string if introspection fails
+    (degrades to no-pin, never blocks the install).
 
     Raises AGLAuthError on 4xx auth errors, AGLError on other failures.
     """
@@ -122,6 +134,7 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str]:
         "Content-Type": "application/x-www-form-urlencoded",
         "Accept": "application/json",
     }
+    auth_spki = ""
     async with (
         aiohttp.ClientSession() as session,
         session.post(url, data=payload, headers=headers) as resp,
@@ -130,6 +143,10 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str]:
             raise AGLAuthError(f"Token exchange failed: HTTP {resp.status}")
         if not resp.ok:
             raise AGLError(f"Token exchange error: HTTP {resp.status}")
+        try:
+            auth_spki = get_peer_spki_hash(resp) or ""
+        except Exception:
+            _LOGGER.debug("SPKI capture failed during token exchange", exc_info=True)
         body: dict[str, Any] = await resp.json()
 
     access_token: str = body.get("access_token", "")
@@ -137,17 +154,19 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str]:
     if not access_token or not refresh_token:
         raise AGLAuthError("Token response missing access_token or refresh_token")
 
-    return access_token, refresh_token
+    return access_token, refresh_token, auth_spki
 
 
-async def _fetch_contracts(access_token: str) -> list[Contract]:
-    """Fetch /api/v3/overview with the freshly-obtained access token.
+async def _fetch_contracts(access_token: str) -> tuple[list[Contract], str]:
+    """Fetch /api/v3/overview and return (contracts, bff_spki).
+
+    `bff_spki` is the SHA-256 hex of the leaf-cert SPKI for
+    api.platform.agl.com.au. Empty string if capture fails.
 
     Uses aiohttp directly rather than AglAuth/AglClient: AglAuth always calls
     async_force_refresh on first use (token_set is None on construction), which
     would POST the access_token as a refresh_token to Auth0 and fail.
     """
-
     url = f"{AGL_API_HOST}/mobile/bff/api/v3/overview"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -156,6 +175,7 @@ async def _fetch_contracts(access_token: str) -> list[Contract]:
         "Accept": "*/*",
         "Accept-Encoding": "gzip, deflate, br",
     }
+    bff_spki = ""
     async with (
         aiohttp.ClientSession() as session,
         session.get(url, headers=headers) as resp,
@@ -166,8 +186,12 @@ async def _fetch_contracts(access_token: str) -> list[Contract]:
             text = await resp.text()
             _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
             raise AGLError(f"HTTP {resp.status} fetching AGL overview")
+        try:
+            bff_spki = get_peer_spki_hash(resp) or ""
+        except Exception:
+            _LOGGER.debug("SPKI capture failed during overview fetch", exc_info=True)
         data = await resp.json(content_type=None)
-    return parse_overview(data)
+    return parse_overview(data), bff_spki
 
 
 class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -181,6 +205,8 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._oauth_state: str = ""
         self._access_token: str = ""
         self._refresh_token: str = ""
+        self._auth_spki: str = ""
+        self._bff_spki: str = ""
         self._contracts: list[Contract] = []
 
     # ------------------------------------------------------------------
@@ -231,7 +257,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         schema = vol.Schema({vol.Required(CALLBACK_URL_FIELD): str})
 
         try:
-            access_token, refresh_token = await _exchange_code(
+            access_token, refresh_token, auth_spki = await _exchange_code(
                 code, self._pkce_verifier
             )
         except AGLAuthError:
@@ -251,6 +277,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         self._access_token = access_token
         self._refresh_token = refresh_token
+        self._auth_spki = auth_spki
         return await self.async_step_select_contract()
 
     # ------------------------------------------------------------------
@@ -265,7 +292,9 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
         if not self._contracts:
             try:
-                self._contracts = await _fetch_contracts(self._access_token)
+                self._contracts, self._bff_spki = await _fetch_contracts(
+                    self._access_token
+                )
             except Exception:
                 errors["base"] = "cannot_connect"
                 return self.async_show_form(
@@ -338,9 +367,11 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
         _LOGGER.info(
-            "Creating haggle entry: account=%s contract=%s",
+            "Creating haggle entry: account=%s contract=%s pin_auth=%s pin_bff=%s",
             account_number or "unknown",
             contract_number or "unknown",
+            "set" if self._auth_spki else "missing",
+            "set" if self._bff_spki else "missing",
         )
         return self.async_create_entry(
             title=title or f"AGL {contract_number or 'account'}",
@@ -350,5 +381,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ACCESS_TOKEN_EXPIRY: 0,
                 CONF_CONTRACT_NUMBER: contract_number,
                 CONF_ACCOUNT_NUMBER: account_number,
+                CONF_PINNED_SPKI_AUTH: self._auth_spki,
+                CONF_PINNED_SPKI_BFF: self._bff_spki,
             },
         )

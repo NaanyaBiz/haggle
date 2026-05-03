@@ -55,7 +55,8 @@ custom_components/haggle/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
 │   ├── models.py        # TokenSet, Contract, IntervalReading, DailyReading, BillPeriod, PlanRates
-│   └── parser.py        # JSON → typed dataclasses (filters type=none intervals)
+│   ├── parser.py        # JSON → typed dataclasses (filters type=none intervals)
+│   └── pinning.py       # SPKI extraction helper for Trust-On-First-Use TLS pinning
 ├── strings.json         # translatable config-flow strings
 └── translations/en.json # English strings (must mirror strings.json)
 
@@ -68,9 +69,10 @@ tests/
 │   └── bill_period_response.json    # usage summary
 ├── test_init.py                     # setup/unload smoke tests
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
-├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods
+├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
 ├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, _safe_float
+├── test_pinning.py                  # SPKI extraction + host-name guards
 └── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, numeric guards
 
 scripts/
@@ -230,6 +232,26 @@ GET /mobile/bff/api/v2/plan/energy/{contractNumber}
 
 Returns `gstInclusiveRates` list with `c/kWh` and `c/day` entries. Supply charge
 is a `c/day` entry with `title` containing "Supply charge".
+
+### TLS pinning (Trust-On-First-Use)
+
+Both `secure.agl.com.au` and `api.platform.agl.com.au` are pinned by SPKI hash.
+The hashes are captured during the initial PKCE config flow (in
+`config_flow._exchange_code` and `config_flow._fetch_contracts`) by extracting
+the leaf cert from the live aiohttp response via
+`agl/pinning.py::get_peer_spki_hash` and persisted to `entry.data` under
+`CONF_PINNED_SPKI_AUTH` / `CONF_PINNED_SPKI_BFF`.
+
+Every subsequent request observes the live SPKI and compares against the
+stored value. **Mismatch is warn-only** — log a WARNING + raise an HA
+persistent notification (`haggle_pin_mismatch_<host>`) — but the request still
+succeeds. This keeps a legitimate AGL cert rotation from bricking HACS users;
+the documented remediation is to re-run Reconfigure on the integration card,
+which re-captures both hashes.
+
+Empty stored values (`""`) mean "no pin yet" — the validator is a no-op.
+Older entries created before this feature land in this state and silently
+upgrade on next Reconfigure.
 
 ---
 
