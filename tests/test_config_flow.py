@@ -67,6 +67,14 @@ async def test_user_flow_single_contract_creates_entry(hass: HomeAssistant) -> N
             new_callable=AsyncMock,
             return_value=([_CONTRACT], "cafef00d" * 8),
         ),
+        # Short-circuit `async_setup_entry` — pytest-HA 0.13.325+ trips on
+        # any socket use during teardown, and CREATE_ENTRY triggers the
+        # coordinator's first refresh against the real AGL API.
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
     ):
         result = await hass.config_entries.flow.async_configure(
             result["flow_id"],
@@ -107,6 +115,11 @@ async def test_pkce_verifier_cleared_after_successful_exchange(
             "custom_components.haggle.config_flow._fetch_contracts",
             new_callable=AsyncMock,
             return_value=([_CONTRACT], "cafef00d" * 8),
+        ),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
         ),
     ):
         await flows.async_configure(
@@ -218,6 +231,11 @@ async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> N
             "custom_components.haggle.config_flow._fetch_contracts",
             new_callable=AsyncMock,
             return_value=([], "cafef00d" * 8),  # no contracts → fallback path
+        ),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
         ),
     ):
         result = await hass.config_entries.flow.async_configure(

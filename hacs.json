@@ -1,7 +1,7 @@
 {
   "name": "AGL Haggle",
   "country": "AU",
-  "homeassistant": "2026.2.3",
+  "homeassistant": "2026.4.4",
   "render_readme": true,
   "zip_release": false
 }
