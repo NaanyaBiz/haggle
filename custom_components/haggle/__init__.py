@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 import aiohttp
 from homeassistant.components import persistent_notification
 from homeassistant.const import Platform
+from homeassistant.helpers import entity_registry as er
 
 from .agl.client import AglAuth, AglClient
 from .agl.pinning import AGL_AUTH_HOST_NAME, HagglePinningConnector
@@ -141,3 +142,17 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> b
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         await entry.runtime_data.session.close()
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> None:
+    """Drop entity-registry rows for this entry on integration removal.
+
+    Without this, deleting the integration leaves orphan rows whose
+    `config_entry_id` references the now-gone entry. On reinstall, HA
+    sees an entity_id collision and renames the new sensors with a `_2`
+    suffix; the orphans then linger forever as `unavailable`.
+    """
+    registry = er.async_get(hass)
+    entries = er.async_entries_for_config_entry(registry, entry.entry_id)
+    for entity in entries:
+        registry.async_remove(entity.entity_id)

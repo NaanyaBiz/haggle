@@ -252,6 +252,44 @@ async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
         mock_notify.assert_not_called()
 
 
+async def test_async_remove_entry_clears_orphan_entities(hass: HomeAssistant) -> None:
+    """Removing the integration must purge entity-registry rows for the entry.
+
+    Without this, reinstalling the integration finds a colliding entity_id
+    and renames the new sensor with a `_2` suffix, leaving an `unavailable`
+    orphan forever.
+    """
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.haggle import async_remove_entry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=_ENTRY_DATA,
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=f"{entry.entry_id}_consumption_period_kwh",
+        config_entry=entry,
+    )
+    registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=f"{entry.entry_id}_consumption_period_cost_aud",
+        config_entry=entry,
+    )
+    assert len(er.async_entries_for_config_entry(registry, entry.entry_id)) == 2
+
+    await async_remove_entry(hass, entry)
+
+    assert er.async_entries_for_config_entry(registry, entry.entry_id) == []
+
+
 def test_device_info_does_not_claim_agl_authorship() -> None:
     """HA's Service-info card renders DeviceInfo as `model by manufacturer`.
 

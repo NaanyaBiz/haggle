@@ -17,6 +17,7 @@ billing period use Current/Hourly; older days use Previous/Hourly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from dataclasses import dataclass
@@ -29,10 +30,11 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .agl.client import AGLAuthError, AGLError
+from .agl.client import AGLAuthError, AGLError, AGLRateLimitError
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
+    BACKFILL_INTER_REQUEST_DELAY,
     DOMAIN,
     SCAN_INTERVAL_HOURLY,
     STAT_CONSUMPTION,
@@ -113,21 +115,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
 
         # Fetch live sensor data first — summary gives bill_start for endpoint selection.
-        try:
-            summary = await self.client.async_get_usage_summary(self.contract_number)
-        except NotImplementedError:
-            summary = None
-
-        try:
-            plan = await self.client.async_get_plan(self.contract_number)
-        except NotImplementedError:
-            plan = None
+        summary = await self.client.async_get_usage_summary(self.contract_number)
+        plan = await self.client.async_get_plan(self.contract_number)
 
         bill_start: date | None = summary.start if summary is not None else None
 
-        # Determine resume point.
-        last_cons_sum, last_stat_date = await self._get_last_stat(stat_id_cons)
-        last_cost_sum, _ = await self._get_last_stat(stat_id_cost)
+        # Determine resume point — overlap both recorder lookups on the executor.
+        (last_cons_sum, last_stat_date), (last_cost_sum, _) = await asyncio.gather(
+            self._get_last_stat(stat_id_cons),
+            self._get_last_stat(stat_id_cost),
+        )
 
         # AGL `dateTime` slots are UTC; using `date.today()` (OS local time)
         # would skew the fetch range by a day around midnight in non-UTC zones.
@@ -223,10 +220,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         initial_cons_sum: float,
         initial_cost_sum: float,
     ) -> None:
-        """Fetch [start..end] with smart endpoint selection, then import."""
+        """Fetch [start..end] with smart endpoint selection, then import.
+
+        Sleeps between per-day requests so a chunk-of-7 first-install backfill
+        doesn't hammer AGL's BFF in under a second. On rate-limit the loop
+        stops early — the next 24h poll cycle will resume from the last
+        successfully imported date.
+        """
         all_intervals: list[IntervalReading] = []
         current = start
+        first = True
         while current <= end:
+            if not first:
+                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+            first = False
             try:
                 if bill_start is not None and current < bill_start:
                     readings = await self.client.async_get_usage_hourly_previous(
@@ -237,7 +244,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                         self.contract_number, current
                     )
                 all_intervals.extend(readings)
-            except (AGLError, NotImplementedError) as err:
+            except AGLRateLimitError as err:
+                _LOGGER.warning(
+                    "AGL rate-limited at %s; halting backfill chunk: %s", current, err
+                )
+                break
+            except AGLError as err:
                 _LOGGER.debug("Fetch skip %s: %s", current, err)
             current += timedelta(days=1)
 
