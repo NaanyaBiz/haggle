@@ -25,15 +25,18 @@ import base64
 import hashlib
 import logging
 import secrets
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
 import voluptuous as vol
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 
-from .agl.client import AGLAuthError, AGLError, Contract
+from .agl.client import AGLAuthError, AGLError
 from .agl.parser import parse_overview
+
+if TYPE_CHECKING:
+    from .agl.models import Contract
 from .agl.pinning import (
     AGL_AUTH_HOST_NAME,
     AGL_BFF_HOST_NAME,

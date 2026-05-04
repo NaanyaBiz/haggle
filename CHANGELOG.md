@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+- **MONETARY sensors no longer log a state-class warning on every poll.**
+  HA rejects `state_class=MEASUREMENT` on `device_class=MONETARY`; drop
+  the invalid `state_class` from `bill_projection`, `unit_rate`, and
+  `supply_charge`. Closes #49.
+- **Backfill loop now sleeps between per-day fetches and halts on 429.**
+  First-install backfill no longer fires up to 7 GETs in <1 s; on
+  rate-limit the loop stops so the next 24 h cycle resumes from the
+  gap rather than silently dropping post-429 days. Closes #34.
+- **Removing the integration now purges its entity-registry rows.**
+  `async_remove_entry` walks the registry and deletes orphans for the
+  config entry, preventing `_2`-suffixed re-installs. Closes #50.
+
+### Changed
+- **Coordinator overlaps recorder reads.** Both `get_last_statistics`
+  lookups (consumption + cost) now run via `asyncio.gather`, halving
+  the wall time of the resume-point computation. Closes #35.
+- **Code cleanup.** Drop unused `SCAN_INTERVAL_DAILY`,
+  `SCAN_INTERVAL_PLAN`, `TOKEN_REFRESH_MARGIN_SECONDS` constants; drop
+  the `__all__` re-export block from `agl/client.py`; correct the
+  `agl/__init__.py` docstring to reference `agl-api-explorer`. Remove
+  defensive `NotImplementedError` catches in the coordinator and the
+  dict-fallback branch in `HaggleEnergySensor.native_value` — neither
+  path is reachable from production code. Closes #37, #38.
 
 ---
 

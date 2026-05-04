@@ -10,12 +10,12 @@ by live coordinator data use the standard CoordinatorEntity pattern.
 state_class choices:
   - TOTAL_INCREASING for cumulative kWh / cost (monotonic, HA tracks resets)
   - TOTAL for period / today totals (reset at known boundary)
-  - MEASUREMENT for instantaneous / forecast values
+  - unset on MONETARY one-shots (forecast / rate); MEASUREMENT is invalid there
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -73,26 +73,25 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement="AUD",
         suggested_display_precision=2,
     ),
-    # --- Forecast / rates (monetary, measurement) ---
+    # --- Forecast / rates (monetary) ---
+    # MONETARY device_class only accepts state_class None or TOTAL; these are
+    # one-shot values (forecast, current rate), so leave state_class unset.
     SensorEntityDescription(
         key=DATA_BILL_PROJECTION,
         translation_key="bill_projection",
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="AUD",
     ),
     SensorEntityDescription(
         key=DATA_UNIT_RATE,
         translation_key="unit_rate",
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="AUD/kWh",
     ),
     SensorEntityDescription(
         key=DATA_SUPPLY_CHARGE,
         translation_key="supply_charge",
         device_class=SensorDeviceClass.MONETARY,
-        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="AUD/day",
     ),
 )
@@ -140,15 +139,5 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
     @property
     def native_value(self) -> float | None:
         """Return the current sensor value from coordinator data."""
-        data: Any = self.coordinator.data
-        if data is None:
-            return None
-        # HaggleData is a dataclass; fall back gracefully if a stub/mock
-        # returns a plain dict during tests.
-        if hasattr(data, self.entity_description.key):
-            value = getattr(data, self.entity_description.key)
-        elif isinstance(data, dict):
-            value = data.get(self.entity_description.key)
-        else:
-            return None
+        value = getattr(self.coordinator.data, self.entity_description.key)
         return float(value) if value is not None else None

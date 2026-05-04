@@ -45,11 +45,11 @@ docker run --rm \
 
 ```
 custom_components/haggle/
-├── __init__.py          # async_setup_entry / async_unload_entry + HaggleRuntimeData
+├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
-├── coordinator.py       # HaggleCoordinator: 30-day backfill + incremental statistics import
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import
 ├── sensor.py            # 6 SensorEntityDescription entries; HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
@@ -382,6 +382,19 @@ The HA Energy dashboard requires:
   `manufacturer="Haggle"`. AGL's name belongs only in `model`/docs as a
   factual description of the upstream service. Regression test:
   `tests/test_init.py::test_device_info_does_not_claim_agl_authorship`.
+- **Don't pair `state_class=MEASUREMENT` with `device_class=MONETARY`.**
+  HA validates this combination and logs a WARNING on every state update;
+  only `None` or `TOTAL` are valid for MONETARY. Use `TOTAL` for cumulative
+  cost-over-period, leave unset for one-shots (forecast, current rate).
+- **Implement `async_remove_entry` if the integration creates entities.**
+  Otherwise deleting the integration leaves orphan entity-registry rows
+  whose `config_entry_id` references the now-gone entry; reinstall causes
+  `_2`-suffixed sensor IDs that linger as `unavailable` forever. See
+  `__init__.py::async_remove_entry`.
+- **Don't fire backfill requests in a tight loop.** AGL's BFF will 429
+  if 7 sequential GETs land in <1 s. `_fetch_range` sleeps
+  `BACKFILL_INTER_REQUEST_DELAY` between days and breaks out of the chunk
+  on `AGLRateLimitError`; the next 24 h cycle resumes from the gap.
 
 ---
 

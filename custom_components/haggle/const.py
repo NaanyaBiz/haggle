@@ -25,20 +25,17 @@ AGL_REDIRECT_URI: Final = "https://secure.agl.com.au/ios/au.com.agl.mobile/callb
 AGL_OAUTH_SCOPE: Final = "openid profile email offline_access"
 AGL_OAUTH_AUDIENCE: Final = "https://api.platform.agl.com.au/"
 
-# Polling cadences.
+# Polling cadence.
 # AGL interval data is delayed 24-48 h from the meter (AEMO feed lag).
 SCAN_INTERVAL_HOURLY: Final = timedelta(hours=24)  # 30-min intervals: fetch yesterday
-SCAN_INTERVAL_DAILY: Final = timedelta(hours=6)  # daily series: pick up new days
-SCAN_INTERVAL_PLAN: Final = timedelta(days=7)  # plan/rates: rarely changes
-
-# How many seconds before access-token expiry to proactively refresh.
-# AGL access tokens expire at ~15 min; refresh 2 min early.
-TOKEN_REFRESH_MARGIN_SECONDS: Final = 120
 
 # Number of days of history to backfill on first install.
 BACKFILL_DAYS: Final = 30
 # Maximum days to fetch per 24 h poll cycle (throttles first-install backfill).
 BACKFILL_CHUNK_DAYS: Final = 7
+# Seconds to sleep between per-day fetches in a backfill chunk so we don't
+# fire 7 requests in under a second.
+BACKFILL_INTER_REQUEST_DELAY: Final = 0.5
 
 # AGL BFF requires these headers on Hourly/Daily usage endpoints (HTTP 500 without them).
 # Documented from AGL mobile app 8.38.0-531 — 2026-05-01.

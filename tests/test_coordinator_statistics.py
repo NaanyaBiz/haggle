@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.haggle.agl.models import IntervalReading
+from custom_components.haggle.agl.models import BillPeriod, IntervalReading, PlanRates
 from custom_components.haggle.const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -46,6 +46,26 @@ _ENTRY_DATA = {
 
 def _make_interval(dt: datetime, kwh: float, cost: float = 0.05) -> IntervalReading:
     return IntervalReading(dt=dt, kwh=kwh, cost_aud=cost, rate_type="normal")
+
+
+def _empty_summary() -> BillPeriod:
+    """Default BillPeriod that flows through coordinator without contributing data."""
+    today = datetime.now(UTC).date()
+    return BillPeriod(
+        start=today,
+        end=today,
+        consumption_kwh=0.0,
+        cost_label="$0.00",
+        projection_label="",
+    )
+
+
+def _empty_plan() -> PlanRates:
+    return PlanRates(
+        product_name="",
+        unit_rates=[],
+        supply_charge_cents_per_day=0.0,
+    )
 
 
 def _make_coordinator(
@@ -415,14 +435,78 @@ class TestFetchRange:
         start = today - timedelta(days=3)
         end = today - timedelta(days=1)
 
-        with patch.object(
-            coord, "_import_intervals", new_callable=AsyncMock
-        ) as mock_imp:
+        with (
+            patch.object(
+                coord, "_import_intervals", new_callable=AsyncMock
+            ) as mock_imp,
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep", new=AsyncMock()
+            ),
+        ):
             await coord._fetch_range(start, end, None, 0.0, 0.0)  # must not raise
 
         # All days attempted despite errors; no intervals → _import_intervals not called
         assert mock_client.async_get_usage_hourly.call_count == 3
         mock_imp.assert_not_called()
+
+    async def test_fetch_range_halts_on_rate_limit(self, hass: HomeAssistant) -> None:
+        """A 429 mid-chunk halts the loop so the next poll resumes from the gap.
+
+        Closes #34: silently dropping post-429 days corrupts the backfill resume
+        point because get_last_statistics returns the last *successful* import,
+        skipping any failures after the 429.
+        """
+        from custom_components.haggle.agl.client import AGLRateLimitError
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.side_effect = [
+            [],  # day 1 ok
+            AGLRateLimitError("HTTP 429"),  # day 2 — halt
+            [],  # day 3 — must not be attempted
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        start = today - timedelta(days=3)
+        end = today - timedelta(days=1)
+
+        with (
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep", new=AsyncMock()
+            ),
+        ):
+            await coord._fetch_range(start, end, None, 0.0, 0.0)
+
+        # Two attempts only: day 1 succeeded, day 2 halted the loop.
+        assert mock_client.async_get_usage_hourly.call_count == 2
+
+    async def test_fetch_range_sleeps_between_requests(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Per-day fetches are spaced so a chunk-of-7 doesn't fire in <1 s.
+
+        Closes #34: no inter-request sleep == 7 sequential GETs in a tight
+        loop, which AGL's BFF can rate-limit.
+        """
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        start = today - timedelta(days=3)
+        end = today - timedelta(days=1)  # 3 days → expect 2 sleeps
+
+        sleep_mock = AsyncMock()
+        with (
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch("custom_components.haggle.coordinator.asyncio.sleep", new=sleep_mock),
+        ):
+            await coord._fetch_range(start, end, None, 0.0, 0.0)
+
+        # 3 fetches, 2 inter-request sleeps (no sleep before first).
+        assert mock_client.async_get_usage_hourly.call_count == 3
+        assert sleep_mock.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -436,8 +520,8 @@ class TestFetchAndImport:
     ) -> None:
         """First install: fetch_start = today - BACKFILL_DAYS."""
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -461,8 +545,8 @@ class TestFetchAndImport:
     async def test_chunk_limit_applied_to_range(self, hass: HomeAssistant) -> None:
         """fetch_end must be at most fetch_start + BACKFILL_CHUNK_DAYS - 1."""
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -489,8 +573,8 @@ class TestFetchAndImport:
     ) -> None:
         """When last_stat_date is 3 days ago, fetch_start = 2 days ago."""
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -513,8 +597,8 @@ class TestFetchAndImport:
     async def test_already_up_to_date_no_fetch(self, hass: HomeAssistant) -> None:
         """If last stat is yesterday, _fetch_range is not called."""
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -537,8 +621,8 @@ class TestFetchAndImport:
         from custom_components.haggle.coordinator import HaggleData
 
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -561,7 +645,7 @@ class TestFetchAndImport:
         from custom_components.haggle.agl.models import PlanRates
 
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
         mock_client.async_get_plan.return_value = PlanRates(
             product_name="Smart Saver",
             unit_rates=[
@@ -608,7 +692,7 @@ class TestNumericGuards:
             cost_label="$inf",
             projection_label="$nan",
         )
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -644,7 +728,7 @@ class TestNumericGuards:
             cost_label="$-99.99",
             projection_label="",
         )
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
@@ -690,8 +774,8 @@ class TestUTCDateBoundary:
                 return fixed_utc.astimezone(tz) if tz else fixed_utc
 
         mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.side_effect = NotImplementedError
-        mock_client.async_get_plan.side_effect = NotImplementedError
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         with (

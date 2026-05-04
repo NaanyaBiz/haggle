@@ -17,6 +17,7 @@ billing period use Current/Hourly; older days use Previous/Hourly.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 from dataclasses import dataclass
@@ -29,10 +30,11 @@ from homeassistant.helpers.update_coordinator import (
     UpdateFailed,
 )
 
-from .agl.client import AGLAuthError, AGLError
+from .agl.client import AGLAuthError, AGLError, AGLRateLimitError
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
+    BACKFILL_INTER_REQUEST_DELAY,
     DOMAIN,
     SCAN_INTERVAL_HOURLY,
     STAT_CONSUMPTION,
@@ -43,7 +45,8 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-    from .agl.client import AglClient, IntervalReading
+    from .agl.client import AglClient
+    from .agl.models import IntervalReading
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -113,21 +116,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
 
         # Fetch live sensor data first — summary gives bill_start for endpoint selection.
-        try:
-            summary = await self.client.async_get_usage_summary(self.contract_number)
-        except NotImplementedError:
-            summary = None
+        summary = await self.client.async_get_usage_summary(self.contract_number)
+        plan = await self.client.async_get_plan(self.contract_number)
 
-        try:
-            plan = await self.client.async_get_plan(self.contract_number)
-        except NotImplementedError:
-            plan = None
+        bill_start: date = summary.start
 
-        bill_start: date | None = summary.start if summary is not None else None
-
-        # Determine resume point.
-        last_cons_sum, last_stat_date = await self._get_last_stat(stat_id_cons)
-        last_cost_sum, _ = await self._get_last_stat(stat_id_cost)
+        # Determine resume point — overlap both recorder lookups on the executor.
+        (last_cons_sum, last_stat_date), (last_cost_sum, _) = await asyncio.gather(
+            self._get_last_stat(stat_id_cons),
+            self._get_last_stat(stat_id_cost),
+        )
 
         # AGL `dateTime` slots are UTC; using `date.today()` (OS local time)
         # would skew the fetch range by a day around midnight in non-UTC zones.
@@ -157,30 +155,25 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Extract rates from plan.
         unit_rate_aud: float | None = None
-        if plan is not None:
-            for rate in plan.unit_rates:
-                if rate.get("type") == "c/kWh":
-                    cents = _safe_float(rate.get("price"))
-                    unit_rate_aud = cents / 100.0
-                    break
+        for rate in plan.unit_rates:
+            if rate.get("type") == "c/kWh":
+                cents = _safe_float(rate.get("price"))
+                unit_rate_aud = cents / 100.0
+                break
 
         supply_charge_aud: float | None = None
-        if plan is not None and plan.supply_charge_cents_per_day:
+        if plan.supply_charge_cents_per_day:
             supply_charge_aud = plan.supply_charge_cents_per_day / 100.0
 
         # Parse bill-period totals.
-        period_kwh: float = 0.0
-        period_cost: float = 0.0
         projection: float | None = None
-
-        if summary is not None:
-            period_kwh = _safe_float(summary.consumption_kwh)
-            period_cost = _safe_float(
-                (summary.cost_label or "").lstrip("$").replace(",", "")
-            )
-            proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
-            if proj_label:
-                projection = _safe_float(proj_label)
+        period_kwh = _safe_float(summary.consumption_kwh)
+        period_cost = _safe_float(
+            (summary.cost_label or "").lstrip("$").replace(",", "")
+        )
+        proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
+        if proj_label:
+            projection = _safe_float(proj_label)
 
         return HaggleData(
             consumption_period_kwh=period_kwh,
@@ -223,10 +216,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         initial_cons_sum: float,
         initial_cost_sum: float,
     ) -> None:
-        """Fetch [start..end] with smart endpoint selection, then import."""
+        """Fetch [start..end] with smart endpoint selection, then import.
+
+        Sleeps between per-day requests so a chunk-of-7 first-install backfill
+        doesn't hammer AGL's BFF in under a second. On rate-limit the loop
+        stops early — the next 24h poll cycle will resume from the last
+        successfully imported date.
+        """
         all_intervals: list[IntervalReading] = []
         current = start
+        first = True
         while current <= end:
+            if not first:
+                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+            first = False
             try:
                 if bill_start is not None and current < bill_start:
                     readings = await self.client.async_get_usage_hourly_previous(
@@ -237,7 +240,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                         self.contract_number, current
                     )
                 all_intervals.extend(readings)
-            except (AGLError, NotImplementedError) as err:
+            except AGLRateLimitError as err:
+                _LOGGER.warning(
+                    "AGL rate-limited at %s; halting backfill chunk: %s", current, err
+                )
+                break
+            except AGLError as err:
                 _LOGGER.debug("Fetch skip %s: %s", current, err)
             current += timedelta(days=1)
 

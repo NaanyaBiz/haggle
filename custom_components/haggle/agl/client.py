@@ -38,7 +38,6 @@ from ..const import (
 from .models import (
     BillPeriod,
     Contract,
-    DailyReading,
     IntervalReading,
     PlanRates,
     TokenSet,
@@ -62,21 +61,6 @@ _LOGGER = logging.getLogger(__name__)
 _REFRESH_MARGIN_SECONDS = 120
 
 TOKEN_ENDPOINT = f"{AGL_AUTH_HOST}/oauth/token"
-
-# Re-export models so callers can import from client (backward compat).
-__all__ = [
-    "AGLAuthError",
-    "AGLError",
-    "AGLRateLimitError",
-    "AglAuth",
-    "AglClient",
-    "BillPeriod",
-    "Contract",
-    "DailyReading",
-    "IntervalReading",
-    "PlanRates",
-    "TokenSet",
-]
 
 
 class AGLError(Exception):
