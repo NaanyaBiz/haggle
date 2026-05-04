@@ -45,7 +45,8 @@ if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
-    from .agl.client import AglClient, IntervalReading
+    from .agl.client import AglClient
+    from .agl.models import IntervalReading
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         summary = await self.client.async_get_usage_summary(self.contract_number)
         plan = await self.client.async_get_plan(self.contract_number)
 
-        bill_start: date | None = summary.start if summary is not None else None
+        bill_start: date = summary.start
 
         # Determine resume point — overlap both recorder lookups on the executor.
         (last_cons_sum, last_stat_date), (last_cost_sum, _) = await asyncio.gather(
@@ -154,30 +155,25 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Extract rates from plan.
         unit_rate_aud: float | None = None
-        if plan is not None:
-            for rate in plan.unit_rates:
-                if rate.get("type") == "c/kWh":
-                    cents = _safe_float(rate.get("price"))
-                    unit_rate_aud = cents / 100.0
-                    break
+        for rate in plan.unit_rates:
+            if rate.get("type") == "c/kWh":
+                cents = _safe_float(rate.get("price"))
+                unit_rate_aud = cents / 100.0
+                break
 
         supply_charge_aud: float | None = None
-        if plan is not None and plan.supply_charge_cents_per_day:
+        if plan.supply_charge_cents_per_day:
             supply_charge_aud = plan.supply_charge_cents_per_day / 100.0
 
         # Parse bill-period totals.
-        period_kwh: float = 0.0
-        period_cost: float = 0.0
         projection: float | None = None
-
-        if summary is not None:
-            period_kwh = _safe_float(summary.consumption_kwh)
-            period_cost = _safe_float(
-                (summary.cost_label or "").lstrip("$").replace(",", "")
-            )
-            proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
-            if proj_label:
-                projection = _safe_float(proj_label)
+        period_kwh = _safe_float(summary.consumption_kwh)
+        period_cost = _safe_float(
+            (summary.cost_label or "").lstrip("$").replace(",", "")
+        )
+        proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
+        if proj_label:
+            projection = _safe_float(proj_label)
 
         return HaggleData(
             consumption_period_kwh=period_kwh,

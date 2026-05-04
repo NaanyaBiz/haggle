@@ -139,8 +139,5 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
     @property
     def native_value(self) -> float | None:
         """Return the current sensor value from coordinator data."""
-        data = self.coordinator.data
-        if data is None:
-            return None
-        value = getattr(data, self.entity_description.key)
+        value = getattr(self.coordinator.data, self.entity_description.key)
         return float(value) if value is not None else None
