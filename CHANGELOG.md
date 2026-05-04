@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+---
+
+## [0.2.0-beta.2] — 2026-05-04
+
 ### Fixed
 - **GitHub now detects the license as Apache-2.0.** `LICENSE` was
   byte-for-byte the canonical Apache-2.0 template *except* the appendix
@@ -18,8 +24,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   § 4(d)). Verify with
   `gh api repos/NaanyaBiz/haggle/license --jq '.license.spdx_id'` →
   `Apache-2.0`. Closes #54.
-
-### Fixed
 - **MONETARY sensors no longer log a state-class warning on every poll.**
   HA rejects `state_class=MEASUREMENT` on `device_class=MONETARY`; drop
   the invalid `state_class` from `bill_projection`, `unit_rate`, and
