@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+_No unreleased changes yet._
+
+---
+
+## [0.2.0-beta.3] — 2026-05-05
+
 ### Fixed
 - **Clear `state_class_removed` Repairs on `unit_rate` / `supply_charge`.**
   v0.2.0-beta.2 dropped `state_class=MEASUREMENT` from these to fix the
