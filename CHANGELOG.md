@@ -11,6 +11,25 @@ _No unreleased changes yet._
 
 ---
 
+## [0.2.0] — 2026-05-05
+
+**Stable release.** Promotes `v0.2.0-beta.3` to stable after a clean 24 h+ live soak.
+No code change vs `0.2.0-beta.3`.
+
+Cumulative changes since `v0.1.0` (yanked) — see `[0.2.0-beta.1]`..`[0.2.0-beta.3]`
+for the per-beta breakdown:
+
+- Trust-On-First-Use TLS pinning for both AGL hosts.
+- 14-finding SAST sweep + supply-chain hardening (SHA-pinned actions, scoped
+  permissions, build-provenance attestation).
+- Platform floor bumped to Python 3.14.2 / HA 2026.4.4 — closes 13 inherited CVEs.
+- DeviceInfo no longer claims AGL Energy authorship.
+- Six issue-tail fixes (#34, #35, #37, #38, #49, #50) + monetary state_class
+  follow-up (PR #59).
+- LICENSE canonicalized so GitHub auto-detects `Apache-2.0`.
+
+---
+
 ## [0.2.0-beta.3] — 2026-05-05
 
 ### Fixed
