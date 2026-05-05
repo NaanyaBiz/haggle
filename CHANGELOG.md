@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+- **Clear `state_class_removed` Repairs on `unit_rate` / `supply_charge`.**
+  v0.2.0-beta.2 dropped `state_class=MEASUREMENT` from these to fix the
+  inverse warning (#49), but that triggered HA's `state_class_removed`
+  Repair on installs that had previously recorded stats. Root cause was
+  using `device_class=MONETARY` for unit prices in the first place —
+  MONETARY is for cumulative amounts, not rates. Drop MONETARY from
+  `unit_rate` / `supply_charge` and restore `state_class=MEASUREMENT`;
+  HA's price-tracking integrations (Nordpool, Tibber) use the same
+  pattern. `bill_projection` keeps MONETARY without `state_class` —
+  it's a forecast total, not a rate. Repairs banner clears on the next
+  coordinator update.
 
 ---
 
