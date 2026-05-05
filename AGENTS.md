@@ -385,7 +385,14 @@ The HA Energy dashboard requires:
 - **Don't pair `state_class=MEASUREMENT` with `device_class=MONETARY`.**
   HA validates this combination and logs a WARNING on every state update;
   only `None` or `TOTAL` are valid for MONETARY. Use `TOTAL` for cumulative
-  cost-over-period, leave unset for one-shots (forecast, current rate).
+  cost-over-period, leave unset for one-shot forecasts.
+- **Don't use `device_class=MONETARY` for unit prices.** MONETARY is for
+  cumulative amounts (`$87.38 of cost so far`), not rates (`$0.34/kWh`).
+  Pair the rate sensor with `state_class=MEASUREMENT` and a unit string
+  like `"AUD/kWh"` instead — HA's price-tracking integrations (Nordpool,
+  Tibber) follow the same pattern. Mixing MONETARY with no `state_class`
+  *also* triggers HA's `state_class_removed` Repair if the entity ever
+  reported stats under an earlier release.
 - **Implement `async_remove_entry` if the integration creates entities.**
   Otherwise deleting the integration leaves orphan entity-registry rows
   whose `config_entry_id` references the now-gone entry; reinstall causes

@@ -73,25 +73,31 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement="AUD",
         suggested_display_precision=2,
     ),
-    # --- Forecast / rates (monetary) ---
-    # MONETARY device_class only accepts state_class None or TOTAL; these are
-    # one-shot values (forecast, current rate), so leave state_class unset.
+    # --- Forecast (monetary, no state_class) ---
+    # MONETARY device_class accepts only state_class None or TOTAL. The bill
+    # projection is a one-shot forecast (not a cumulative total), so unset.
     SensorEntityDescription(
         key=DATA_BILL_PROJECTION,
         translation_key="bill_projection",
         device_class=SensorDeviceClass.MONETARY,
         native_unit_of_measurement="AUD",
     ),
+    # --- Rates (instantaneous prices) ---
+    # NOT MONETARY — that device_class is for cumulative amounts ($87.38 of
+    # cost so far this period), not unit prices. Keep state_class=MEASUREMENT
+    # so HA's recorder tracks min/mean/max in long-term statistics. Removing
+    # `device_class` loses the $-chip in the entity card UI; the unit string
+    # ("AUD/kWh", "AUD/day") still makes the meaning clear.
     SensorEntityDescription(
         key=DATA_UNIT_RATE,
         translation_key="unit_rate",
-        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="AUD/kWh",
     ),
     SensorEntityDescription(
         key=DATA_SUPPLY_CHARGE,
         translation_key="supply_charge",
-        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="AUD/day",
     ),
 )
