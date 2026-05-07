@@ -27,7 +27,7 @@ dependencies = [
     # which together close the 13 CVEs that v0.1.0 inherited (SCA-M01..M05,
     # SCA-L01..L08, SCA-H02). HA 2026.4 also requires Python 3.14.2.
     "homeassistant>=2026.4.4",
-    "aiohttp>=3.13.4",
+    "aiohttp>=3.13.5",
 ]
 
 [project.optional-dependencies]
