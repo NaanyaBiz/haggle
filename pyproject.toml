@@ -40,7 +40,7 @@ dev = [
     "pytest-homeassistant-custom-component>=0.13.325,<0.13.326",
     "ruff>=0.7",
     "mypy>=1.13",
-    "pre-commit>=4.0",
+    "pre-commit>=4.6.0",
 ]
 
 [project.urls]
