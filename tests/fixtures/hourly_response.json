@@ -45,9 +45,9 @@
         {
           "dateTime": "2024-01-15T03:30:00Z",
           "consumption": {
-            "values": {"amount": 0.675, "quantity": 0.675},
-            "amount": 0.357,
-            "quantity": 1.057,
+            "values": {"amount": 0.925, "quantity": 0.925},
+            "amount": 0.489,
+            "quantity": 1.448,
             "type": "peak"
           }
         },
@@ -67,6 +67,15 @@
             "amount": 0.0,
             "quantity": 0.0,
             "type": "none"
+          }
+        },
+        {
+          "dateTime": "2024-01-15T14:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
           }
         }
       ]

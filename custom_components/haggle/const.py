@@ -36,6 +36,12 @@ BACKFILL_CHUNK_DAYS: Final = 7
 # Seconds to sleep between per-day fetches in a backfill chunk so we don't
 # fire 7 requests in under a second.
 BACKFILL_INTER_REQUEST_DELAY: Final = 0.5
+# Trailing days to re-fetch every poll once initial backfill is complete.
+# Self-heals AGL's day-late AEMO backfills: a slot first returned as a
+# placeholder gets overwritten once AGL has the real read.
+# async_add_external_statistics is idempotent on (statistic_id, start), so
+# this is a safe overwrite.
+REWINDOW_DAYS: Final = 7
 
 # AGL BFF requires these headers on Hourly/Daily usage endpoints (HTTP 500 without them).
 # Documented from AGL mobile app 8.38.0-531 — 2026-05-01.

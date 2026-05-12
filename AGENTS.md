@@ -245,11 +245,22 @@ trying to fold everything into the current PR.
   - `contractNumber` ≠ `accountNumber` — use `contractNumber` in all data paths
 - **30-min interval data** (despite "Hourly" in the path):
   `GET /mobile/bff/api/v2/usage/smart/Electricity/{contractNumber}/Current/Hourly?period=YYYY-MM-DD_YYYY-MM-DD&scaling=...`
-- **kWh source of truth**: `consumption.values.quantity` — NOT `consumption.quantity`
-  (which is UI-rounded) and NOT `consumption.values.amount` (same value but semantically cost)
+- **kWh source of truth**: `consumption.quantity` (outer) — matches the AGL
+  portal "MyUsageData" CSV export to 0.001 kWh. Reconciled 2026-05-12 across
+  11 mitm /Hourly captures.
+  - **Do NOT use `consumption.values.quantity`** (inner). It's a DPI/chart-scaled
+    helper (in real captures `values.amount` always equals `values.quantity`)
+    that undercounts kWh by 4-73% with no consistent ratio. Reading it was the
+    root cause of the v0.1.0 / v0.2.0-beta.{1,2,3} meter-undercounting bug.
+- **Cost source of truth**: `consumption.amount` (outer) — AUD for the slot.
 - **`dateTime` field**: slot start, in **UTC**. Convert to local for display.
 - **`consumption.type`**: `normal` | `peak` | `offpeak` | `shoulder` | `none`
   (filter out `none` — future-dated or unavailable intervals)
+- **Zero-on-zero filter**: AGL also returns intervals with non-`none` type
+  but both `quantity` and `amount` equal to 0 for days where the AEMO feed
+  hasn't yet delivered the meter reads. The parser drops these (they would
+  otherwise create phantom flat rows that the resume logic would skip past
+  permanently once AGL backfilled the real reads).
 
 ### Polling Cadence
 
@@ -261,6 +272,15 @@ trying to fold everything into the current PR.
 | Token refresh | Just-in-time (< 2 min to `exp`) | tokens expire at 15 min |
 
 **Do not poll for today's hourly data** — it will be empty. Fetch *yesterday*.
+
+**Trailing rewindow (self-healing)**: once initial backfill is complete, every
+poll re-fetches the trailing `REWINDOW_DAYS` (default 7). This makes the
+integration self-heal AGL's day-late AEMO backfills — a slot first returned as
+a `quantity=0` placeholder is overwritten with the real meter read on a later
+cycle. `async_add_external_statistics` is idempotent on `(statistic_id, start)`
+so the overwrite is safe; the baseline cumulative sum for the rewindow is
+looked up via `statistics_during_period` (the sum at the hour right before
+fetch_start UTC midnight), NOT the most-recent stored sum.
 
 ### Previous Bill Period
 
@@ -375,6 +395,18 @@ The HA Energy dashboard requires:
 - **Don't forward raw AGL response dicts** via `dict(rate)` or similar
   open-schema passthrough. Allowlist exactly the fields the coordinator
   consumes, so a MITM-crafted response can't smuggle keys into runtime state.
+- **Don't read kWh from `consumption.values.quantity` (inner).** That's a
+  DPI/chart-scaled helper, not the meter read; in real captures `values.amount`
+  always equals `values.quantity` and both undercount real consumption by
+  4-73% with no consistent ratio. Read `consumption.quantity` (outer) for kWh
+  and `consumption.amount` (outer) for AUD. Confirmed against the AGL portal
+  "MyUsageData" CSV across 11 mitm captures, 2026-05-12. Regression test:
+  `tests/test_parser.py::TestParseIntervalReadings::test_uses_outer_consumption_quantity_not_inner_values`.
+- **Don't write `quantity == 0 && amount == 0` intervals to statistics.** AGL
+  returns these as placeholders on days where the AEMO feed hasn't yet
+  delivered the meter reads (with a non-`none` type, even). Inserting them
+  creates phantom flat rows that the resume logic skips past forever once AGL
+  backfills the real reads. `parse_interval_readings` filters them.
 - **Don't put `AGL` (or any close variant) in `DeviceInfo.manufacturer`.**
   HA's "Service info" card renders `model by manufacturer`; this is an
   unofficial third-party integration and labelling the device as if AGL
@@ -430,7 +462,7 @@ Conventional Commits format is enforced by `commitlint` pre-commit hook:
 
 ```
 feat: add daily consumption sensor
-fix: handle missing consumption.values.quantity
+fix: handle missing consumption.quantity
 chore(release): v0.2.0
 ci: add hacs workflow
 ```
