@@ -7,7 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_No unreleased changes yet._
+### Fixed
+
+- **Energy meter undercounting (severe).** The parser was reading kWh from
+  `consumption.values.quantity` (a DPI/chart-scaled helper), not
+  `consumption.quantity` (the real meter read). This undercounted the Energy
+  dashboard by 4-73% per day with no consistent ratio. Confirmed against the
+  AGL portal "MyUsageData" CSV across 11 mitm captures, 2026-05-12. Cost
+  values were already read correctly from `consumption.amount` and are
+  unaffected. Anyone running v0.1.0 / v0.2.0-beta.{1,2,3} should wipe the
+  `haggle:*` rows from `statistics` / `statistics_short_term` after upgrading
+  and let the 30-day backfill rebuild from scratch.
+- **AGL placeholder days no longer create phantom zero rows.** On days where
+  AEMO hasn't delivered the meter reads yet, AGL returns intervals with a
+  non-`none` type but `quantity == 0 && amount == 0`. The parser now drops
+  these instead of writing 24 zero-kWh hourly rows that the resume logic
+  would never re-check.
+- **Trailing rewindow self-heals AGL backfills.** Every poll now re-fetches
+  the last `REWINDOW_DAYS` (default 7) so a slot first returned as a
+  placeholder is overwritten when AGL has the real read. The cumulative-sum
+  baseline for the rewindow is looked up via `statistics_during_period`
+  (sum at the hour right before fetch_start UTC midnight), not the latest
+  stored sum.
 
 ---
 

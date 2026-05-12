@@ -120,21 +120,55 @@ class TestParseIntervalReadings:
         readings = parse_interval_readings(data)
         assert all(r.rate_type != "none" for r in readings)
 
-    def test_uses_values_quantity_not_top_level_quantity(self) -> None:
-        """kWh must come from consumption.values.quantity, not consumption.quantity.
+    def test_uses_outer_consumption_quantity_not_inner_values(self) -> None:
+        """kWh must come from consumption.quantity (outer), NOT values.quantity (inner).
 
-        The fixture has values.quantity=0.112 but quantity=0.175 for the first
-        item — we must get 0.112.
+        Reconciled 2026-05-12 against an AGL portal "MyUsageData" CSV across
+        11 mitm /Hourly captures: outer ``consumption.quantity`` matches the
+        portal-grade meter value to 0.001 kWh, while ``consumption.values.quantity``
+        is a DPI/chart-scaled helper and undercounts by 4-73%.
+
+        The fixture has values.quantity=0.112 but outer quantity=0.175 for the
+        first item — we must get 0.175.
         """
         data = load_fixture("hourly_response.json")
         readings = parse_interval_readings(data)
         kwhs = {r.kwh for r in readings}
-        # These are values.quantity values from the fixture
-        assert 0.112 in kwhs
-        assert 0.119 in kwhs
-        # The rounded top-level quantities must NOT appear
-        assert 0.175 not in kwhs
-        assert 0.186 not in kwhs
+        # Outer consumption.quantity values from the fixture (the real meter reads).
+        assert 0.175 in kwhs
+        assert 0.186 in kwhs
+        # The inner values.quantity (chart helper) must NOT appear as kWh.
+        assert 0.112 not in kwhs
+        assert 0.119 not in kwhs
+
+    def test_uses_outer_consumption_amount_for_cost(self) -> None:
+        """Cost AUD must come from consumption.amount (outer), not values.amount."""
+        data = load_fixture("hourly_response.json")
+        readings = parse_interval_readings(data)
+        costs = {r.cost_aud for r in readings}
+        # Outer consumption.amount values from the fixture.
+        assert 0.059 in costs
+        assert 0.063 in costs
+        # The peak slot has outer amount 0.489 and inner amount 0.925 —
+        # we must see 0.489 (the real cost).
+        assert 0.489 in costs
+        assert 0.925 not in costs
+
+    def test_filters_zero_on_zero_placeholders(self) -> None:
+        """Slots with kwh=0 AND cost=0 are AGL placeholders (data not ready).
+
+        AGL returns these for days where the AEMO meter reads have not yet
+        been delivered — even with a non-``none`` type. Inserting them as
+        zero-state rows would create phantom flat days in the statistics
+        table that the resume logic would skip past forever once AGL had the
+        real reads.
+        """
+        data = load_fixture("hourly_response.json")
+        readings = parse_interval_readings(data)
+        # Fixture has one type=normal slot at 14:30 UTC with all-zero values
+        # — it must be filtered out.
+        for r in readings:
+            assert not (r.kwh == 0.0 and r.cost_aud == 0.0)
 
     def test_dt_is_tz_aware_utc(self) -> None:
         """Every parsed datetime must be UTC-aware."""
@@ -145,11 +179,8 @@ class TestParseIntervalReadings:
             assert r.dt.tzinfo is not None
             assert r.dt.tzinfo == UTC
 
-    def test_expected_count_after_none_filter(self) -> None:
-        """Fixture has 7 items, 1 with type=none → 6 readings returned.
-
-        6 = 4 normal + 1 peak + 1 normal. The none slot is filtered out.
-        """
+    def test_expected_count_after_filters(self) -> None:
+        """Fixture has 8 items; 1 has type=none, 1 is zero-on-zero → 6 readings."""
         data = load_fixture("hourly_response.json")
         readings = parse_interval_readings(data)
         assert len(readings) == 6
@@ -165,7 +196,9 @@ class TestParseIntervalReadings:
         readings = parse_interval_readings(data)
         peak_readings = [r for r in readings if r.rate_type == "peak"]
         assert len(peak_readings) == 1
-        assert peak_readings[0].kwh == pytest.approx(0.675)
+        # Peak slot outer quantity is 1.448, outer amount is 0.489.
+        assert peak_readings[0].kwh == pytest.approx(1.448)
+        assert peak_readings[0].cost_aud == pytest.approx(0.489)
 
     def test_empty_sections_returns_empty_list(self) -> None:
         readings = parse_interval_readings({"sections": []})
@@ -180,7 +213,7 @@ class TestParseIntervalReadings:
                         {
                             "dateTime": "not-a-date",
                             "consumption": {
-                                "values": {"quantity": 0.5},
+                                "quantity": 0.5,
                                 "amount": 0.1,
                                 "type": "normal",
                             },
@@ -350,7 +383,7 @@ class TestParseDailyReadings:
                         {
                             "dateTime": "2026-04-28T00:00:00Z",
                             "consumption": {
-                                "values": {"quantity": 5.2},
+                                "quantity": 5.2,
                                 "amount": 1.75,
                                 "type": "normal",
                             },
@@ -358,7 +391,7 @@ class TestParseDailyReadings:
                         {
                             "dateTime": "2026-04-29T00:00:00Z",
                             "consumption": {
-                                "values": {"quantity": 0.0},
+                                "quantity": 0.0,
                                 "amount": 0.0,
                                 "type": "none",
                             },
@@ -379,7 +412,7 @@ class TestParseDailyReadings:
                         {
                             "dateTime": "2026-04-28T00:00:00Z",
                             "consumption": {
-                                "values": {"quantity": 5.2},
+                                "quantity": 5.2,
                                 "amount": 1.75,
                                 "type": "normal",
                             },
@@ -391,7 +424,11 @@ class TestParseDailyReadings:
         readings = parse_daily_readings(data)
         assert readings[0].day == date(2026, 4, 28)
 
-    def test_daily_uses_values_quantity(self) -> None:
+    def test_daily_uses_outer_consumption_quantity(self) -> None:
+        """Daily kWh must come from outer consumption.quantity (matches AEMO CSV).
+
+        Inner ``values.quantity`` is a DPI/chart helper and must not be read.
+        """
         data = {
             "sections": [
                 {
@@ -399,8 +436,9 @@ class TestParseDailyReadings:
                         {
                             "dateTime": "2026-04-28T00:00:00Z",
                             "consumption": {
-                                "values": {"quantity": 5.2},
-                                "amount": 1.75,
+                                "values": {"amount": 5.2, "quantity": 5.2},
+                                "amount": 9.78,
+                                "quantity": 29.044,
                                 "type": "normal",
                             },
                         }
@@ -409,4 +447,26 @@ class TestParseDailyReadings:
             ]
         }
         readings = parse_daily_readings(data)
-        assert readings[0].kwh == pytest.approx(5.2)
+        assert readings[0].kwh == pytest.approx(29.044)
+        assert readings[0].cost_aud == pytest.approx(9.78)
+
+    def test_daily_filters_zero_on_zero_placeholder(self) -> None:
+        """Daily slots with kwh=0 AND cost=0 are AGL placeholders → filtered."""
+        data = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-04-28T00:00:00Z",
+                            "consumption": {
+                                "quantity": 0.0,
+                                "amount": 0.0,
+                                "type": "normal",
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        readings = parse_daily_readings(data)
+        assert readings == []

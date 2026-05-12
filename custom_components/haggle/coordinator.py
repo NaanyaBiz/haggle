@@ -13,6 +13,11 @@ Backfill strategy: first install pulls up to BACKFILL_DAYS of history, but
 throttled to BACKFILL_CHUNK_DAYS per 24 h poll so we don't hammer the AGL
 BFF on startup. Smart endpoint selection per day: days inside the current
 billing period use Current/Hourly; older days use Previous/Hourly.
+
+Once initial backfill is complete, every poll re-fetches the trailing
+REWINDOW_DAYS so AGL's day-late AEMO backfills self-heal — a slot first
+returned as a placeholder is overwritten once AGL has the real read. The
+recorder is idempotent on (statistic_id, start), so the overwrite is safe.
 """
 
 from __future__ import annotations
@@ -21,7 +26,7 @@ import asyncio
 import logging
 import math
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -36,6 +41,7 @@ from .const import (
     BACKFILL_DAYS,
     BACKFILL_INTER_REQUEST_DELAY,
     DOMAIN,
+    REWINDOW_DAYS,
     SCAN_INTERVAL_HOURLY,
     STAT_CONSUMPTION,
     STAT_COST,
@@ -111,7 +117,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             raise UpdateFailed(str(err)) from err
 
     async def _fetch_and_import(self) -> HaggleData:
-        """Core update: fetch up to BACKFILL_CHUNK_DAYS missing intervals and return data."""
+        """Core update: fetch missing intervals + trailing rewindow, return data."""
         stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
         stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
 
@@ -132,26 +138,34 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
-        if last_stat_date is None:
-            fetch_start = today - timedelta(days=BACKFILL_DAYS)
-        else:
-            fetch_start = last_stat_date + timedelta(days=1)
-
-        # Throttle: at most BACKFILL_CHUNK_DAYS per poll cycle.
+        (
+            fetch_start,
+            initial_cons_sum,
+            initial_cost_sum,
+        ) = await self._resolve_resume_point(
+            today,
+            last_stat_date,
+            last_cons_sum,
+            last_cost_sum,
+            stat_id_cons,
+            stat_id_cost,
+        )
         fetch_end = min(
             yesterday, fetch_start + timedelta(days=BACKFILL_CHUNK_DAYS - 1)
         )
+
+        # Seed the sensor with the most-recent known cumulative; _fetch_range
+        # bumps it forward when the import produces new rows.
+        self._latest_cumulative_kwh = last_cons_sum or 0.0
 
         if fetch_start <= yesterday:
             await self._fetch_range(
                 fetch_start,
                 fetch_end,
                 bill_start,
-                initial_cons_sum=last_cons_sum or 0.0,
-                initial_cost_sum=last_cost_sum or 0.0,
+                initial_cons_sum=initial_cons_sum,
+                initial_cost_sum=initial_cost_sum,
             )
-        else:
-            self._latest_cumulative_kwh = last_cons_sum or 0.0
 
         # Extract rates from plan.
         unit_rate_aud: float | None = None
@@ -184,6 +198,41 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             latest_cumulative_kwh=self._latest_cumulative_kwh,
         )
 
+    async def _resolve_resume_point(
+        self,
+        today: date,
+        last_stat_date: date | None,
+        last_cons_sum: float | None,
+        last_cost_sum: float | None,
+        stat_id_cons: str,
+        stat_id_cost: str,
+    ) -> tuple[date, float, float]:
+        """Choose fetch_start + initial sums per the resume-strategy decision tree.
+
+        - First install: backfill from BACKFILL_DAYS ago, sums start at 0.
+        - Big gap (> REWINDOW_DAYS behind): resume incrementally from
+          last_stat_date + 1, using the last stored cumulative as the baseline.
+        - Normal operation: re-fetch the trailing REWINDOW_DAYS so AGL's
+          day-late AEMO backfills self-heal. Baseline is the sum at the hour
+          right before fetch_start UTC midnight (looked up — NOT the latest
+          stored sum, which is several days ahead of the rewindow start).
+        """
+        backfill_floor = today - timedelta(days=BACKFILL_DAYS)
+        if last_stat_date is None:
+            return backfill_floor, 0.0, 0.0
+        if last_stat_date < today - timedelta(days=REWINDOW_DAYS):
+            return (
+                last_stat_date + timedelta(days=1),
+                last_cons_sum or 0.0,
+                last_cost_sum or 0.0,
+            )
+        fetch_start = max(today - timedelta(days=REWINDOW_DAYS), backfill_floor)
+        fetch_start_utc = datetime.combine(fetch_start, time.min, tzinfo=UTC)
+        baseline_cons, baseline_cost = await self._get_baseline_sums(
+            stat_id_cons, stat_id_cost, fetch_start_utc
+        )
+        return fetch_start, baseline_cons, baseline_cost
+
     async def _get_last_stat(self, stat_id: str) -> tuple[float | None, date | None]:
         """Return (last_sum, last_date) for stat_id, or (None, None) if no rows."""
         from homeassistant.components.recorder.statistics import (
@@ -207,6 +256,44 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if raw_start:
             last_date = datetime.fromtimestamp(raw_start, tz=UTC).date()
         return last_sum, last_date
+
+    async def _get_baseline_sums(
+        self,
+        stat_id_cons: str,
+        stat_id_cost: str,
+        before_dt: datetime,
+    ) -> tuple[float, float]:
+        """Return cumulative sums at the last hour strictly before before_dt.
+
+        Used by the trailing-rewindow path so newly-imported rows resume from
+        the correct baseline. Looks back 2 days to tolerate sparse data.
+        Returns (0.0, 0.0) if no rows exist in the look-back window.
+        """
+        from homeassistant.components.recorder.statistics import (
+            statistics_during_period,
+        )
+        from homeassistant.helpers.recorder import get_instance
+
+        look_back = before_dt - timedelta(days=2)
+        result = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            look_back,
+            before_dt,
+            {stat_id_cons, stat_id_cost},
+            "hour",
+            None,
+            {"sum"},
+        )
+
+        def _last_sum(stat_id: str) -> float:
+            rows = result.get(stat_id) or []
+            if not rows:
+                return 0.0
+            last = rows[-1].get("sum")
+            return float(last) if last is not None else 0.0
+
+        return _last_sum(stat_id_cons), _last_sum(stat_id_cost)
 
     async def _fetch_range(
         self,
@@ -253,8 +340,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             await self._import_intervals(
                 all_intervals, initial_cons_sum, initial_cost_sum
             )
-        else:
-            self._latest_cumulative_kwh = initial_cons_sum
+        # If no intervals were fetched (e.g. AGL had no data for the whole
+        # range), leave _latest_cumulative_kwh as the caller seeded it — the
+        # most recent stored cumulative remains the sensor value.
 
     async def _import_intervals(
         self,

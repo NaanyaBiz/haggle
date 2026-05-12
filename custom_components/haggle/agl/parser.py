@@ -4,9 +4,16 @@ Reference response shapes are mirrored under tests/fixtures/ (anonymised).
 Field semantics are documented in AGENTS.md §AGL API — Key Facts.
 
 Critical fields:
-  - Interval kWh: consumption.values.quantity  (NOT consumption.quantity)
-  - Interval dt:  dateTime field is slot-start in UTC
-  - Contract ID:  contractNumber (not accountNumber, not accountId)
+  - Interval kWh:  consumption.quantity        (outer — matches AEMO/CSV)
+  - Interval cost: consumption.amount          (outer — AUD for the slot)
+  - Interval dt:   dateTime field is slot-start in UTC
+  - Contract ID:   contractNumber (not accountNumber, not accountId)
+
+The inner ``consumption.values.{amount,quantity}`` block is a DPI/chart-scaled
+helper (the two sub-fields are always equal in real responses) and is NOT
+the metered value. Reading it undercounts kWh by 4-73% with no consistent
+ratio — confirmed by reconciling 11 mitm /Hourly captures against an AGL
+"MyUsageData" portal CSV export, 2026-05-12.
 """
 
 from __future__ import annotations
@@ -61,8 +68,12 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
 def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
-    Filters out items with type='none' (future/unavailable slots).
-    dateTime is slot-start UTC; kwh from consumption.values.quantity.
+    Filters out items with type='none' (future/unavailable slots) and
+    placeholder slots where kWh and cost are both zero (AGL returns these
+    for days where AEMO meter reads have not yet been delivered, even with
+    a non-``none`` type — they would otherwise create phantom flat rows in
+    the statistics table that the resume logic would never re-check).
+    dateTime is slot-start UTC; kwh from consumption.quantity (outer).
     """
     readings: list[IntervalReading] = []
     for section in data.get("sections") or []:
@@ -78,9 +89,10 @@ def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
                     dt = dt.replace(tzinfo=UTC)
             except (ValueError, AttributeError):
                 continue
-            values = consumption.get("values") or {}
-            kwh = _safe_float(values.get("quantity"))
+            kwh = _safe_float(consumption.get("quantity"))
             cost_aud = _safe_float(consumption.get("amount"))
+            if kwh == 0.0 and cost_aud == 0.0:
+                continue
             readings.append(
                 IntervalReading(
                     dt=dt,
@@ -97,7 +109,7 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
 
     Response uses sections[].items[] — same envelope as /Hourly.
     dateTime is day-start in UTC (time component is 00:00:00Z).
-    kWh from consumption.values.quantity.
+    kWh from consumption.quantity (outer — see module docstring).
     """
     readings: list[DailyReading] = []
     for section in data.get("sections") or []:
@@ -111,9 +123,10 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
                 day: date = dt.date()
             except (ValueError, AttributeError):
                 continue
-            values = consumption.get("values") or {}
-            kwh = _safe_float(values.get("quantity"))
+            kwh = _safe_float(consumption.get("quantity"))
             cost_aud = _safe_float(consumption.get("amount"))
+            if kwh == 0.0 and cost_aud == 0.0:
+                continue
             readings.append(DailyReading(day=day, kwh=kwh, cost_aud=cost_aud))
     return readings
 

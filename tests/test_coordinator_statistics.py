@@ -24,6 +24,7 @@ from custom_components.haggle.const import (
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
     DOMAIN,
+    REWINDOW_DAYS,
     STAT_CONSUMPTION,
 )
 from custom_components.haggle.coordinator import HaggleCoordinator
@@ -518,7 +519,7 @@ class TestFetchAndImport:
     async def test_no_previous_stats_starts_from_backfill_days_ago(
         self, hass: HomeAssistant
     ) -> None:
-        """First install: fetch_start = today - BACKFILL_DAYS."""
+        """First install: fetch_start = today - BACKFILL_DAYS, baseline 0.0."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.return_value = _empty_summary()
         mock_client.async_get_plan.return_value = _empty_plan()
@@ -541,17 +542,28 @@ class TestFetchAndImport:
         assert mock_range.called
         actual_start = mock_range.call_args[0][0]
         assert actual_start == expected_start
+        # Baseline is 0 on first install — no prior data.
+        assert mock_range.call_args.kwargs["initial_cons_sum"] == 0.0
+        assert mock_range.call_args.kwargs["initial_cost_sum"] == 0.0
 
-    async def test_chunk_limit_applied_to_range(self, hass: HomeAssistant) -> None:
-        """fetch_end must be at most fetch_start + BACKFILL_CHUNK_DAYS - 1."""
+    async def test_big_gap_resumes_incrementally_without_rewindow(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Gap larger than REWINDOW_DAYS → resume from last_stat_date+1, throttled.
+
+        Used when the integration was offline or a backfill is mid-flight.
+        baseline = last_cons_sum (the last stored cumulative), not a lookup —
+        the trailing rewindow doesn't apply.
+        """
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.return_value = _empty_summary()
         mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
-        # last stat was long ago → big gap; chunk should cap the end
-        last_date = today - timedelta(days=BACKFILL_DAYS)
+        # last_date well outside the rewindow.
+        last_date = today - timedelta(days=REWINDOW_DAYS + 5)
+        expected_start = last_date + timedelta(days=1)
 
         with (
             patch.object(
@@ -560,62 +572,98 @@ class TestFetchAndImport:
                 new_callable=AsyncMock,
                 return_value=(100.0, last_date),
             ),
-            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
-        ):
-            await coord._fetch_and_import()
-
-        fetch_start = mock_range.call_args[0][0]
-        fetch_end = mock_range.call_args[0][1]
-        assert (fetch_end - fetch_start).days <= BACKFILL_CHUNK_DAYS - 1
-
-    async def test_existing_stats_resumes_from_next_day(
-        self, hass: HomeAssistant
-    ) -> None:
-        """When last_stat_date is 3 days ago, fetch_start = 2 days ago."""
-        mock_client = AsyncMock()
-        mock_client.async_get_usage_summary.return_value = _empty_summary()
-        mock_client.async_get_plan.return_value = _empty_plan()
-        coord = _make_coordinator(hass, client=mock_client)
-
-        today = datetime.now(UTC).date()
-        last_date = today - timedelta(days=3)
-        expected_start = today - timedelta(days=2)
-
-        with (
             patch.object(
                 coord,
-                "_get_last_stat",
+                "_get_baseline_sums",
                 new_callable=AsyncMock,
-                return_value=(50.0, last_date),
-            ),
+            ) as mock_baseline,
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
 
         assert mock_range.call_args[0][0] == expected_start
+        # Throttle: fetch_end at most BACKFILL_CHUNK_DAYS - 1 past fetch_start.
+        fetch_end = mock_range.call_args[0][1]
+        assert (fetch_end - expected_start).days <= BACKFILL_CHUNK_DAYS - 1
+        # Baseline lookup must NOT be used in the catch-up path.
+        mock_baseline.assert_not_called()
+        # initial_cons_sum is the last stored cumulative.
+        assert mock_range.call_args.kwargs["initial_cons_sum"] == 100.0
 
-    async def test_already_up_to_date_no_fetch(self, hass: HomeAssistant) -> None:
-        """If last stat is yesterday, _fetch_range is not called."""
+    async def test_trailing_rewindow_when_within_window(
+        self, hass: HomeAssistant
+    ) -> None:
+        """When last_stat_date is within REWINDOW_DAYS, refetch trailing window."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.return_value = _empty_summary()
         mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
 
         today = datetime.now(UTC).date()
-        yesterday = today - timedelta(days=1)
+        # last_stat_date is yesterday (definitely within rewindow).
+        last_date = today - timedelta(days=1)
+        expected_start = today - timedelta(days=REWINDOW_DAYS)
 
         with (
             patch.object(
                 coord,
                 "_get_last_stat",
                 new_callable=AsyncMock,
-                return_value=(200.0, yesterday),
+                return_value=(500.0, last_date),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(450.0, 380.0),
+            ) as mock_baseline,
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        # Rewindow re-fetches even though last_stat_date is "up to date".
+        mock_range.assert_called_once()
+        assert mock_range.call_args[0][0] == expected_start
+        # Baseline lookup must be called for the rewindow path.
+        mock_baseline.assert_called_once()
+        # initial_* come from the baseline lookup, NOT last_cons_sum=500.0.
+        assert mock_range.call_args.kwargs["initial_cons_sum"] == 450.0
+        assert mock_range.call_args.kwargs["initial_cost_sum"] == 380.0
+
+    async def test_rewindow_clamped_to_backfill_floor(
+        self, hass: HomeAssistant
+    ) -> None:
+        """fetch_start can't go further back than today - BACKFILL_DAYS."""
+        # We can't actually trigger this (REWINDOW_DAYS < BACKFILL_DAYS) but the
+        # logic must clamp safely if someone bumps REWINDOW_DAYS above BACKFILL_DAYS.
+        # Best we can do here: assert fetch_start >= backfill_floor.
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        last_date = today - timedelta(days=1)
+        backfill_floor = today - timedelta(days=BACKFILL_DAYS)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(500.0, last_date),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(450.0, 380.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
 
-        mock_range.assert_not_called()
+        assert mock_range.call_args[0][0] >= backfill_floor
 
     async def test_returns_haggle_data_instance(self, hass: HomeAssistant) -> None:
         from custom_components.haggle.coordinator import HaggleData
@@ -634,6 +682,12 @@ class TestFetchAndImport:
                 "_get_last_stat",
                 new_callable=AsyncMock,
                 return_value=(200.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(180.0, 150.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -664,6 +718,12 @@ class TestFetchAndImport:
                 "_get_last_stat",
                 new_callable=AsyncMock,
                 return_value=(100.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -705,6 +765,12 @@ class TestNumericGuards:
                 new_callable=AsyncMock,
                 return_value=(100.0, yesterday),
             ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
+            ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
             result = await coord._fetch_and_import()
@@ -740,6 +806,12 @@ class TestNumericGuards:
                 "_get_last_stat",
                 new_callable=AsyncMock,
                 return_value=(100.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):

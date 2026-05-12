@@ -305,10 +305,15 @@ class TestAglClient:
         # type=none slot should be filtered out → 2 readings
         assert len(readings) == 2
         assert all(isinstance(r, IntervalReading) for r in readings)
-        # Values are from consumption.values.quantity (not consumption.quantity)
+        # kWh comes from outer consumption.quantity (the real meter read),
+        # NOT consumption.values.quantity (a DPI/chart-scaled helper that
+        # undercounts by 4-73% — confirmed against AGL portal CSV 2026-05-12).
         kwhs = {r.kwh for r in readings}
-        assert 0.112 in kwhs
-        assert 0.119 in kwhs
+        assert 0.175 in kwhs
+        assert 0.186 in kwhs
+        # The inner values.quantity must NOT leak through as kWh.
+        assert 0.112 not in kwhs
+        assert 0.119 not in kwhs
         # Confirm dateTime is UTC
         assert all(r.dt.tzinfo == UTC for r in readings)
 
