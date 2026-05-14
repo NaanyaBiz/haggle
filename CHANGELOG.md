@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Platform floor bumped to Home Assistant 2026.5.0.** Tracks the
+  `pytest-homeassistant-custom-component` test harness (`0.13.329` pins
+  `homeassistant==2026.5.0`); the test fixture and the runtime floor stay
+  aligned. The 13-CVE closure from 2026.4 (`aiohttp==3.13.5`,
+  `cryptography>=46.0.6`, `orjson>=3.11.6`) is preserved at-or-above on
+  2026.5.0. `hacs.json:homeassistant` updated to match.
+- **Runtime dep floor `aiohttp>=3.13.5`** (was `>=3.13.4`). Matches what HA
+  2026.4+ already bundles; eliminates a stale floor.
+- **Dev-tooling floors bumped**: `ruff>=0.15.12`, `mypy>=2.0.0`,
+  `pre-commit>=4.6.0`. No new diagnostics surfaced — ruff and mypy both run
+  clean against the existing codebase.
+- **CI action SHAs rolled forward**: `astral-sh/setup-uv@v7.6.0 → v8.1.0`,
+  `github/codeql-action@v4.35.3 → v4.35.4`. Both pinned to 40-char SHAs.
+- **`uv.lock` regenerated** — notable transitive bumps: `urllib3 2.6.3 →
+  2.7.0`, `sqlalchemy 2.0.41 → 2.0.49`, `pyopenssl 26.0.0 → 26.1.0`.
+
+Closes #60, #61, #62, #63, #64, #65, #66, #69 (rolled up into one release
+so the test harness and runtime floor land together).
+
 ---
 
 ## [0.2.1] — 2026-05-15

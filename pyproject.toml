@@ -23,11 +23,11 @@ classifiers = [
 dependencies = [
     # Runtime deps mirror what's in custom_components/haggle/manifest.json
     # so editor tooling resolves imports. HA installs from manifest at runtime.
-    # HA 2026.4.4 bundles aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6
-    # which together close the 13 CVEs that v0.1.0 inherited (SCA-M01..M05,
-    # SCA-L01..L08, SCA-H02). HA 2026.4 also requires Python 3.14.2.
-    "homeassistant>=2026.4.4",
-    "aiohttp>=3.13.4",
+    # HA 2026.4 closed the 13 CVEs v0.1.0 inherited (SCA-M01..M05, SCA-L01..L08,
+    # SCA-H02) via aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6;
+    # 2026.5.0 keeps those at-or-above. HA 2026.4+ also requires Python 3.14.2.
+    "homeassistant>=2026.5.0",
+    "aiohttp>=3.13.5",
 ]
 
 [project.optional-dependencies]
@@ -35,12 +35,12 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=5.0",
-    # 0.13.325 pins homeassistant==2026.4.4 — keep test harness aligned with
+    # 0.13.329 pins homeassistant==2026.5.0 — keep test harness aligned with
     # the runtime floor above so transitive resolution stays consistent.
-    "pytest-homeassistant-custom-component>=0.13.325,<0.13.326",
-    "ruff>=0.7",
-    "mypy>=1.13",
-    "pre-commit>=4.0",
+    "pytest-homeassistant-custom-component>=0.13.329,<0.13.330",
+    "ruff>=0.15.12",
+    "mypy>=2.0.0",
+    "pre-commit>=4.6.0",
 ]
 
 [project.urls]
