@@ -1,0 +1,897 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Haggle — AGL dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.1/dist/echarts.min.js"></script>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --border: #2a313c;
+    --fg: #e6edf3;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --good: #3fb950;
+    --warn: #d29922;
+    --bad: #f85149;
+    --peak: rgba(248, 81, 73, 0.10);
+    --shoulder: rgba(210, 153, 34, 0.10);
+    --offpeak: rgba(63, 185, 80, 0.10);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  header {
+    padding: 16px 24px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  header .pill {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+  header button {
+    margin-left: auto;
+    background: var(--panel);
+    color: var(--fg);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  header button:hover { border-color: var(--accent); }
+  header button + button { margin-left: 8px; }
+  header button#backfill { margin-left: auto; }
+  header button#refresh  { margin-left: 8px; }
+  main {
+    padding: 16px 24px;
+    display: grid;
+    gap: 16px;
+    grid-template-columns: repeat(12, 1fr);
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+  }
+  .card h2 {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .col-3  { grid-column: span 3; }
+  .col-4  { grid-column: span 4; }
+  .col-6  { grid-column: span 6; }
+  .col-8  { grid-column: span 8; }
+  .col-12 { grid-column: span 12; }
+  .big { font-size: 28px; font-weight: 600; }
+  .sub { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .progress {
+    height: 6px;
+    background: #21262d;
+    border-radius: 3px;
+    margin-top: 8px;
+    overflow: hidden;
+  }
+  .progress > div { height: 100%; background: var(--accent); }
+  .chart { width: 100%; height: 320px; }
+  .chart.tall { height: 380px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--border); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; }
+  .delta-up   { color: var(--bad); }
+  .delta-down { color: var(--good); }
+  .err {
+    background: rgba(248, 81, 73, 0.08);
+    border: 1px solid var(--bad);
+    color: var(--bad);
+    padding: 12px;
+    border-radius: 6px;
+    grid-column: span 12;
+  }
+  .wizard {
+    grid-column: span 12;
+    background: var(--panel);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 20px 24px;
+  }
+  .wizard h2 {
+    margin: 0 0 6px;
+    font-size: 16px;
+    color: var(--fg);
+    text-transform: none;
+    letter-spacing: 0;
+  }
+  .wizard .step { margin-top: 16px; }
+  .wizard .step.done { opacity: 0.55; }
+  .wizard input[type="text"], .wizard textarea {
+    width: 100%;
+    background: #0e1116;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font: inherit;
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+  .wizard textarea { min-height: 60px; resize: vertical; }
+  .wizard button {
+    background: var(--accent);
+    color: #0e1116;
+    border: 0;
+    padding: 8px 16px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    margin-top: 8px;
+  }
+  .wizard button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .wizard a.url {
+    display: inline-block;
+    margin-top: 6px;
+    word-break: break-all;
+    color: var(--accent);
+    font-family: ui-monospace, monospace;
+    font-size: 12px;
+  }
+  .wizard label.contract {
+    display: block;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 6px;
+    cursor: pointer;
+  }
+  .wizard label.contract:hover { border-color: var(--accent); }
+  .wizard .err {
+    margin-top: 10px;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+  .summary-strip {
+    grid-column: span 12;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 24px 32px;
+    align-items: baseline;
+  }
+  .summary-strip .stat { min-width: 140px; }
+  .summary-strip .label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .summary-strip .value { font-size: 22px; font-weight: 600; margin-top: 2px; }
+  .summary-strip .value.solar { color: var(--good); }
+  .summary-strip .value.cost  { color: var(--warn); }
+  .summary-strip .sub { margin-top: 2px; }
+  .day-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .day-cell {
+    min-width: 64px;
+    padding: 8px 10px;
+    background: #0e1116;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    text-align: center;
+  }
+  .day-cell.today { border-color: var(--accent); }
+  .day-cell .dow {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .day-cell .date { font-size: 11px; color: var(--muted); margin-top: 1px; }
+  .day-cell .kwh { font-size: 16px; font-weight: 600; margin-top: 4px; }
+  .day-cell .cost { font-size: 11px; color: var(--warn); margin-top: 1px; }
+  .day-cell .bar {
+    height: 4px;
+    background: #21262d;
+    border-radius: 2px;
+    margin-top: 6px;
+    overflow: hidden;
+    position: relative;
+  }
+  .day-cell .bar > .imp { height: 100%; background: var(--accent); }
+  .day-cell .exp {
+    font-size: 10px;
+    color: var(--good);
+    margin-top: 3px;
+    height: 12px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Haggle</h1>
+  <span class="pill" id="contract">contract: …</span>
+  <span class="meta" id="status">loading…</span>
+  <button id="backfill" title="Re-fetch the last N days from AGL — populates solar fields on existing rows. No re-auth needed.">Backfill…</button>
+  <button id="refresh">Refresh</button>
+</header>
+<main id="root">
+  <div id="err" class="err" style="display:none"></div>
+
+  <section id="wizard" class="wizard" style="display:none">
+    <h2>Connect your AGL account</h2>
+    <div class="sub">
+      One-time setup. Uses Auth0 PKCE — no AGL password is ever sent through this app.
+    </div>
+
+    <div id="wiz-step1" class="step">
+      <div><b>Step 1.</b> Generate the AGL login link.</div>
+      <button id="wiz-start">Start setup</button>
+    </div>
+
+    <div id="wiz-step2" class="step" style="display:none">
+      <div><b>Step 2.</b> Open this link in a new tab and log in to AGL:</div>
+      <a id="wiz-url" class="url" href="#" target="_blank" rel="noreferrer noopener"></a>
+      <div class="sub" style="margin-top:8px">
+        After login you'll land on a Not-Found page — that's expected.
+        Copy the FULL URL from your browser's address bar and paste it below.
+      </div>
+      <textarea id="wiz-callback" placeholder="https://secure.agl.com.au/ios/au.com.agl.mobile/callback?code=…&amp;state=…"></textarea>
+      <button id="wiz-exchange">Continue</button>
+    </div>
+
+    <div id="wiz-step3" class="step" style="display:none">
+      <div><b>Step 3.</b> Choose the contract to track:</div>
+      <div id="wiz-contracts" style="margin-top:8px"></div>
+      <button id="wiz-finish">Finish setup</button>
+    </div>
+
+    <div id="wiz-err" class="err" style="display:none"></div>
+  </section>
+
+  <section class="card summary-strip">
+    <div class="stat">
+      <div class="label">Last 7 days</div>
+      <div class="sub" id="strip-range">—</div>
+    </div>
+    <div class="stat">
+      <div class="label">Used</div>
+      <div class="value" id="strip-kwh">—</div>
+      <div class="sub" id="strip-kwh-delta">vs prev week: —</div>
+    </div>
+    <div class="stat">
+      <div class="label">Cost</div>
+      <div class="value cost" id="strip-cost">—</div>
+      <div class="sub" id="strip-cost-delta">vs prev week: —</div>
+    </div>
+    <div class="stat" id="strip-solar-stat" style="display:none">
+      <div class="label">Solar exported</div>
+      <div class="value solar" id="strip-export">—</div>
+      <div class="sub" id="strip-credit">— credit</div>
+    </div>
+    <div class="stat" id="strip-net-stat" style="display:none">
+      <div class="label">Net cost</div>
+      <div class="value cost" id="strip-net">—</div>
+    </div>
+  </section>
+
+  <section class="card col-12">
+    <h2 id="day-strip-title">Last 7 days · per day</h2>
+    <div id="day-strip" class="day-strip"></div>
+  </section>
+
+  <section class="card col-3">
+    <h2>This bill period</h2>
+    <div class="big" id="bill-cost">$ —</div>
+    <div class="sub" id="bill-cost-sub">— kWh used</div>
+    <div class="progress"><div id="bill-bar" style="width:0%"></div></div>
+    <div class="sub" id="bill-period-sub">— of — days</div>
+  </section>
+
+  <section class="card col-3">
+    <h2>Projected total (net)</h2>
+    <div class="big" id="bill-proj">$ —</div>
+    <div class="sub" id="bill-proj-sub">— kWh projected</div>
+    <div class="sub" id="bill-proj-agl">AGL says: —</div>
+  </section>
+
+  <section class="card col-3 solar-only" style="display:none">
+    <h2>Solar export</h2>
+    <div class="big" id="solar-credit">$ —</div>
+    <div class="sub" id="solar-kwh">— kWh exported</div>
+    <div class="sub" id="solar-proj">Projected: —</div>
+    <div class="sub" id="solar-avg">Avg: — kWh/day</div>
+  </section>
+
+  <section class="card col-3">
+    <h2>Daily averages</h2>
+    <div class="big" id="bill-avg-cost">$ — /day</div>
+    <div class="sub" id="bill-avg-kwh">— kWh /day</div>
+    <div class="sub" id="bill-supply">Supply charge: — c/day</div>
+  </section>
+
+  <section class="card col-12">
+    <h2>Half-hourly consumption (last 3 days, tariff bands shaded)</h2>
+    <div id="chart-intervals" class="chart tall"></div>
+  </section>
+
+  <section class="card col-8">
+    <h2>Daily consumption (30 days)</h2>
+    <div id="chart-daily" class="chart"></div>
+  </section>
+
+  <section class="card col-4">
+    <h2>Period comparisons</h2>
+    <table id="comparisons-table">
+      <thead><tr><th>Window</th><th>Now</th><th>Prev</th><th>Δ</th><th>Yr ago</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section class="card col-12">
+    <h2>Heatmap — average kWh by weekday × half-hour (last 8 weeks)</h2>
+    <div id="chart-heatmap" class="chart tall"></div>
+  </section>
+
+  <section class="card col-12">
+    <h2>Tariff rates</h2>
+    <table id="rates-table">
+      <thead><tr><th>Title</th><th>Type</th><th>Price</th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+</main>
+
+<script>
+const fmtAUD = v => v == null ? "—" : "$" + Number(v).toLocaleString("en-AU", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+const fmtKWh = v => v == null ? "—" : Number(v).toLocaleString("en-AU", {maximumFractionDigits: 1}) + " kWh";
+
+async function jget(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url} → ${r.status}`);
+  return r.json();
+}
+
+function showErr(msg) {
+  const el = document.getElementById("err");
+  el.textContent = msg;
+  el.style.display = "";
+}
+
+function rateColor(t) {
+  if (t === "peak") return "rgba(248, 81, 73, 0.12)";
+  if (t === "shoulder") return "rgba(210, 153, 34, 0.12)";
+  if (t === "offpeak") return "rgba(63, 185, 80, 0.12)";
+  return "transparent";
+}
+
+function setDashboardVisible(visible) {
+  // Skip cards marked .solar-only — loadBill owns their visibility so they
+  // don't briefly flash on every refresh before the bill data arrives.
+  for (const el of document.querySelectorAll("main > section.card")) {
+    if (el.classList.contains("solar-only")) continue;
+    el.style.display = visible ? "" : "none";
+  }
+  document.getElementById("wizard").style.display = visible ? "none" : "";
+}
+
+let dataLagDays = 2;
+
+async function loadStatus() {
+  const s = await jget("/api/status");
+  if (typeof s.data_lag_days === "number") dataLagDays = s.data_lag_days;
+  document.getElementById("contract").textContent =
+    "contract: " + (s.contract_number || "(none)");
+
+  // Status line — backfill progress takes precedence when running.
+  let line = "";
+  const bf = s.backfill;
+  if (bf && bf.state === "running") {
+    line = `backfilling ${bf.days_done}/${bf.days_total}  (${bf.from} → ${bf.to})`;
+  } else if (bf && bf.state === "error") {
+    line = `backfill error: ${bf.error}`;
+  } else if (bf && bf.state === "done") {
+    line = `backfill done: ${bf.days_done} days  (${bf.from} → ${bf.to})`;
+  }
+  if (line) line += "  ·  ";
+  if (s.last_run_at) {
+    line += `last poll: ${new Date(s.last_run_at).toLocaleString()}` +
+      (s.last_run_ok ? " ✓" : ` ✗ ${s.last_error || ""}`);
+  } else if (s.configured) {
+    line += "no polls yet";
+  }
+  document.getElementById("status").textContent = line;
+
+  // Disable the backfill button while one is in flight.
+  document.getElementById("backfill").disabled = !!(bf && bf.state === "running");
+
+  setDashboardVisible(!!s.configured);
+  return !!s.configured;
+}
+
+// ---------- Setup wizard ----------
+let wizToken = null;
+
+function wizErr(msg) {
+  const e = document.getElementById("wiz-err");
+  e.textContent = msg;
+  e.style.display = msg ? "" : "none";
+}
+
+document.getElementById("wiz-start").addEventListener("click", async () => {
+  wizErr("");
+  const btn = document.getElementById("wiz-start");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/setup/start", { method: "POST" });
+    if (!r.ok) throw new Error(`start failed (${r.status})`);
+    const data = await r.json();
+    wizToken = data.token;
+    const a = document.getElementById("wiz-url");
+    a.href = data.authorize_url;
+    a.textContent = data.authorize_url;
+    document.getElementById("wiz-step1").classList.add("done");
+    document.getElementById("wiz-step2").style.display = "";
+    document.getElementById("wiz-callback").focus();
+  } catch (e) {
+    wizErr(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("wiz-exchange").addEventListener("click", async () => {
+  wizErr("");
+  const callback = document.getElementById("wiz-callback").value.trim();
+  if (!callback) { wizErr("Paste the callback URL first."); return; }
+  const btn = document.getElementById("wiz-exchange");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/setup/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: wizToken, callback_url: callback }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || data.detail || `exchange failed (${r.status})`);
+    if (!data.contracts || !data.contracts.length) {
+      wizErr("No contracts found on this AGL account.");
+      return;
+    }
+    const list = document.getElementById("wiz-contracts");
+    list.innerHTML = "";
+    for (let i = 0; i < data.contracts.length; i++) {
+      const c = data.contracts[i];
+      const id = "ctr-" + i;
+      const lbl = document.createElement("label");
+      lbl.className = "contract";
+      lbl.htmlFor = id;
+      lbl.innerHTML =
+        `<input type="radio" name="contract" id="${id}" value="${c.contract_number}" ${i === 0 ? "checked" : ""}>` +
+        ` <b>${c.fuel_type || "?"}</b> · ${c.contract_number} · ${c.address || ""}`;
+      list.appendChild(lbl);
+    }
+    document.getElementById("wiz-step2").classList.add("done");
+    document.getElementById("wiz-step3").style.display = "";
+  } catch (e) {
+    wizErr(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+document.getElementById("wiz-finish").addEventListener("click", async () => {
+  wizErr("");
+  const sel = document.querySelector("input[name=contract]:checked");
+  if (!sel) { wizErr("Pick a contract."); return; }
+  const btn = document.getElementById("wiz-finish");
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/setup/select", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: wizToken, contract_number: sel.value }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.error || data.detail || `select failed (${r.status})`);
+    // Reset wizard state and switch to dashboard.
+    wizToken = null;
+    document.getElementById("wiz-step1").classList.remove("done");
+    document.getElementById("wiz-step2").style.display = "none";
+    document.getElementById("wiz-step2").classList.remove("done");
+    document.getElementById("wiz-step3").style.display = "none";
+    document.getElementById("wiz-callback").value = "";
+    await refreshAll();
+  } catch (e) {
+    wizErr(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+async function loadBill() {
+  const b = await jget("/api/bill");
+  const p = b.projection;
+  if (!p) {
+    document.getElementById("bill-cost").textContent = "no data yet";
+    return;
+  }
+  // Headline = gross cost so far (supply + import). Net (after FiT) shown sub.
+  document.getElementById("bill-cost").textContent = fmtAUD(p.cost_aud_to_date);
+  const hasSolar = (p.export_kwh_to_date || 0) > 0;
+  document.getElementById("bill-cost-sub").textContent = hasSolar
+    ? `${fmtKWh(p.consumption_kwh_to_date)} used · net ${fmtAUD(p.net_cost_to_date)}`
+    : `${fmtKWh(p.consumption_kwh_to_date)} used`;
+  document.getElementById("bill-proj").textContent = fmtAUD(p.projected_net_cost_aud);
+  document.getElementById("bill-proj-sub").textContent = hasSolar
+    ? `${fmtKWh(p.projected_kwh)} in · ${fmtKWh(p.projected_export_kwh)} out`
+    : `${fmtKWh(p.projected_kwh)} projected`;
+  document.getElementById("bill-proj-agl").textContent =
+    `AGL says: ${p.agl_label_projection || p.agl_label_cost || "—"}`;
+  document.getElementById("bill-avg-cost").textContent =
+    fmtAUD(p.avg_daily_cost_aud) + " /day";
+  document.getElementById("bill-avg-kwh").textContent =
+    fmtKWh(p.avg_daily_kwh) + " /day";
+  const pct = Math.min(100, (p.days_elapsed / p.days_total) * 100);
+  document.getElementById("bill-bar").style.width = pct + "%";
+  document.getElementById("bill-period-sub").textContent =
+    `${p.days_elapsed} of ${p.days_total} days · ${p.period_start} → ${p.period_end}`;
+
+  // Solar card — hide outright if no export observed yet.
+  const solarCard = document.getElementById("solar-credit").closest("section.card");
+  if (hasSolar) {
+    solarCard.style.display = "";
+    document.getElementById("solar-credit").textContent = fmtAUD(p.credit_aud_to_date);
+    document.getElementById("solar-kwh").textContent =
+      `${fmtKWh(p.export_kwh_to_date)} exported`;
+    document.getElementById("solar-proj").textContent =
+      `Projected: ${fmtAUD(p.projected_credit_aud)} · ${fmtKWh(p.projected_export_kwh)}`;
+    document.getElementById("solar-avg").textContent =
+      `Avg: ${fmtKWh(p.avg_daily_export_kwh)}/day`;
+  } else {
+    solarCard.style.display = "none";
+  }
+}
+
+async function loadPlan() {
+  let p;
+  try { p = await jget("/api/plan"); }
+  catch { return; }
+  document.getElementById("bill-supply").textContent =
+    "Supply charge: " + (p.supply_charge_aud_per_day != null
+      ? (p.supply_charge_aud_per_day * 100).toFixed(2) + " c/day"
+      : "—");
+  const tbody = document.querySelector("#rates-table tbody");
+  tbody.innerHTML = "";
+  for (const r of (p.unit_rates || [])) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${r.title || ""}</td><td>${r.type || ""}</td><td>${r.price?.toFixed(4) ?? ""}</td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function loadIntervals() {
+  const today = new Date();
+  const start = new Date(today); start.setDate(start.getDate() - 3);
+  const fmt = d => d.toISOString().slice(0, 10);
+  const data = await jget(`/api/intervals?from=${fmt(start)}&to=${fmt(today)}`);
+  const rows = data.rows || [];
+
+  const series = rows.map(r => [new Date(r.ts).getTime(), r.kwh]);
+  const exportSeries = rows.map(r => [new Date(r.ts).getTime(), -(r.kwh_export || 0)]);
+  const cost = rows.map(r => [new Date(r.ts).getTime(), r.cost_aud]);
+  const hasExport = rows.some(r => (r.kwh_export || 0) > 0);
+
+  // Build markArea bands per rate_type — collapse consecutive same-type slots.
+  const bands = [];
+  let runStart = null, runType = null;
+  for (let i = 0; i < rows.length; i++) {
+    const t = new Date(rows[i].ts).getTime();
+    const tEnd = t + 30 * 60 * 1000;
+    if (rows[i].rate_type !== runType) {
+      if (runType && runType !== "normal") {
+        bands.push([
+          { xAxis: runStart, itemStyle: { color: rateColor(runType) } },
+          { xAxis: t },
+        ]);
+      }
+      runStart = t;
+      runType = rows[i].rate_type;
+    }
+    if (i === rows.length - 1 && runType && runType !== "normal") {
+      bands.push([
+        { xAxis: runStart, itemStyle: { color: rateColor(runType) } },
+        { xAxis: tEnd },
+      ]);
+    }
+  }
+
+  const chart = echarts.init(document.getElementById("chart-intervals"), "dark");
+  chart.setOption({
+    backgroundColor: "transparent",
+    tooltip: { trigger: "axis" },
+    legend: { textStyle: { color: "#e6edf3" }, top: 0 },
+    grid: { left: 50, right: 60, top: 30, bottom: 40 },
+    xAxis: { type: "time" },
+    yAxis: [
+      { type: "value", name: "kWh", axisLabel: { color: "#8b949e" } },
+      { type: "value", name: "$",   axisLabel: { color: "#8b949e" }, splitLine: { show: false } },
+    ],
+    series: [
+      {
+        name: "Imported (kWh)",
+        type: "bar",
+        data: series,
+        itemStyle: { color: "#58a6ff" },
+        markArea: { silent: true, data: bands },
+      },
+      ...(hasExport ? [{
+        name: "Solar exported (kWh)",
+        type: "bar",
+        data: exportSeries,
+        itemStyle: { color: "#3fb950" },
+      }] : []),
+      {
+        name: "$ per slot",
+        type: "line",
+        yAxisIndex: 1,
+        data: cost,
+        smooth: true,
+        lineStyle: { color: "#d29922", width: 1 },
+        symbol: "none",
+      },
+    ],
+  });
+  window.addEventListener("resize", () => chart.resize());
+}
+
+async function loadDayStrip() {
+  // Window: 7 days ending `today - dataLagDays` (AGL/AEMO data lag).
+  const fmt = d => d.toISOString().slice(0, 10);
+  const end = new Date(); end.setDate(end.getDate() - dataLagDays);
+  const start = new Date(end); start.setDate(end.getDate() - 6);
+  const data = await jget(`/api/daily?from=${fmt(start)}&to=${fmt(end)}`);
+  const rows = data.rows || [];
+  const byDay = Object.fromEntries(rows.map(r => [r.day, r]));
+
+  const dows = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const max = rows.reduce((m, r) => Math.max(m, r.kwh), 0) || 1;
+
+  document.getElementById("day-strip-title").textContent =
+    `Last 7 days · per day  (${fmt(start)} → ${fmt(end)}; AGL data lags ${dataLagDays} day${dataLagDays === 1 ? "" : "s"})`;
+
+  const container = document.getElementById("day-strip");
+  container.innerHTML = "";
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    const key = fmt(d);
+    const r = byDay[key];
+    const kwh = r ? r.kwh : 0;
+    const cost = r ? r.cost_aud : 0;
+    const exp  = r ? (r.kwh_export || 0) : 0;
+    const credit = r ? (r.credit_aud || 0) : 0;
+    const pct = (kwh / max) * 100;
+    const cell = document.createElement("div");
+    cell.className = "day-cell";
+    cell.title = r
+      ? `${key}\n${kwh.toFixed(2)} kWh in / ${exp.toFixed(2)} kWh out\n${fmtAUD(cost)} cost / ${fmtAUD(credit)} credit\nNet ${fmtAUD(cost - credit)}`
+      : `${key} — no data`;
+    cell.innerHTML = `
+      <div class="dow">${dows[d.getDay()]}</div>
+      <div class="date">${d.getDate()}/${d.getMonth() + 1}</div>
+      <div class="kwh">${r ? kwh.toFixed(1) : "—"}</div>
+      <div class="cost">${r ? fmtAUD(cost) : ""}</div>
+      <div class="bar"><div class="imp" style="width:${pct}%"></div></div>
+      <div class="exp">${exp > 0 ? "↓ " + exp.toFixed(1) + " kWh" : ""}</div>`;
+    container.appendChild(cell);
+  }
+}
+
+async function loadDaily() {
+  const data = await jget("/api/daily");
+  const rows = data.rows || [];
+  const days = rows.map(r => r.day);
+  const kwh = rows.map(r => +r.kwh.toFixed(2));
+  const exp = rows.map(r => -(+(r.kwh_export || 0).toFixed(2)));
+  const cost = rows.map(r => +r.cost_aud.toFixed(2));
+  const credit = rows.map(r => -(+(r.credit_aud || 0).toFixed(2)));
+  const hasExport = rows.some(r => (r.kwh_export || 0) > 0);
+  const chart = echarts.init(document.getElementById("chart-daily"), "dark");
+  chart.setOption({
+    backgroundColor: "transparent",
+    tooltip: { trigger: "axis" },
+    legend: { textStyle: { color: "#e6edf3" }, top: 0 },
+    grid: { left: 50, right: 60, top: 30, bottom: 40 },
+    xAxis: { type: "category", data: days, axisLabel: { color: "#8b949e" } },
+    yAxis: [
+      { type: "value", name: "kWh", axisLabel: { color: "#8b949e" } },
+      { type: "value", name: "$",   axisLabel: { color: "#8b949e" }, splitLine: { show: false } },
+    ],
+    series: [
+      { name: "Imported", type: "bar", stack: "kwh", data: kwh, itemStyle: { color: "#58a6ff" } },
+      ...(hasExport ? [{ name: "Exported", type: "bar", stack: "kwh", data: exp, itemStyle: { color: "#3fb950" } }] : []),
+      { name: "$ cost", type: "line", yAxisIndex: 1, data: cost, lineStyle: { color: "#d29922" }, symbol: "circle" },
+      ...(hasExport ? [{ name: "$ credit", type: "line", yAxisIndex: 1, data: credit, lineStyle: { color: "#3fb950", type: "dashed" }, symbol: "circle" }] : []),
+    ],
+  });
+  window.addEventListener("resize", () => chart.resize());
+}
+
+async function loadComparisons() {
+  const c = await jget("/api/comparisons");
+
+  // Top summary strip — drive from last-7-days window.
+  const w = c.week.current, wp = c.week.previous;
+  document.getElementById("strip-range").textContent = `${w.from} → ${w.to}`;
+  document.getElementById("strip-kwh").textContent  = fmtKWh(w.kwh);
+  document.getElementById("strip-cost").textContent = fmtAUD(w.cost_aud);
+  const deltaPct = (a, b) => b > 0 ? ((a - b) / b) * 100 : null;
+  const fmtDelta = d => {
+    if (d == null) return "vs prev week: —";
+    const sign = d > 0 ? "+" : "";
+    return `vs prev week: ${sign}${d.toFixed(0)}%`;
+  };
+  const dKwh = deltaPct(w.kwh, wp.kwh);
+  const dCost = deltaPct(w.cost_aud, wp.cost_aud);
+  const k = document.getElementById("strip-kwh-delta");
+  const c1 = document.getElementById("strip-cost-delta");
+  k.textContent  = fmtDelta(dKwh);
+  c1.textContent = fmtDelta(dCost);
+  k.className  = "sub " + (dKwh  == null ? "" : dKwh  > 0 ? "delta-up" : "delta-down");
+  c1.className = "sub " + (dCost == null ? "" : dCost > 0 ? "delta-up" : "delta-down");
+
+  const hasSolar = (w.kwh_export || 0) > 0;
+  document.getElementById("strip-solar-stat").style.display = hasSolar ? "" : "none";
+  document.getElementById("strip-net-stat").style.display   = hasSolar ? "" : "none";
+  if (hasSolar) {
+    document.getElementById("strip-export").textContent = fmtKWh(w.kwh_export);
+    document.getElementById("strip-credit").textContent = `${fmtAUD(w.credit_aud)} credit`;
+    document.getElementById("strip-net").textContent =
+      fmtAUD(w.cost_aud - w.credit_aud);
+  }
+
+  const tbody = document.querySelector("#comparisons-table tbody");
+  tbody.innerHTML = "";
+  for (const win of ["week", "month"]) {
+    const cur = c[win].current, prev = c[win].previous, yr = c[win].year_ago;
+    const delta = prev.kwh > 0 ? ((cur.kwh - prev.kwh) / prev.kwh) * 100 : null;
+    const dCls = delta == null ? "" : delta > 0 ? "delta-up" : "delta-down";
+    const dStr = delta == null ? "—" : (delta > 0 ? "+" : "") + delta.toFixed(0) + "%";
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${win === "week" ? "Last 7 days" : "Last 30 days"}</td>
+      <td>${fmtKWh(cur.kwh)}<br><span class="sub">${fmtAUD(cur.cost_aud)}</span></td>
+      <td>${fmtKWh(prev.kwh)}<br><span class="sub">${fmtAUD(prev.cost_aud)}</span></td>
+      <td class="${dCls}">${dStr}</td>
+      <td>${fmtKWh(yr.kwh)}<br><span class="sub">${fmtAUD(yr.cost_aud)}</span></td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+async function loadHeatmap() {
+  const h = await jget("/api/heatmap?weeks=8");
+  const days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+  const slots = [];
+  for (let i = 0; i < 48; i++) {
+    const hh = String(Math.floor(i / 2)).padStart(2, "0");
+    const mm = i % 2 === 0 ? "00" : "30";
+    slots.push(`${hh}:${mm}`);
+  }
+  const data = h.cells.map(c => [c.slot, c.weekday, +c.kwh.toFixed(3)]);
+  const max = data.reduce((m, d) => Math.max(m, d[2]), 0) || 1;
+  const chart = echarts.init(document.getElementById("chart-heatmap"), "dark");
+  chart.setOption({
+    backgroundColor: "transparent",
+    tooltip: {
+      formatter: p => `${days[p.value[1]]} ${slots[p.value[0]]}<br>${p.value[2]} kWh avg`,
+    },
+    grid: { left: 50, right: 30, top: 20, bottom: 60 },
+    xAxis: { type: "category", data: slots, axisLabel: { color: "#8b949e", interval: 3 } },
+    yAxis: { type: "category", data: days, axisLabel: { color: "#8b949e" } },
+    visualMap: {
+      min: 0, max,
+      calculable: true,
+      orient: "horizontal",
+      left: "center", bottom: 10,
+      textStyle: { color: "#8b949e" },
+      inRange: { color: ["#0e1116", "#58a6ff", "#d29922", "#f85149"] },
+    },
+    series: [{
+      type: "heatmap",
+      data,
+      progressive: 1000,
+      emphasis: { itemStyle: { borderColor: "#fff", borderWidth: 1 } },
+    }],
+  });
+  window.addEventListener("resize", () => chart.resize());
+}
+
+async function refreshAll() {
+  document.getElementById("err").style.display = "none";
+  const ok = await loadStatus();
+  if (!ok) return;
+  await Promise.all([
+    loadBill().catch(e => showErr("bill: " + e.message)),
+    loadPlan().catch(e => showErr("plan: " + e.message)),
+    loadIntervals().catch(e => showErr("intervals: " + e.message)),
+    loadDaily().catch(e => showErr("daily: " + e.message)),
+    loadComparisons().catch(e => showErr("comparisons: " + e.message)),
+    loadDayStrip().catch(e => showErr("day-strip: " + e.message)),
+    loadHeatmap().catch(e => showErr("heatmap: " + e.message)),
+  ]);
+}
+
+document.getElementById("refresh").addEventListener("click", async () => {
+  document.getElementById("refresh").disabled = true;
+  try {
+    await fetch("/api/refresh", { method: "POST" });
+    await refreshAll();
+  } finally {
+    document.getElementById("refresh").disabled = false;
+  }
+});
+
+let backfillPollHandle = null;
+
+document.getElementById("backfill").addEventListener("click", async () => {
+  const raw = prompt("Re-fetch how many days from AGL? (1–60)\n\nUseful for populating new fields like solar export on existing rows. No re-auth needed.", "30");
+  if (raw == null) return;
+  const days = Math.max(1, Math.min(60, parseInt(raw, 10) || 30));
+  const btn = document.getElementById("backfill");
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/api/backfill?days=${days}`, { method: "POST" });
+    const data = await r.json();
+    if (!r.ok) {
+      showErr("backfill: " + (data.error || data.detail || r.status));
+      btn.disabled = false;
+      return;
+    }
+    // Poll status every 2 s while a backfill is in flight, then refresh charts.
+    if (backfillPollHandle) clearInterval(backfillPollHandle);
+    backfillPollHandle = setInterval(async () => {
+      try {
+        const s = await jget("/api/status");
+        await loadStatus();
+        if (!s.backfill || s.backfill.state !== "running") {
+          clearInterval(backfillPollHandle);
+          backfillPollHandle = null;
+          btn.disabled = false;
+          await refreshAll();
+        }
+      } catch (e) {
+        clearInterval(backfillPollHandle);
+        backfillPollHandle = null;
+        btn.disabled = false;
+      }
+    }, 2000);
+  } catch (e) {
+    showErr("backfill: " + e.message);
+    btn.disabled = false;
+  }
+});
+
+refreshAll();
+setInterval(refreshAll, 5 * 60 * 1000);
+</script>
+</body>
+</html>
