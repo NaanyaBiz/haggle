@@ -38,7 +38,7 @@ dev = [
     # 0.13.329 pins homeassistant==2026.5.0 — keep test harness aligned with
     # the runtime floor above so transitive resolution stays consistent.
     "pytest-homeassistant-custom-component>=0.13.329,<0.13.330",
-    "ruff>=0.15.12",
+    "ruff>=0.15.13",
     "mypy>=2.0.0",
     "pre-commit>=4.6.0",
 ]
