@@ -54,3 +54,4 @@ config/
 .env
 .env.*
 !.env.example
+security/
