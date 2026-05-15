@@ -12,5 +12,5 @@
   "loggers": ["custom_components.haggle"],
   "quality_scale": "bronze",
   "requirements": [],
-  "version": "0.2.2"
+  "version": "0.2.3"
 }
