@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Platform floor bumped to Home Assistant 2026.5.1** (was `2026.5.0`).
+  Tracks the `pytest-homeassistant-custom-component` test harness
+  (`0.13.330` pins `homeassistant==2026.5.1`); the test fixture and the
+  runtime floor stay aligned. `hacs.json:homeassistant` updated to match.
+- **Dev-tooling floors bumped**: `ruff>=0.15.13` (was `>=0.15.12`),
+  `mypy>=2.1.0` (was `>=2.0.0`). Pipeline runs clean against the existing
+  codebase.
+- **`uv.lock` regenerated** for the patch bumps above.
+
+Closes #61, #62, #63.
+
+### Repo
+
+- `.gitignore` adds `security/` so locally-staged security review scratch
+  doesn't get accidentally committed.
+
 ---
 
 ## [0.2.2] — 2026-05-15
