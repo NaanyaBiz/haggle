@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`idna` bumped 3.13 → 3.15** (transitive dep via aiohttp/httpx/requests).
+  3.14 closed CVE-2026-45409 (quadratic-time bypass of the CVE-2024-3651 mitigation);
+  3.15 adds DNS-label length enforcement and code-quality improvements.
+
 ---
 
 ## [0.2.3] — 2026-05-15
