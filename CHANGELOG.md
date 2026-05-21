@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Platform floor bumped to Home Assistant 2026.5.3** (was `2026.5.1`).
+  Tracks the `pytest-homeassistant-custom-component` test harness
+  (`0.13.332` pins `homeassistant==2026.5.3`); the test fixture and the
+  runtime floor stay aligned. `hacs.json:homeassistant` updated to match.
+- **Dev-tooling floor bumped**: `pytest-cov>=7.1.0` (was `>=5.0`).
+- **CI action SHAs rolled forward**: `codecov/codecov-action v6.0.0 → v6.0.1`,
+  `github/codeql-action v4.35.4 → v4.35.5`. Both pinned to 40-char SHAs.
+- **`uv.lock` regeneration deferred to CI** — Python 3.14.2 unavailable in
+  the triage environment; `uv sync --extra dev` in CI will regenerate.
+
+Closes #75, #76, #77, #78, #79.
+
 ---
 
 ## [0.2.3] — 2026-05-15
