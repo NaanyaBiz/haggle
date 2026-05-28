@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Platform floor bumped to Home Assistant 2026.5.4** (was `2026.5.1`).
+  Tracks the `pytest-homeassistant-custom-component` test harness
+  (`0.13.334` pins `homeassistant==2026.5.4`); the test fixture and the
+  runtime floor stay aligned. `hacs.json:homeassistant` updated to match.
+- **Dev-tooling floors bumped**: `ruff>=0.15.14` (was `>=0.15.13`),
+  `pytest-asyncio>=1.4.0` (was `>=0.24`), `pytest-cov>=7.1.0` (was `>=5.0`).
+  Pipeline runs clean against the existing codebase.
+- **Security patch**: `idna` 3.13 → 3.15 (uv.lock) — resolves CVE-2026-45409.
+- **GitHub Actions pinned SHAs updated**: `codeql-action` v4.35.4 → v4.36.0,
+  `codecov-action` v6.0.0 → v6.0.1, `home-assistant/actions/hassfest`
+  SHA updated to `868e6cb4`.
+
+Closes #73, #75, #77, #83, #84, #85, #86, #87, #88.
+
 ---
 
 ## [0.2.3] — 2026-05-15
