@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- Promote `0.3.0-beta.1` to stable `0.3.0` after a live ToU soak.
+- #90 — validate the ToU plan rate-mapping heuristic against a real capture.
+- #91 — clear external statistics on integration removal.
+
+---
+
+## [0.3.0-beta.1] — 2026-05-29
+
 ### Added
 
 - **Time-of-Use (ToU) tariff support** (#82). On contracts whose AGL interval
