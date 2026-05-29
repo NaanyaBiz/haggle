@@ -34,7 +34,7 @@ dependencies = [
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
-    "pytest-cov>=5.0",
+    "pytest-cov>=7.1.0",
     # 0.13.330 pins homeassistant==2026.5.1 — keep test harness aligned with
     # the runtime floor above so transitive resolution stays consistent.
     "pytest-homeassistant-custom-component>=0.13.330,<0.13.331",

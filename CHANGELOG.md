@@ -27,11 +27,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     statistics appear automatically on the next poll; the integration schedules
     a one-off reload so the new per-tariff rate sensors register.
 
+### Changed
+
+- **Dev-tooling floor bumped**: `pytest-cov>=7.1.0` (was `>=5.0`); the
+  lock already had 7.1.0 so no re-resolve needed.
+- **Security patch**: `idna` 3.13 → 3.15 (uv.lock) — resolves CVE-2026-45409.
+- **GitHub Actions pinned SHAs updated**: `codeql-action` v4.35.4 → v4.36.0,
+  `codecov-action` v6.0.0 → v6.0.1, `home-assistant/actions/hassfest`
+  SHA updated to `868e6cb4`.
+
 ### Fixed
 
 - Corrected stale code comments that named `consumption.values.quantity` (inner,
   DPI-scaled) as the kWh source of truth in `models.py` and `client.py`; the
   metered value is `consumption.quantity` (outer), as the parser already used.
+
+Closes #73, #75, #77, #83, #85.
 
 ---
 
