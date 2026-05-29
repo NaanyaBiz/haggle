@@ -554,4 +554,4 @@ class TestParseIntervalReadingsTou:
         assert types == {"peak", "shoulder", "offpeak", "normal"}
         # kWh from outer consumption.quantity, not inner values.quantity.
         peak = [r for r in readings if r.rate_type == "peak"]
-        assert {r.kwh for r in peak} == {pytest.approx(1.0), pytest.approx(0.5)}
+        assert sorted(r.kwh for r in peak) == [pytest.approx(0.5), pytest.approx(1.0)]
