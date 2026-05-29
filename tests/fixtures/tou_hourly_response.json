@@ -1,0 +1,66 @@
+{
+  "resourceType": "electricity",
+  "granularity": "hourly",
+  "timeZone": "Australia/Sydney",
+  "sections": [
+    {
+      "startDate": "2024-01-15",
+      "items": [
+        {
+          "dateTime": "2024-01-15T07:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.5, "quantity": 0.5},
+            "amount": 0.42,
+            "quantity": 1.0,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2024-01-15T07:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.5, "quantity": 0.5},
+            "amount": 0.21,
+            "quantity": 0.5,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2024-01-15T10:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.4, "quantity": 0.4},
+            "amount": 0.18,
+            "quantity": 0.8,
+            "type": "shoulder"
+          }
+        },
+        {
+          "dateTime": "2024-01-15T18:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.3, "quantity": 0.3},
+            "amount": 0.072,
+            "quantity": 0.4,
+            "type": "offpeak"
+          }
+        },
+        {
+          "dateTime": "2024-01-15T02:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.2, "quantity": 0.2},
+            "amount": 0.036,
+            "quantity": 0.2,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2024-01-15T03:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "none"
+          }
+        }
+      ]
+    }
+  ]
+}

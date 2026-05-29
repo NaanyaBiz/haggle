@@ -470,3 +470,88 @@ class TestParseDailyReadings:
         }
         readings = parse_daily_readings(data)
         assert readings == []
+
+
+# ---------------------------------------------------------------------------
+# Time-of-Use: tariff classification + plan rate mapping
+# ---------------------------------------------------------------------------
+
+
+class TestClassifyTariff:
+    """The free-text → ToU band heuristic (parser._classify_tariff)."""
+
+    def test_shoulder_matches(self) -> None:
+        from custom_components.haggle.agl.parser import _classify_tariff
+
+        assert _classify_tariff("Shoulder") == "shoulder"
+        assert _classify_tariff("T93 Shoulder usage") == "shoulder"
+
+    def test_offpeak_variants_match_before_peak(self) -> None:
+        from custom_components.haggle.agl.parser import _classify_tariff
+
+        # "off peak" contains the substring "peak"; off-peak must win.
+        assert _classify_tariff("Off Peak") == "offpeak"
+        assert _classify_tariff("off-peak") == "offpeak"
+        assert _classify_tariff("OFFPEAK") == "offpeak"
+
+    def test_peak_matches(self) -> None:
+        from custom_components.haggle.agl.parser import _classify_tariff
+
+        assert _classify_tariff("Peak") == "peak"
+
+    def test_general_usage_is_unmatched(self) -> None:
+        from custom_components.haggle.agl.parser import _classify_tariff
+
+        assert _classify_tariff("First 379 kWh") is None
+        assert _classify_tariff("Thereafter") is None
+        assert _classify_tariff("T11 General Usage**") is None
+
+
+class TestParsePlanTou:
+    def test_tou_plan_maps_all_three_bands(self) -> None:
+        plan = parse_plan(load_fixture("tou_plan_response.json"))
+        assert plan.tou_unit_rates == {
+            "peak": pytest.approx(41.9),
+            "shoulder": pytest.approx(22.55),
+            "offpeak": pytest.approx(18.04),
+        }
+        # Supply charge + flat unit_rates list still populated.
+        assert plan.supply_charge_cents_per_day == pytest.approx(131.714)
+        assert any(r["type"] == "c/kWh" for r in plan.unit_rates)
+
+    def test_flat_plan_has_no_tou_rates(self) -> None:
+        plan = parse_plan(load_fixture("plan_response.json"))
+        assert plan.tou_unit_rates == {}
+
+    def test_first_rate_per_band_wins(self) -> None:
+        """Tiered c/kWh rows under one header collapse to the first price."""
+        data = {
+            "gstInclusiveRates": [
+                {"kind": "header", "title": "Peak"},
+                {
+                    "kind": "detail",
+                    "type": "c/kWh",
+                    "price": 40.0,
+                    "title": "First 100",
+                },
+                {
+                    "kind": "detail",
+                    "type": "c/kWh",
+                    "price": 50.0,
+                    "title": "Thereafter",
+                },
+            ]
+        }
+        plan = parse_plan(data)
+        assert plan.tou_unit_rates == {"peak": pytest.approx(40.0)}
+
+
+class TestParseIntervalReadingsTou:
+    def test_mixed_tou_intervals_preserve_rate_type(self) -> None:
+        readings = parse_interval_readings(load_fixture("tou_hourly_response.json"))
+        # type=none is filtered; the four tariff types survive.
+        types = {r.rate_type for r in readings}
+        assert types == {"peak", "shoulder", "offpeak", "normal"}
+        # kWh from outer consumption.quantity, not inner values.quantity.
+        peak = [r for r in readings if r.rate_type == "peak"]
+        assert {r.kwh for r in peak} == {pytest.approx(1.0), pytest.approx(0.5)}

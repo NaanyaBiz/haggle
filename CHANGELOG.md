@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Time-of-Use (ToU) tariff support** (#82). On contracts whose AGL interval
+  data is tagged with `peak`/`offpeak`/`shoulder` tariff types, the integration
+  now writes a separate consumption + cost statistic per tariff band
+  (`haggle:consumption_peak_<contract>`, `…_offpeak_…`, `…_shoulder_…`, plus a
+  `…_normal_…`/anytime band so the parts sum back to the aggregate). Each is an
+  independent Energy-dashboard source with `unit_class="energy"`.
+  - Adds per-tariff unit-rate sensors (peak/off-peak/shoulder, `AUD/kWh`,
+    `state_class=MEASUREMENT`), registered only on ToU contracts so flat-rate
+    users see no empty sensors.
+  - Flat-rate contracts are unchanged — only the existing aggregate
+    `haggle:consumption_<contract>` / `cost_<contract>` series are written.
+  - **Energy dashboard**: ToU users should add only the per-tariff consumption
+    series (not the aggregate as well) to avoid double-counting; flat-rate users
+    add only the aggregate.
+  - Switching an existing flat-rate contract to a ToU plan: the per-tariff
+    statistics appear automatically on the next poll; the integration schedules
+    a one-off reload so the new per-tariff rate sensors register.
+
+### Fixed
+
+- Corrected stale code comments that named `consumption.values.quantity` (inner,
+  DPI-scaled) as the kWh source of truth in `models.py` and `client.py`; the
+  metered value is `consumption.quantity` (outer), as the parser already used.
+
 ---
 
 ## [0.2.3] — 2026-05-15

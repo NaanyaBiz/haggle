@@ -93,6 +93,33 @@ AGL_SCALING: Final = "36.514404_108.057_40.670903_120.357_0_0_0_0"
 STAT_CONSUMPTION: Final = "consumption"  # → haggle:consumption_{contract}
 STAT_COST: Final = "cost"  # → haggle:cost_{contract}
 
+# Time-of-Use tariff types — the value of `consumption.type` on each interval.
+TARIFF_PEAK: Final = "peak"
+TARIFF_OFFPEAK: Final = "offpeak"
+TARIFF_SHOULDER: Final = "shoulder"
+TARIFF_NORMAL: Final = "normal"
+# Presence of ANY of these in interval data marks the contract as Time-of-Use.
+TOU_BANDS: Final = (TARIFF_PEAK, TARIFF_OFFPEAK, TARIFF_SHOULDER)
+# On a ToU contract, every tariff type that appears gets its own statistic
+# series (incl. `normal`/anytime) so the per-tariff series sum back to the
+# aggregate with no lost kWh. Per-tariff statistic IDs are
+# f"{DOMAIN}:{STAT_CONSUMPTION}_{tariff}_{contract}" / "..._{STAT_COST}_...".
+TOU_SERIES_TARIFFS: Final = (
+    TARIFF_PEAK,
+    TARIFF_OFFPEAK,
+    TARIFF_SHOULDER,
+    TARIFF_NORMAL,
+)
+# Stable, band-distinct labels embedded in StatisticMetaData.name so the
+# Energy dashboard picker can tell the per-tariff series apart. MUST be stable
+# across calls — the recorder updates metadata in place on every import.
+TARIFF_LABELS: Final = {
+    TARIFF_PEAK: "Peak",
+    TARIFF_OFFPEAK: "Off-Peak",
+    TARIFF_SHOULDER: "Shoulder",
+    TARIFF_NORMAL: "Anytime",
+}
+
 # Config-entry keys.
 # CONF_EMAIL / CONF_PASSWORD are NOT used — auth is via refresh token.
 CONF_REFRESH_TOKEN: Final = "refresh_token"  # ← it IS a token key
@@ -110,3 +137,7 @@ DATA_CONSUMPTION_COST: Final = "consumption_period_cost_aud"  # cumulative AUD c
 DATA_BILL_PROJECTION: Final = "bill_projection_aud"  # AUD forecast for current period
 DATA_UNIT_RATE: Final = "unit_rate_aud_per_kwh"  # AUD/kWh
 DATA_SUPPLY_CHARGE: Final = "supply_charge_aud_per_day"  # AUD/day
+# Per-tariff unit rates (AUD/kWh) — only populated/registered on ToU contracts.
+DATA_UNIT_RATE_PEAK: Final = "unit_rate_peak_aud_per_kwh"
+DATA_UNIT_RATE_OFFPEAK: Final = "unit_rate_offpeak_aud_per_kwh"
+DATA_UNIT_RATE_SHOULDER: Final = "unit_rate_shoulder_aud_per_kwh"

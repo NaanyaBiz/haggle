@@ -37,8 +37,8 @@ class IntervalReading:
     """One 30-minute interval reading from /Hourly."""
 
     dt: datetime  # slot start, UTC
-    kwh: float  # consumption.values.quantity — source of truth
-    cost_aud: float  # consumption.amount
+    kwh: float  # consumption.quantity (outer) — source of truth, matches AEMO/CSV
+    cost_aud: float  # consumption.amount (outer)
     rate_type: str  # "normal" | "peak" | "offpeak" | "shoulder" | "none"
 
 
@@ -69,3 +69,7 @@ class PlanRates:
     product_name: str
     unit_rates: list[dict[str, Any]] = field(default_factory=list)
     supply_charge_cents_per_day: float = 0.0
+    # Time-of-Use unit rates, tariff type → c/kWh, e.g. {"peak": 41.9, ...}.
+    # Empty for flat-rate plans. Populated by parse_plan's title/header
+    # heuristic (see parser.py); absent bands are simply not keyed.
+    tou_unit_rates: dict[str, float] = field(default_factory=dict)

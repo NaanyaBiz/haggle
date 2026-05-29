@@ -42,6 +42,15 @@
       "unit_rate": {
         "name": "Unit rate"
       },
+      "unit_rate_peak": {
+        "name": "Unit rate (peak)"
+      },
+      "unit_rate_offpeak": {
+        "name": "Unit rate (off-peak)"
+      },
+      "unit_rate_shoulder": {
+        "name": "Unit rate (shoulder)"
+      },
       "supply_charge": {
         "name": "Supply charge"
       }
