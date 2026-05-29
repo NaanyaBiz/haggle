@@ -315,7 +315,7 @@ well-documented per-interval `consumption.type`. Only the per-tariff *rate
 sensors* rely on the plan-text heuristic. `tests/fixtures/tou_plan_response.json`
 is shape-extrapolated from `plan_response.json` (headers "Peak"/"Shoulder"/
 "Off Peak"); validate against a real ToU plan capture and correct the heuristic
-if AGL labels bands differently.
+if AGL labels bands differently (tracked in #90).
 
 ### TLS pinning (Trust-On-First-Use)
 

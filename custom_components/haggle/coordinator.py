@@ -85,9 +85,9 @@ class HaggleData:
     unit_rate_aud_per_kwh: float | None
     supply_charge_aud_per_day: float | None
     latest_cumulative_kwh: float  # for the TOTAL_INCREASING sensor
-    # ToU extras (defaulted so existing construction sites/tests are unaffected).
-    # active_tariffs drives conditional ToU rate-sensor registration in
-    # sensor.py; empty on a flat-rate contract so those sensors never appear.
+    # ToU extras, defaulted to keep the dataclass backward-compatible.
+    # active_tariffs gates conditional ToU rate-sensor registration; empty on a
+    # flat-rate contract so those sensors never appear.
     active_tariffs: frozenset[str] = frozenset()
     unit_rate_peak_aud_per_kwh: float | None = None
     unit_rate_offpeak_aud_per_kwh: float | None = None
@@ -376,27 +376,32 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> tuple[set[str], dict[str, tuple[float, float]]]:
         """Return (known ToU bands, per-tariff baseline sums) for this cycle.
 
-        Single recorder-touching entry point for the ToU machinery, so unit
-        tests can stub it in one place. `known_bands` marks the contract as
-        Time-of-Use across restarts; the baselines resume each per-tariff
-        series from its OWN stored cumulative at the SAME fetch_start as the
-        aggregate (never the aggregate's sum, never the per-tariff series' own
-        last date). First install (no prior aggregate row) → no baselines.
+        Single recorder-touching entry point for the ToU machinery.
+        `known_bands` marks the contract as Time-of-Use across restarts; the
+        baselines resume each per-tariff series from its OWN stored cumulative
+        at the SAME fetch_start as the aggregate (never the aggregate's sum,
+        never the per-tariff series' own last date). First install (no prior
+        aggregate row) → no baselines needed.
         """
-        known_bands = await self._get_stored_tou_bands()
-        tariff_initial_sums: dict[str, tuple[float, float]] = {}
-        if last_stat_date is not None:
-            fetch_start_utc = datetime.combine(fetch_start, time.min, tzinfo=UTC)
-            band_ids: set[str] = set()
-            for tariff in TOU_SERIES_TARIFFS:
-                band_ids.update(self._tariff_stat_ids(tariff))
-            band_sums = await self._get_tariff_baseline_sums(band_ids, fetch_start_utc)
-            for tariff in TOU_SERIES_TARIFFS:
-                cons_id, cost_id = self._tariff_stat_ids(tariff)
-                tariff_initial_sums[tariff] = (
-                    band_sums.get(cons_id, 0.0),
-                    band_sums.get(cost_id, 0.0),
-                )
+        if last_stat_date is None:
+            return await self._get_stored_tou_bands(), {}
+
+        fetch_start_utc = datetime.combine(fetch_start, time.min, tzinfo=UTC)
+        band_ids: set[str] = set()
+        for tariff in TOU_SERIES_TARIFFS:
+            band_ids.update(self._tariff_stat_ids(tariff))
+        # Independent lookups — overlap them on the executor.
+        known_bands, band_sums = await asyncio.gather(
+            self._get_stored_tou_bands(),
+            self._get_tariff_baseline_sums(band_ids, fetch_start_utc),
+        )
+        tariff_initial_sums = {
+            tariff: (
+                band_sums.get(self._tariff_stat_ids(tariff)[0], 0.0),
+                band_sums.get(self._tariff_stat_ids(tariff)[1], 0.0),
+            )
+            for tariff in TOU_SERIES_TARIFFS
+        }
         return known_bands, tariff_initial_sums
 
     async def _get_tariff_baseline_sums(
@@ -528,8 +533,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> None:
         """Aggregate 30-min intervals to hourly and push to recorder statistics.
 
-        Always writes the aggregate consumption + cost series (consumption
-        first, cost second — callers/tests depend on that order). On a ToU
+        Always writes the aggregate consumption + cost series. On a ToU
         contract — when any peak/offpeak/shoulder interval has ever been seen
         (`known_bands`) or appears in this batch — it ALSO writes a per-tariff
         series for every tariff type present, so the per-tariff series sum back
@@ -568,63 +572,57 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 bk[h] = bk.get(h, 0.0) + r.cost_aud
                 bands_this_batch.add(r.rate_type)
 
-        def _build(
-            hourly: dict[datetime, float], initial_sum: float
-        ) -> tuple[list[StatisticData], float]:
+        def _emit_series(
+            stat_id: str,
+            name: str,
+            unit: str,
+            unit_class: str | None,
+            hourly: dict[datetime, float],
+            initial_sum: float,
+        ) -> float:
+            """Build the cumulative hourly rows for one series and import them."""
             running = initial_sum
             stats: list[StatisticData] = []
             for h in sorted(hourly):
                 running += hourly[h]
                 stats.append(StatisticData(start=h, state=hourly[h], sum=running))
-            return stats, running
-
-        def _emit_consumption(
-            stat_id: str, name: str, stats: list[StatisticData]
-        ) -> None:
             async_add_external_statistics(
                 self.hass,
                 StatisticMetaData(
                     mean_type=StatisticMeanType.NONE,
-                    unit_class="energy",
+                    unit_class=unit_class,
                     has_sum=True,
                     name=name,
                     source=DOMAIN,
                     statistic_id=stat_id,
-                    unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+                    unit_of_measurement=unit,
                 ),
                 stats,
             )
+            return running
 
-        def _emit_cost(stat_id: str, name: str, stats: list[StatisticData]) -> None:
-            async_add_external_statistics(
-                self.hass,
-                StatisticMetaData(
-                    mean_type=StatisticMeanType.NONE,
-                    unit_class=None,
-                    has_sum=True,
-                    name=name,
-                    source=DOMAIN,
-                    statistic_id=stat_id,
-                    unit_of_measurement="AUD",
-                ),
-                stats,
-            )
+        kwh = UnitOfEnergy.KILO_WATT_HOUR
+        contract = self.contract_number
 
-        # --- Aggregate series (always; consumption first, cost second). ---
-        cons_stats, cons_sum = _build(hour_cons, initial_cons_sum)
-        cost_stats, _ = _build(hour_cost, initial_cost_sum)
-        _emit_consumption(
-            f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}",
-            f"AGL Electricity Consumption ({self.contract_number})",
-            cons_stats,
+        # Aggregate series (always; consumption first, then cost).
+        cons_sum = _emit_series(
+            f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}",
+            f"AGL Electricity Consumption ({contract})",
+            kwh,
+            "energy",
+            hour_cons,
+            initial_cons_sum,
         )
-        _emit_cost(
-            f"{DOMAIN}:{STAT_COST}_{self.contract_number}",
-            f"AGL Electricity Cost ({self.contract_number})",
-            cost_stats,
+        _emit_series(
+            f"{DOMAIN}:{STAT_COST}_{contract}",
+            f"AGL Electricity Cost ({contract})",
+            "AUD",
+            None,
+            hour_cost,
+            initial_cost_sum,
         )
 
-        # --- Per-tariff series (ToU contracts only). ---
+        # Per-tariff series (ToU contracts only).
         tou_seen = (set(known_bands) | bands_this_batch) & set(TOU_BANDS)
         if tou_seen:
             self._active_tou_bands |= tou_seen
@@ -633,20 +631,24 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                     continue
                 cons_id, cost_id = self._tariff_stat_ids(tariff)
                 base_cons, base_cost = tariff_initial_sums.get(tariff, (0.0, 0.0))
-                t_cons_stats, _ = _build(band_cons[tariff], base_cons)
-                t_cost_stats, _ = _build(band_cost[tariff], base_cost)
                 label = TARIFF_LABELS.get(tariff, tariff.title())
-                _emit_consumption(
+                _emit_series(
                     cons_id,
-                    f"AGL Electricity Consumption {label} ({self.contract_number})",
-                    t_cons_stats,
+                    f"AGL Electricity Consumption {label} ({contract})",
+                    kwh,
+                    "energy",
+                    band_cons[tariff],
+                    base_cons,
                 )
-                _emit_cost(
+                _emit_series(
                     cost_id,
-                    f"AGL Electricity Cost {label} ({self.contract_number})",
-                    t_cost_stats,
+                    f"AGL Electricity Cost {label} ({contract})",
+                    "AUD",
+                    None,
+                    band_cost[tariff],
+                    base_cost,
                 )
 
         # Update the in-memory cumulative for the TOTAL_INCREASING sensor.
-        if cons_stats:
+        if hour_cons:
             self._latest_cumulative_kwh = cons_sum

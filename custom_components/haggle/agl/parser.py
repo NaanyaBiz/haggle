@@ -35,11 +35,10 @@ def _classify_tariff(text: str) -> str | None:
     Heuristic — AGL's plan endpoint groups c/kWh detail rows under free-text
     `kind:"header"` rows (e.g. "Peak", "Off Peak", "Shoulder") rather than a
     machine tariff-type field. Order matters: "off peak" must be tested before
-    the bare "peak" substring. Returns None for general/flat usage rows so the
-    caller leaves the band unkeyed (a missing rate surfaces as `unavailable`,
-    never a misleading 0.0). See AGENTS.md §AGL API — this mapping is
-    extrapolated from the documented response shape and wants validation
-    against a real ToU plan capture (tracked upstream).
+    the bare "peak" substring. Returns None for general/flat usage rows so an
+    unmatched band surfaces as `unavailable`, never a misleading 0.0. The
+    keyword mapping is extrapolated from the documented response shape (see
+    AGENTS.md §AGL API).
     """
     t = text.lower()
     if "shoulder" in t:

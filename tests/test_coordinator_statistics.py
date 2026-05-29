@@ -918,6 +918,7 @@ class TestImportIntervalsTou:
         assert mock_add.call_count == 10
         # Aggregate emitted first (consumption then cost), preserving order.
         assert ids[0] == f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+        assert ids[1] == f"{DOMAIN}:cost_{_CONTRACT}"
         for band in ("peak", "offpeak", "shoulder", "normal"):
             assert f"{DOMAIN}:{STAT_CONSUMPTION}_{band}_{_CONTRACT}" in ids
             assert f"{DOMAIN}:cost_{band}_{_CONTRACT}" in ids

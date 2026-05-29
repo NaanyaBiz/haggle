@@ -69,7 +69,5 @@ class PlanRates:
     product_name: str
     unit_rates: list[dict[str, Any]] = field(default_factory=list)
     supply_charge_cents_per_day: float = 0.0
-    # Time-of-Use unit rates, tariff type → c/kWh, e.g. {"peak": 41.9, ...}.
-    # Empty for flat-rate plans. Populated by parse_plan's title/header
-    # heuristic (see parser.py); absent bands are simply not keyed.
+    # Time-of-Use unit rates, tariff type → c/kWh; empty for flat-rate plans.
     tou_unit_rates: dict[str, float] = field(default_factory=dict)
