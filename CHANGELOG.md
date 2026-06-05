@@ -18,6 +18,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Closes #73, #75, #77, #83, #85.
 
+- **Platform floor bumped to Home Assistant 2026.6.0** (was `2026.5.1`).
+  Tracks `pytest-homeassistant-custom-component==0.13.336` which pins
+  `homeassistant==2026.6.0`; `hacs.json:homeassistant` updated to match.
+- **Dev-tooling floors bumped**: `ruff>=0.15.15` (was `>=0.15.13`).
+- **GitHub Actions pinned SHAs updated**: `actions/checkout` v6.0.2 → v6.0.3
+  (all workflows), `github/codeql-action` v4.36.0 → v4.36.1,
+  `astral-sh/setup-uv` v8.1.0 → v8.2.0.
+- **aiohttp floor held at `>=3.13.5`**: Dependabot PR #97 proposed bumping to
+  `>=3.14.0` but `homeassistant==2026.6.0` pins `aiohttp==3.13.5`, making the
+  two constraints mutually exclusive. PR #97 excluded from this rollup.
+
+Closes #93, #94, #95, #96, #98, #99.
+
 ---
 
 ## [0.2.3] — 2026-05-15
