@@ -18,6 +18,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Closes #73, #75, #77, #83, #85.
 
+- **Platform floor bumped to Home Assistant 2026.6.2** (was `2026.5.1`).
+  `pytest-homeassistant-custom-component` bumped to `0.13.338` (pins
+  `homeassistant==2026.6.2`); test harness and runtime floor stay aligned.
+  `hacs.json:homeassistant` updated to match.
+- **Dev-tooling floor bumped**: `ruff>=0.15.16` (was `>=0.15.13`). Pipeline
+  runs clean against the existing codebase.
+- **GitHub Actions pinned SHAs updated**: `actions/checkout` v6.0.2 → v6.0.3,
+  `astral-sh/setup-uv` v8.1.0 → v8.2.0, `codecov/codecov-action` v6.0.1 →
+  v7.0.0, `github/codeql-action` v4.36.0 → v4.36.2,
+  `home-assistant/actions/hassfest` SHA updated to `e91ad194`.
+- **`aiohttp` floor held at `>=3.13.5`** — `homeassistant==2026.6.2` still
+  pins `aiohttp==3.13.5`; bumping to `>=3.14.1` (#106) produces an
+  unsatisfiable resolution. Revisit when HA ships with aiohttp≥3.14.x.
+
+Closes #93, #96, #102, #103, #104, #105, #107, #108. Supersedes #100.
+
 ---
 
 ## [0.2.3] — 2026-05-15
