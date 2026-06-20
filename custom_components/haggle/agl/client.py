@@ -283,7 +283,12 @@ class AglClient:
         Use `day == yesterday` for reliable data; today will be empty.
         Field to use: consumption.quantity (outer) for kWh, NOT
         consumption.values.quantity (inner DPI/chart-scaled helper).
-        dateTime is slot-start in UTC.
+        dateTime is slot-start in UTC, but the `period=` parameter is
+        interpreted in the contract's LOCAL timezone, so a single-day query
+        returns intervals from local midnight that day to local midnight the
+        next day (spanning two UTC dates). The statistics importer relies on
+        this: it cuts the cumulative-sum baseline at the earliest returned
+        interval hour rather than a UTC-midnight derived from `day`.
         """
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}&scaling={AGL_SCALING}"

@@ -281,9 +281,21 @@ poll re-fetches the trailing `REWINDOW_DAYS` (default 7). This makes the
 integration self-heal AGL's day-late AEMO backfills — a slot first returned as
 a `quantity=0` placeholder is overwritten with the real meter read on a later
 cycle. `async_add_external_statistics` is idempotent on `(statistic_id, start)`
-so the overwrite is safe; the baseline cumulative sum for the rewindow is
-looked up via `statistics_during_period` (the sum at the hour right before
-fetch_start UTC midnight), NOT the most-recent stored sum.
+so the overwrite is safe.
+
+The cumulative-sum baseline for the import (aggregate AND every per-tariff
+series) is looked up in `_import_intervals` via `statistics_during_period`
+using the **actual earliest fetched-interval hour** as the cutoff — NOT a
+`fetch_start`-derived UTC midnight, and NOT the most-recent stored sum. AGL's
+`period=` query is interpreted in the contract's local timezone, so the first
+interval of a day query lands at local midnight in UTC (e.g.
+`(fetch_start - 1)T14:00Z` for an AEST account). A cutoff fixed at
+`fetch_start T00:00Z` UTC folded ~10 h of about-to-be-overwritten old sums into
+the baseline and the new chain re-added those hours' deltas, producing a phantom
+`+N kWh` jump in the recorder `sum` column every local midnight (the Energy
+dashboard renders hourly deltas as `sum[h] - sum[h-1]`, so the spike was
+visible there). Using the earliest fetched hour is correct regardless of
+timezone or DST.
 
 ### Previous Bill Period
 
@@ -471,6 +483,22 @@ The HA Energy dashboard requires:
   if 7 sequential GETs land in <1 s. `_fetch_range` sleeps
   `BACKFILL_INTER_REQUEST_DELAY` between days and breaks out of the chunk
   on `AGLRateLimitError`; the next 24 h cycle resumes from the gap.
+- **Don't derive the cumulative-sum baseline cutoff from a `fetch_start` UTC
+  midnight.** AGL's `period=YYYY-MM-DD_YYYY-MM-DD` query is interpreted in the
+  contract's LOCAL timezone, so the first interval returned lands at local
+  midnight in UTC (e.g. `(fetch_start - 1)T14:00Z` for AEST). A baseline lookup
+  cut off at `fetch_start T00:00Z` folds ~10 h of about-to-be-overwritten old
+  sums into the baseline; the new chain re-adds those hours' deltas, producing
+  a phantom `+N kWh` jump in the recorder `sum` column every local-midnight UTC
+  row (visible on the Energy dashboard, which plots `sum[h] - sum[h-1]`).
+  `_import_intervals` looks the baseline up — for the aggregate AND every
+  per-tariff series — at the **actual earliest fetched-interval hour**, which
+  is correct regardless of timezone or DST. This is why baselines are resolved
+  AFTER the fetch (inside `_import_intervals`), not before it. Regression test:
+  `tests/test_coordinator_statistics.py::TestImportIntervalsAggregation::test_baseline_looked_up_at_earliest_fetched_hour`.
+  Fixed v0.3.0 → confirmed against the live recorder: 8 phantom spikes at
+  `T14:00Z` (AEST local midnight) of 10–27 kWh each, including in the ToU
+  `consumption_normal` series.
 
 ---
 

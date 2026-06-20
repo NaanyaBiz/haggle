@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Phantom kWh spike in the cumulative sum at every local midnight.** The
+  trailing rewindow looked up its cumulative-sum baseline at `fetch_start`
+  UTC midnight, but AGL's `period=` query is interpreted in the contract's
+  local timezone — the first interval of a day query lands at
+  `(fetch_start - 1)T14:00Z` for an AEST account. The baseline therefore folded
+  ~10 h of about-to-be-overwritten old sums in, and the new chain re-added
+  those hours' deltas, producing a phantom `+N kWh` jump in the recorder `sum`
+  column every local-midnight UTC row. The per-hour `state` was always correct,
+  but the Energy dashboard plots hourly deltas as `sum[h] - sum[h-1]`, so the
+  spike was visible there. `_import_intervals` now resolves the baseline — for
+  the aggregate **and** every per-tariff ToU series — at the actual earliest
+  fetched-interval hour, which is correct regardless of timezone or DST.
+  Confirmed against the live recorder: 8 phantom spikes at `T14:00Z` of
+  10–27 kWh, including in the ToU `consumption_normal` series. Regression test:
+  `test_baseline_looked_up_at_earliest_fetched_hour`.
+- **Recovery for existing installs.** New rows inside the current 7-day
+  rewindow are rewritten with correct sums on the next poll. Older rows outside
+  the rewindow keep their historical phantom — to clear them, delete the
+  `haggle:*` rows from `statistics` / `statistics_short_term` and let the
+  30-day backfill rebuild from scratch (same procedure as the v0.2.1 undercount
+  recovery).
+
 ### Targets for next sprint
 
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
