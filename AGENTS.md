@@ -49,8 +49,8 @@ custom_components/haggle/
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import
-├── sensor.py            # 6 SensorEntityDescription entries; HaggleEnergySensor
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import (aggregate + per-tariff ToU series)
+├── sensor.py            # 9 SensorEntityDescription entries (3 conditional ToU rate sensors); HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
