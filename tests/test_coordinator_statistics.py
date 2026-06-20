@@ -29,6 +29,11 @@ from custom_components.haggle.const import (
 )
 from custom_components.haggle.coordinator import HaggleCoordinator
 
+# Capture the real coroutine function before any autouse fixture can patch the
+# class attribute.  Used by TestTouRecorderHelpers to restore the live
+# implementation on a per-instance basis while the autouse fixture is active.
+_REAL_GET_STORED_TOU_BANDS = HaggleCoordinator._get_stored_tou_bands
+
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
@@ -120,12 +125,15 @@ class TestImportIntervalsAggregation:
             _make_interval(datetime(2026, 4, 28, 13, 30, tzinfo=UTC), kwh=0.153),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         # Called twice: once for consumption, once for cost
         assert mock_add.call_count == 2
@@ -147,12 +155,15 @@ class TestImportIntervalsAggregation:
             _make_interval(datetime(2026, 4, 28, 13, 30, tzinfo=UTC), kwh=0.153),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         cons_stats = mock_add.call_args_list[0][0][2]
         assert len(cons_stats) == 2
@@ -165,31 +176,39 @@ class TestImportIntervalsAggregation:
             for h in range(3)
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         cons_stats = mock_add.call_args_list[0][0][2]
         assert len(cons_stats) == 3
         sums = [s["sum"] for s in cons_stats]
         assert sums == [pytest.approx(1.0), pytest.approx(2.0), pytest.approx(3.0)]
 
-    async def test_initial_sum_offset_applied(self, hass: HomeAssistant) -> None:
-        """initial_cons_sum is added as an offset to the running total."""
+    async def test_baseline_offset_applied_to_running_total(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Baseline from _get_baseline_sums is added as an offset to the running total."""
         coord = _make_coordinator(hass)
         intervals = [
             _make_interval(datetime(2026, 4, 28, 0, 0, tzinfo=UTC), kwh=0.5),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=100.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(100.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         cons_stats = mock_add.call_args_list[0][0][2]
         assert cons_stats[0]["sum"] == pytest.approx(100.5)
@@ -202,30 +221,70 @@ class TestImportIntervalsAggregation:
             for h in range(3)
         ]
 
-        with patch(_PATCH_ADD_STATS):
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=50.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(50.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         assert coord._latest_cumulative_kwh == pytest.approx(53.0)
 
-    async def test_empty_intervals_calls_add_with_empty_lists(
+    async def test_empty_intervals_skips_import(self, hass: HomeAssistant) -> None:
+        """No intervals → async_add_external_statistics is NOT called at all,
+        and _get_baseline_sums is also not called (no recorder round-trip)."""
+        coord = _make_coordinator(hass)
+        mock_baseline = AsyncMock(return_value=(0.0, 0.0))
+
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(coord, "_get_baseline_sums", new=mock_baseline),
+        ):
+            await coord._import_intervals([])
+
+        mock_add.assert_not_called()
+        mock_baseline.assert_not_called()
+
+    async def test_baseline_looked_up_at_earliest_fetched_hour(
         self, hass: HomeAssistant
     ) -> None:
-        """No intervals → async_add_external_statistics is called with empty lists."""
+        """The baseline cutoff must be the EARLIEST interval hour, not fetch_start midnight.
+
+        Regression guard for the phantom kWh spike bug: AGL's period= query is
+        interpreted in the contract's local timezone, so the first interval of a
+        day query lands at local midnight in UTC (e.g. 2026-04-27T14:00Z for an
+        AEST account). If the cutoff were fixed to fetch_start T00:00Z UTC it
+        would include ~10 h of about-to-be-overwritten old sums in the baseline
+        and then re-add those same hours' deltas — spiking the cumulative sum
+        every local-midnight UTC row.
+
+        Pass intervals OUT of chronological order; earliest hour is 14:00Z.
+        Assert _get_baseline_sums is called once with that exact cutoff.
+        """
         coord = _make_coordinator(hass)
+        earliest_hour = datetime(2026, 4, 28, 14, 0, tzinfo=UTC)
+        intervals = [
+            # Later hour first (out of order) to prove min() is used, not first-seen.
+            _make_interval(datetime(2026, 4, 28, 15, 0, tzinfo=UTC), kwh=0.3),
+            _make_interval(datetime(2026, 4, 28, 15, 30, tzinfo=UTC), kwh=0.2),
+            _make_interval(earliest_hour, kwh=0.5),
+            _make_interval(datetime(2026, 4, 28, 14, 30, tzinfo=UTC), kwh=0.4),
+        ]
+        mock_baseline = AsyncMock(return_value=(0.0, 0.0))
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                [],
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS),
+            patch.object(coord, "_get_baseline_sums", new=mock_baseline),
+        ):
+            await coord._import_intervals(intervals)
 
-        for c in mock_add.call_args_list:
-            assert c[0][2] == []
+        mock_baseline.assert_awaited_once()
+        # Third positional arg is before_dt / cutoff.
+        _, _, cutoff_arg = mock_baseline.call_args[0]
+        assert cutoff_arg == earliest_hour
 
 
 # ---------------------------------------------------------------------------
@@ -242,12 +301,15 @@ class TestImportIntervalsStatId:
             _make_interval(datetime(2026, 4, 28, 0, 0, tzinfo=UTC), kwh=0.2),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         cons_meta = mock_add.call_args_list[0][0][1]
         expected_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
@@ -264,12 +326,15 @@ class TestImportIntervalsStatId:
             _make_interval(datetime(2026, 4, 28, 0, 0, tzinfo=UTC), kwh=0.2),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         cons_meta = mock_add.call_args_list[0][0][1]
         assert cons_meta["unit_of_measurement"] == UnitOfEnergy.KILO_WATT_HOUR
@@ -290,12 +355,15 @@ class TestImportIntervalsAggregationFiltered:
             _make_interval(datetime(2026, 4, 28, 0, 30, tzinfo=UTC), kwh=0.3),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                initial_cons_sum=0.0,
-                initial_cost_sum=0.0,
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         cons_stats = mock_add.call_args_list[0][0][2]
         assert len(cons_stats) == 1
@@ -382,7 +450,7 @@ class TestFetchRange:
         end = today - timedelta(days=3)  # all days are before bill_start
 
         with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._fetch_range(start, end, bill_start, 0.0, 0.0)
+            await coord._fetch_range(start, end, bill_start)
 
         assert mock_client.async_get_usage_hourly_previous.call_count == 3
         mock_client.async_get_usage_hourly.assert_not_called()
@@ -401,7 +469,7 @@ class TestFetchRange:
         end = today - timedelta(days=1)
 
         with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._fetch_range(start, end, bill_start, 0.0, 0.0)
+            await coord._fetch_range(start, end, bill_start)
 
         assert mock_client.async_get_usage_hourly.call_count == 3
         mock_client.async_get_usage_hourly_previous.assert_not_called()
@@ -419,7 +487,7 @@ class TestFetchRange:
         end = today - timedelta(days=1)
 
         with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._fetch_range(start, end, None, 0.0, 0.0)
+            await coord._fetch_range(start, end, None)
 
         assert mock_client.async_get_usage_hourly.call_count == 2
         mock_client.async_get_usage_hourly_previous.assert_not_called()
@@ -444,7 +512,7 @@ class TestFetchRange:
                 "custom_components.haggle.coordinator.asyncio.sleep", new=AsyncMock()
             ),
         ):
-            await coord._fetch_range(start, end, None, 0.0, 0.0)  # must not raise
+            await coord._fetch_range(start, end, None)  # must not raise
 
         # All days attempted despite errors; no intervals → _import_intervals not called
         assert mock_client.async_get_usage_hourly.call_count == 3
@@ -477,7 +545,7 @@ class TestFetchRange:
                 "custom_components.haggle.coordinator.asyncio.sleep", new=AsyncMock()
             ),
         ):
-            await coord._fetch_range(start, end, None, 0.0, 0.0)
+            await coord._fetch_range(start, end, None)
 
         # Two attempts only: day 1 succeeded, day 2 halted the loop.
         assert mock_client.async_get_usage_hourly.call_count == 2
@@ -503,7 +571,7 @@ class TestFetchRange:
             patch.object(coord, "_import_intervals", new_callable=AsyncMock),
             patch("custom_components.haggle.coordinator.asyncio.sleep", new=sleep_mock),
         ):
-            await coord._fetch_range(start, end, None, 0.0, 0.0)
+            await coord._fetch_range(start, end, None)
 
         # 3 fetches, 2 inter-request sleeps (no sleep before first).
         assert mock_client.async_get_usage_hourly.call_count == 3
@@ -515,11 +583,28 @@ class TestFetchRange:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _stub_stored_tou_bands():
+    """Default _get_stored_tou_bands to return an empty set for every test.
+
+    _fetch_and_import calls _get_stored_tou_bands, which touches the recorder;
+    these unit tests don't set one up. Tests exercising ToU wiring patch
+    coord._get_stored_tou_bands explicitly, shadowing this class-level default.
+    """
+    with patch.object(
+        HaggleCoordinator,
+        "_get_stored_tou_bands",
+        new_callable=AsyncMock,
+        return_value=set(),
+    ):
+        yield
+
+
 class TestFetchAndImport:
     async def test_no_previous_stats_starts_from_backfill_days_ago(
         self, hass: HomeAssistant
     ) -> None:
-        """First install: fetch_start = today - BACKFILL_DAYS, baseline 0.0."""
+        """First install: fetch_start = today - BACKFILL_DAYS."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.return_value = _empty_summary()
         mock_client.async_get_plan.return_value = _empty_plan()
@@ -542,19 +627,11 @@ class TestFetchAndImport:
         assert mock_range.called
         actual_start = mock_range.call_args[0][0]
         assert actual_start == expected_start
-        # Baseline is 0 on first install — no prior data.
-        assert mock_range.call_args.kwargs["initial_cons_sum"] == 0.0
-        assert mock_range.call_args.kwargs["initial_cost_sum"] == 0.0
 
     async def test_big_gap_resumes_incrementally_without_rewindow(
         self, hass: HomeAssistant
     ) -> None:
-        """Gap larger than REWINDOW_DAYS → resume from last_stat_date+1, throttled.
-
-        Used when the integration was offline or a backfill is mid-flight.
-        baseline = last_cons_sum (the last stored cumulative), not a lookup —
-        the trailing rewindow doesn't apply.
-        """
+        """Gap larger than REWINDOW_DAYS → resume from last_stat_date+1, throttled."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_summary.return_value = _empty_summary()
         mock_client.async_get_plan.return_value = _empty_plan()
@@ -572,11 +649,6 @@ class TestFetchAndImport:
                 new_callable=AsyncMock,
                 return_value=(100.0, last_date),
             ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-            ) as mock_baseline,
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
@@ -585,10 +657,6 @@ class TestFetchAndImport:
         # Throttle: fetch_end at most BACKFILL_CHUNK_DAYS - 1 past fetch_start.
         fetch_end = mock_range.call_args[0][1]
         assert (fetch_end - expected_start).days <= BACKFILL_CHUNK_DAYS - 1
-        # Baseline lookup must NOT be used in the catch-up path.
-        mock_baseline.assert_not_called()
-        # initial_cons_sum is the last stored cumulative.
-        assert mock_range.call_args.kwargs["initial_cons_sum"] == 100.0
 
     async def test_trailing_rewindow_when_within_window(
         self, hass: HomeAssistant
@@ -611,12 +679,6 @@ class TestFetchAndImport:
                 new_callable=AsyncMock,
                 return_value=(500.0, last_date),
             ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-                return_value=(450.0, 380.0),
-            ) as mock_baseline,
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
@@ -624,11 +686,6 @@ class TestFetchAndImport:
         # Rewindow re-fetches even though last_stat_date is "up to date".
         mock_range.assert_called_once()
         assert mock_range.call_args[0][0] == expected_start
-        # Baseline lookup must be called for the rewindow path.
-        mock_baseline.assert_called_once()
-        # initial_* come from the baseline lookup, NOT last_cons_sum=500.0.
-        assert mock_range.call_args.kwargs["initial_cons_sum"] == 450.0
-        assert mock_range.call_args.kwargs["initial_cost_sum"] == 380.0
 
     async def test_rewindow_clamped_to_backfill_floor(
         self, hass: HomeAssistant
@@ -653,12 +710,6 @@ class TestFetchAndImport:
                 new_callable=AsyncMock,
                 return_value=(500.0, last_date),
             ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-                return_value=(450.0, 380.0),
-            ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
             await coord._fetch_and_import()
@@ -682,12 +733,6 @@ class TestFetchAndImport:
                 "_get_last_stat",
                 new_callable=AsyncMock,
                 return_value=(200.0, yesterday),
-            ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-                return_value=(180.0, 150.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -718,12 +763,6 @@ class TestFetchAndImport:
                 "_get_last_stat",
                 new_callable=AsyncMock,
                 return_value=(100.0, yesterday),
-            ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -765,12 +804,6 @@ class TestNumericGuards:
                 new_callable=AsyncMock,
                 return_value=(100.0, yesterday),
             ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
-            ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
             result = await coord._fetch_and_import()
@@ -806,12 +839,6 @@ class TestNumericGuards:
                 "_get_last_stat",
                 new_callable=AsyncMock,
                 return_value=(100.0, yesterday),
-            ),
-            patch.object(
-                coord,
-                "_get_baseline_sums",
-                new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -881,23 +908,6 @@ def _stat_ids(mock_add: MagicMock) -> list[str]:
     return [c[0][1]["statistic_id"] for c in mock_add.call_args_list]
 
 
-@pytest.fixture(autouse=True)
-def _stub_resolve_tou_state():
-    """Default the single ToU recorder entry point OFF for every test.
-
-    _fetch_and_import calls _resolve_tou_state, which touches the recorder;
-    these unit tests don't set one up. Tests exercising ToU wiring patch
-    coord._resolve_tou_state explicitly, shadowing this class-level default.
-    """
-    with patch.object(
-        HaggleCoordinator,
-        "_resolve_tou_state",
-        new_callable=AsyncMock,
-        return_value=(set(), {}),
-    ):
-        yield
-
-
 class TestImportIntervalsTou:
     async def test_tou_intervals_emit_aggregate_plus_per_tariff(
         self, hass: HomeAssistant
@@ -911,8 +921,20 @@ class TestImportIntervalsTou:
             _iv(datetime(2026, 4, 28, 2, 0, tzinfo=UTC), 0.2, 0.03, "normal"),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(intervals, 0.0, 0.0)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+            patch.object(
+                coord,
+                "_get_tariff_baseline_sums",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         ids = _stat_ids(mock_add)
         assert mock_add.call_count == 10
@@ -931,8 +953,15 @@ class TestImportIntervalsTou:
             _iv(datetime(2026, 4, 28, 2, 0, tzinfo=UTC), 0.3, 0.10, "normal"),
         ]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(intervals, 0.0, 0.0)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_intervals(intervals)
 
         assert mock_add.call_count == 2
         assert not coord._active_tou_bands
@@ -944,10 +973,20 @@ class TestImportIntervalsTou:
         coord = _make_coordinator(hass)
         intervals = [_iv(datetime(2026, 4, 28, 1, 0, tzinfo=UTC), 0.5, 0.16, "normal")]
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals, 0.0, 0.0, known_bands=frozenset({"peak"})
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+            patch.object(
+                coord,
+                "_get_tariff_baseline_sums",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await coord._import_intervals(intervals, known_bands=frozenset({"peak"}))
 
         ids = _stat_ids(mock_add)
         assert mock_add.call_count == 4  # aggregate(2) + normal per-tariff(2)
@@ -956,20 +995,26 @@ class TestImportIntervalsTou:
     async def test_per_tariff_baseline_offset_applied(
         self, hass: HomeAssistant
     ) -> None:
-        """tariff_initial_sums offsets the per-tariff cumulative sum."""
+        """_get_tariff_baseline_sums offsets the per-tariff cumulative sum."""
         coord = _make_coordinator(hass)
         intervals = [_iv(datetime(2026, 4, 28, 7, 0, tzinfo=UTC), 1.0, 0.42, "peak")]
+        peak_cons_id, peak_cost_id = coord._tariff_stat_ids("peak")
 
-        with patch(_PATCH_ADD_STATS) as mock_add:
-            await coord._import_intervals(
-                intervals,
-                0.0,
-                0.0,
-                tariff_initial_sums={"peak": (10.0, 5.0)},
-                known_bands=frozenset({"peak"}),
-            )
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+            patch.object(
+                coord,
+                "_get_tariff_baseline_sums",
+                new=AsyncMock(return_value={peak_cons_id: 10.0, peak_cost_id: 5.0}),
+            ),
+        ):
+            await coord._import_intervals(intervals, known_bands=frozenset({"peak"}))
 
-        peak_cons_id = f"{DOMAIN}:{STAT_CONSUMPTION}_peak_{_CONTRACT}"
         for c in mock_add.call_args_list:
             if c[0][1]["statistic_id"] == peak_cons_id:
                 assert c[0][2][0]["sum"] == pytest.approx(11.0)
@@ -980,8 +1025,20 @@ class TestImportIntervalsTou:
     async def test_active_bands_updated_after_import(self, hass: HomeAssistant) -> None:
         coord = _make_coordinator(hass)
         intervals = [_iv(datetime(2026, 4, 28, 7, 0, tzinfo=UTC), 1.0, 0.42, "peak")]
-        with patch(_PATCH_ADD_STATS):
-            await coord._import_intervals(intervals, 0.0, 0.0)
+        with (
+            patch(_PATCH_ADD_STATS),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+            patch.object(
+                coord,
+                "_get_tariff_baseline_sums",
+                new=AsyncMock(return_value={}),
+            ),
+        ):
+            await coord._import_intervals(intervals)
         assert "peak" in coord._active_tou_bands
 
 
@@ -1027,8 +1084,20 @@ class TestTouRecorderHelpers:
     ) -> None:
         coord = _make_coordinator(hass)
         peak_cons_id, _ = coord._tariff_stat_ids("peak")
-        with patch(
-            _PATCH_GET_INSTANCE, _mock_get_instance({peak_cons_id: [{"sum": 1.0}]})
+        # Restore the real implementation on this instance (the autouse fixture
+        # patches the class-level method to return set(); these tests exercise
+        # the real recorder interaction via a _PATCH_GET_INSTANCE mock).
+        # _REAL_GET_STORED_TOU_BANDS was captured at module import time before
+        # any autouse fixture could replace the class attribute.
+        with (
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new=_REAL_GET_STORED_TOU_BANDS.__get__(coord),
+            ),
+            patch(
+                _PATCH_GET_INSTANCE, _mock_get_instance({peak_cons_id: [{"sum": 1.0}]})
+            ),
         ):
             bands = await coord._get_stored_tou_bands()
         assert bands == {"peak"}
@@ -1037,7 +1106,14 @@ class TestTouRecorderHelpers:
         self, hass: HomeAssistant
     ) -> None:
         coord = _make_coordinator(hass)
-        with patch(_PATCH_GET_INSTANCE, _mock_get_instance({})):
+        with (
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new=_REAL_GET_STORED_TOU_BANDS.__get__(coord),
+            ),
+            patch(_PATCH_GET_INSTANCE, _mock_get_instance({})),
+        ):
             assert await coord._get_stored_tou_bands() == set()
 
 
@@ -1078,15 +1154,9 @@ class TestFetchAndImportTou:
             ),
             patch.object(
                 coord,
-                "_get_baseline_sums",
+                "_get_stored_tou_bands",
                 new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
-            ),
-            patch.object(
-                coord,
-                "_resolve_tou_state",
-                new_callable=AsyncMock,
-                return_value=({"peak", "offpeak"}, {}),
+                return_value={"peak", "offpeak"},
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -1115,15 +1185,9 @@ class TestFetchAndImportTou:
             ),
             patch.object(
                 coord,
-                "_get_baseline_sums",
+                "_get_stored_tou_bands",
                 new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
-            ),
-            patch.object(
-                coord,
-                "_resolve_tou_state",
-                new_callable=AsyncMock,
-                return_value=(set(), {}),
+                return_value=set(),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
         ):
@@ -1157,15 +1221,9 @@ class TestFetchAndImportTou:
             ),
             patch.object(
                 coord,
-                "_get_baseline_sums",
+                "_get_stored_tou_bands",
                 new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
-            ),
-            patch.object(
-                coord,
-                "_resolve_tou_state",
-                new_callable=AsyncMock,
-                return_value=({"peak"}, {}),
+                return_value={"peak"},
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
             patch.object(
@@ -1195,15 +1253,9 @@ class TestFetchAndImportTou:
             ),
             patch.object(
                 coord,
-                "_get_baseline_sums",
+                "_get_stored_tou_bands",
                 new_callable=AsyncMock,
-                return_value=(80.0, 60.0),
-            ),
-            patch.object(
-                coord,
-                "_resolve_tou_state",
-                new_callable=AsyncMock,
-                return_value=({"peak"}, {}),
+                return_value={"peak"},
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock),
             patch.object(
