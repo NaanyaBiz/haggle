@@ -9,9 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Targets for next sprint
 
-- Promote `0.3.0-beta.1` to stable `0.3.0` after a live ToU soak.
-- #90 — validate the ToU plan rate-mapping heuristic against a real capture.
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
 - #91 — clear external statistics on integration removal.
+- #114 — harden the per-tariff cumulative-sum baseline for long-absent bands.
+
+---
+
+## [0.3.0] — 2026-06-20
+
+**Stable release.** Promotes `0.3.0-beta.1` to stable after a multi-week live
+soak. Headline feature: **Time-of-Use (ToU) tariff support** — per-tariff
+consumption/cost statistics plus per-band rate sensors, with flat-rate contracts
+unchanged. No code change vs `0.3.0-beta.1`; see the `[0.3.0-beta.1]` entry below
+for the full breakdown.
+
+> **Time-of-Use caveat.** ToU has not been validated against a real AGL ToU
+> account — the maintainer's live contract is flat-rate, and the original
+> requester (#82) did not return to test the beta. The flat-rate path is the
+> soaked, stable path. On ToU contracts the consumption/cost **split** is driven
+> by the documented per-interval `consumption.type` and is expected correct, but
+> the per-band **rate sensors** use an unvalidated plan-text heuristic (#90) and
+> may read `unavailable`; a sparse-band cumulative-sum edge case is tracked in #114.
+
+Closes #82.
 
 ---
 
