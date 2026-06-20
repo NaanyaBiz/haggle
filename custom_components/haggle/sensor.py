@@ -34,7 +34,13 @@ from .const import (
     DATA_CONSUMPTION_PERIOD,
     DATA_SUPPLY_CHARGE,
     DATA_UNIT_RATE,
+    DATA_UNIT_RATE_OFFPEAK,
+    DATA_UNIT_RATE_PEAK,
+    DATA_UNIT_RATE_SHOULDER,
     DOMAIN,
+    TARIFF_OFFPEAK,
+    TARIFF_PEAK,
+    TARIFF_SHOULDER,
 )
 from .coordinator import HaggleCoordinator
 
@@ -102,6 +108,32 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
     ),
 )
 
+# Per-tariff unit-rate sensors, keyed by ToU band. Registered only when the
+# contract is on a Time-of-Use plan (the band is in coordinator.data
+# .active_tariffs) so flat-rate users never see empty peak/offpeak/shoulder
+# sensors. Same pattern as `unit_rate`: MEASUREMENT, AUD/kWh, NO device_class
+# (MONETARY is for cumulative amounts, not unit prices).
+TOU_RATE_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+    TARIFF_PEAK: SensorEntityDescription(
+        key=DATA_UNIT_RATE_PEAK,
+        translation_key="unit_rate_peak",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/kWh",
+    ),
+    TARIFF_OFFPEAK: SensorEntityDescription(
+        key=DATA_UNIT_RATE_OFFPEAK,
+        translation_key="unit_rate_offpeak",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/kWh",
+    ),
+    TARIFF_SHOULDER: SensorEntityDescription(
+        key=DATA_UNIT_RATE_SHOULDER,
+        translation_key="unit_rate_shoulder",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/kWh",
+    ),
+}
+
 
 async def async_setup_entry(
     _hass: HomeAssistant,
@@ -110,8 +142,16 @@ async def async_setup_entry(
 ) -> None:
     """Set up haggle sensor entities for the entry."""
     coordinator = entry.runtime_data.coordinator
+    descriptions = list(SENSOR_DESCRIPTIONS)
+    # Add per-tariff rate sensors only for the bands this contract actually
+    # uses. active_tariffs is populated by the coordinator's first refresh,
+    # which runs before this platform setup.
+    active = coordinator.data.active_tariffs if coordinator.data else frozenset()
+    descriptions.extend(
+        desc for band, desc in TOU_RATE_DESCRIPTIONS.items() if band in active
+    )
     async_add_entities(
-        HaggleEnergySensor(coordinator, entry, desc) for desc in SENSOR_DESCRIPTIONS
+        HaggleEnergySensor(coordinator, entry, desc) for desc in descriptions
     )
 
 

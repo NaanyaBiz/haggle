@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
+- #91 — clear external statistics on integration removal.
+- #114 — harden the per-tariff cumulative-sum baseline for long-absent bands.
+
+---
+
+## [0.3.0] — 2026-06-20
+
+**Stable release.** Promotes `0.3.0-beta.1` to stable after a multi-week live
+soak. Headline feature: **Time-of-Use (ToU) tariff support** — per-tariff
+consumption/cost statistics plus per-band rate sensors, with flat-rate contracts
+unchanged. No code change vs `0.3.0-beta.1`; see the `[0.3.0-beta.1]` entry below
+for the full breakdown.
+
+> **Time-of-Use caveat.** ToU has not been validated against a real AGL ToU
+> account — the maintainer's live contract is flat-rate, and the original
+> requester (#82) did not return to test the beta. The flat-rate path is the
+> soaked, stable path. On ToU contracts the consumption/cost **split** is driven
+> by the documented per-interval `consumption.type` and is expected correct, but
+> the per-band **rate sensors** use an unvalidated plan-text heuristic (#90) and
+> may read `unavailable`; a sparse-band cumulative-sum edge case is tracked in #114.
+
+Closes #82.
+
+---
+
+## [0.3.0-beta.1] — 2026-05-29
+
+### Added
+
+- **Time-of-Use (ToU) tariff support** (#82). On contracts whose AGL interval
+  data is tagged with `peak`/`offpeak`/`shoulder` tariff types, the integration
+  now writes a separate consumption + cost statistic per tariff band
+  (`haggle:consumption_peak_<contract>`, `…_offpeak_…`, `…_shoulder_…`, plus a
+  `…_normal_…`/anytime band so the parts sum back to the aggregate). Each is an
+  independent Energy-dashboard source with `unit_class="energy"`.
+  - Adds per-tariff unit-rate sensors (peak/off-peak/shoulder, `AUD/kWh`,
+    `state_class=MEASUREMENT`), registered only on ToU contracts so flat-rate
+    users see no empty sensors.
+  - Flat-rate contracts are unchanged — only the existing aggregate
+    `haggle:consumption_<contract>` / `cost_<contract>` series are written.
+  - **Energy dashboard**: ToU users should add only the per-tariff consumption
+    series (not the aggregate as well) to avoid double-counting; flat-rate users
+    add only the aggregate.
+  - Switching an existing flat-rate contract to a ToU plan: the per-tariff
+    statistics appear automatically on the next poll; the integration schedules
+    a one-off reload so the new per-tariff rate sensors register.
+
 ### Changed
 
 - **Dev-tooling floor bumped**: `pytest-cov>=7.1.0` (was `>=5.0`); the
@@ -15,6 +65,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions pinned SHAs updated**: `codeql-action` v4.35.4 → v4.36.0,
   `codecov-action` v6.0.0 → v6.0.1, `home-assistant/actions/hassfest`
   SHA updated to `868e6cb4`.
+
+### Fixed
+
+- Corrected stale code comments that named `consumption.values.quantity` (inner,
+  DPI-scaled) as the kWh source of truth in `models.py` and `client.py`; the
+  metered value is `consumption.quantity` (outer), as the parser already used.
 
 Closes #73, #75, #77, #83, #85.
 

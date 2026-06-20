@@ -281,7 +281,8 @@ class AglClient:
         """Fetch /Hourly for a single day (30-min intervals).
 
         Use `day == yesterday` for reliable data; today will be empty.
-        Field to use: consumption.values.quantity (kWh), NOT consumption.quantity.
+        Field to use: consumption.quantity (outer) for kWh, NOT
+        consumption.values.quantity (inner DPI/chart-scaled helper).
         dateTime is slot-start in UTC.
         """
         period = f"{day}_{day}"

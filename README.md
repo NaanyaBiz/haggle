@@ -14,8 +14,11 @@ dashboard.
 > **Australia only.** Requires an AGL Energy electricity account with a smart
 > meter (most Australian metropolitan installations).
 
-> **Status:** beta — core data path working, HACS submission pending.
-> See [`CHANGELOG.md`](./CHANGELOG.md) for milestone progress.
+> **Status:** `v0.3.0`. The flat-rate consumption/cost path is stable and runs
+> live in the maintainer's Home Assistant. **Time-of-Use (ToU) support is
+> implemented but not yet verified against a real AGL ToU account** — see
+> [Time-of-Use (ToU)](#time-of-use-tou) below. See
+> [`CHANGELOG.md`](./CHANGELOG.md) for milestone detail.
 
 ## Why
 
@@ -44,6 +47,32 @@ Assistant](https://my.home-assistant.io/) configured and HACS will open the
 
 The integration will backfill 30 days of history on first run, then poll
 once per day. AGL interval data lags 24–48 h.
+
+## Time-of-Use (ToU)
+
+On a flat-rate contract, `haggle` writes one consumption series and one cost
+series — that is the path that runs live today.
+
+On a **Time-of-Use** contract — where AGL tags each 30-minute interval as
+`peak`, `off-peak`, or `shoulder` — `haggle` additionally writes a separate
+consumption + cost statistic per tariff band (peak / off-peak / shoulder /
+anytime), each selectable as its own Energy-dashboard source, plus a per-band
+unit-rate sensor. The split is driven entirely by AGL's per-interval tariff
+tags, so it does not depend on guessing your plan's rate structure.
+
+- **Energy dashboard:** a ToU contract should add **only the per-tariff
+  consumption sources** — *not* the aggregate "AGL Electricity Consumption"
+  source as well, or every kWh is counted twice. Flat-rate contracts add only
+  the aggregate.
+
+> ⚠️ **ToU is unverified.** The maintainer's live account is flat-rate, so ToU
+> has only ever been exercised against synthetic test data, never a real AGL ToU
+> contract. The usage/cost **split** is expected to be correct (it follows the
+> documented `consumption.type` tag), but the per-band **rate sensors** infer
+> their band from free-text plan wording and may read `unavailable`. If you run a
+> ToU plan, testing and feedback are very welcome — see issues
+> [#90](https://github.com/NaanyaBiz/haggle/issues/90) and
+> [#114](https://github.com/NaanyaBiz/haggle/issues/114).
 
 ## Develop
 

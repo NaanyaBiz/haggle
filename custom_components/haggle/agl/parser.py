@@ -23,9 +23,31 @@ import math
 from datetime import UTC, date, datetime
 from typing import Any
 
+from ..const import TARIFF_OFFPEAK, TARIFF_PEAK, TARIFF_SHOULDER
 from .models import BillPeriod, Contract, DailyReading, IntervalReading, PlanRates
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _classify_tariff(text: str) -> str | None:
+    """Map a plan rate's header/title text to a ToU tariff band, or None.
+
+    Heuristic — AGL's plan endpoint groups c/kWh detail rows under free-text
+    `kind:"header"` rows (e.g. "Peak", "Off Peak", "Shoulder") rather than a
+    machine tariff-type field. Order matters: "off peak" must be tested before
+    the bare "peak" substring. Returns None for general/flat usage rows so an
+    unmatched band surfaces as `unavailable`, never a misleading 0.0. The
+    keyword mapping is extrapolated from the documented response shape (see
+    AGENTS.md §AGL API).
+    """
+    t = text.lower()
+    if "shoulder" in t:
+        return TARIFF_SHOULDER
+    if "off peak" in t or "off-peak" in t or "offpeak" in t:
+        return TARIFF_OFFPEAK
+    if "peak" in t:
+        return TARIFF_PEAK
+    return None
 
 
 def _safe_float(raw: Any) -> float:
@@ -174,21 +196,37 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
     product_name: str = data.get("productName", "")
     unit_rates: list[dict[str, Any]] = []
     supply_charge: float = 0.0
+    tou_unit_rates: dict[str, float] = {}
+    # AGL groups detail rows under free-text `kind:"header"` rows; track the
+    # most recent header so a ToU band ("Peak"/"Off Peak"/"Shoulder") can be
+    # inferred even when the per-rate title is generic ("First N kWh").
+    current_header = ""
 
     for rate in data.get("gstInclusiveRates") or []:
-        if rate.get("kind") != "detail":
+        kind = rate.get("kind")
+        if kind == "header":
+            current_header = rate.get("title") or ""
+            continue
+        if kind != "detail":
             continue
         rate_type: str = rate.get("type", "")
         price = _safe_float(rate.get("price"))
-        if rate_type == "c/day" and "supply" in (rate.get("title") or "").lower():
+        title: str = rate.get("title") or ""
+        if rate_type == "c/day" and "supply" in title.lower():
             supply_charge = price
+        if rate_type == "c/kWh":
+            band = _classify_tariff(f"{current_header} {title}")
+            # First matching rate per band wins; AGL repeats the same c/kWh
+            # across tiered "First N kWh" / "Thereafter" rows.
+            if band is not None and band not in tou_unit_rates:
+                tou_unit_rates[band] = price
         # Allowlist the four fields the coordinator actually consumes — drops
         # any extra keys an attacker-controlled (MITM) response could inject.
         unit_rates.append(
             {
-                "kind": rate.get("kind"),
+                "kind": kind,
                 "type": rate_type,
-                "title": rate.get("title"),
+                "title": title,
                 "price": price,
             }
         )
@@ -197,4 +235,5 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
         product_name=product_name,
         unit_rates=unit_rates,
         supply_charge_cents_per_day=supply_charge,
+        tou_unit_rates=tou_unit_rates,
     )

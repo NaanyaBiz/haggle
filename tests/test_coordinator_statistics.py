@@ -865,3 +865,351 @@ class TestUTCDateBoundary:
         # The UTC `today` is 2026-05-02; backfill starts BACKFILL_DAYS earlier.
         expected_start = date(2026, 5, 2) - timedelta(days=BACKFILL_DAYS)
         assert mock_range.call_args[0][0] == expected_start
+
+
+# ---------------------------------------------------------------------------
+# Time-of-Use: per-tariff statistic series
+# ---------------------------------------------------------------------------
+
+
+def _iv(dt: datetime, kwh: float, cost: float, rate_type: str) -> IntervalReading:
+    return IntervalReading(dt=dt, kwh=kwh, cost_aud=cost, rate_type=rate_type)
+
+
+def _stat_ids(mock_add: MagicMock) -> list[str]:
+    """Statistic IDs across all async_add_external_statistics calls, in order."""
+    return [c[0][1]["statistic_id"] for c in mock_add.call_args_list]
+
+
+@pytest.fixture(autouse=True)
+def _stub_resolve_tou_state():
+    """Default the single ToU recorder entry point OFF for every test.
+
+    _fetch_and_import calls _resolve_tou_state, which touches the recorder;
+    these unit tests don't set one up. Tests exercising ToU wiring patch
+    coord._resolve_tou_state explicitly, shadowing this class-level default.
+    """
+    with patch.object(
+        HaggleCoordinator,
+        "_resolve_tou_state",
+        new_callable=AsyncMock,
+        return_value=(set(), {}),
+    ):
+        yield
+
+
+class TestImportIntervalsTou:
+    async def test_tou_intervals_emit_aggregate_plus_per_tariff(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Mixed tariff data → aggregate (2) + one cons+cost per present band (8)."""
+        coord = _make_coordinator(hass)
+        intervals = [
+            _iv(datetime(2026, 4, 28, 7, 0, tzinfo=UTC), 1.0, 0.42, "peak"),
+            _iv(datetime(2026, 4, 28, 10, 0, tzinfo=UTC), 0.8, 0.18, "shoulder"),
+            _iv(datetime(2026, 4, 28, 18, 0, tzinfo=UTC), 0.4, 0.07, "offpeak"),
+            _iv(datetime(2026, 4, 28, 2, 0, tzinfo=UTC), 0.2, 0.03, "normal"),
+        ]
+
+        with patch(_PATCH_ADD_STATS) as mock_add:
+            await coord._import_intervals(intervals, 0.0, 0.0)
+
+        ids = _stat_ids(mock_add)
+        assert mock_add.call_count == 10
+        # Aggregate emitted first (consumption then cost), preserving order.
+        assert ids[0] == f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+        assert ids[1] == f"{DOMAIN}:cost_{_CONTRACT}"
+        for band in ("peak", "offpeak", "shoulder", "normal"):
+            assert f"{DOMAIN}:{STAT_CONSUMPTION}_{band}_{_CONTRACT}" in ids
+            assert f"{DOMAIN}:cost_{band}_{_CONTRACT}" in ids
+
+    async def test_flat_rate_only_emits_aggregate(self, hass: HomeAssistant) -> None:
+        """Only `normal` intervals and no known ToU bands → aggregate series only."""
+        coord = _make_coordinator(hass)
+        intervals = [
+            _iv(datetime(2026, 4, 28, 1, 0, tzinfo=UTC), 0.5, 0.16, "normal"),
+            _iv(datetime(2026, 4, 28, 2, 0, tzinfo=UTC), 0.3, 0.10, "normal"),
+        ]
+
+        with patch(_PATCH_ADD_STATS) as mock_add:
+            await coord._import_intervals(intervals, 0.0, 0.0)
+
+        assert mock_add.call_count == 2
+        assert not coord._active_tou_bands
+
+    async def test_known_band_makes_normal_a_tou_series(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A contract already seen on ToU emits the normal/anytime per-tariff series."""
+        coord = _make_coordinator(hass)
+        intervals = [_iv(datetime(2026, 4, 28, 1, 0, tzinfo=UTC), 0.5, 0.16, "normal")]
+
+        with patch(_PATCH_ADD_STATS) as mock_add:
+            await coord._import_intervals(
+                intervals, 0.0, 0.0, known_bands=frozenset({"peak"})
+            )
+
+        ids = _stat_ids(mock_add)
+        assert mock_add.call_count == 4  # aggregate(2) + normal per-tariff(2)
+        assert f"{DOMAIN}:{STAT_CONSUMPTION}_normal_{_CONTRACT}" in ids
+
+    async def test_per_tariff_baseline_offset_applied(
+        self, hass: HomeAssistant
+    ) -> None:
+        """tariff_initial_sums offsets the per-tariff cumulative sum."""
+        coord = _make_coordinator(hass)
+        intervals = [_iv(datetime(2026, 4, 28, 7, 0, tzinfo=UTC), 1.0, 0.42, "peak")]
+
+        with patch(_PATCH_ADD_STATS) as mock_add:
+            await coord._import_intervals(
+                intervals,
+                0.0,
+                0.0,
+                tariff_initial_sums={"peak": (10.0, 5.0)},
+                known_bands=frozenset({"peak"}),
+            )
+
+        peak_cons_id = f"{DOMAIN}:{STAT_CONSUMPTION}_peak_{_CONTRACT}"
+        for c in mock_add.call_args_list:
+            if c[0][1]["statistic_id"] == peak_cons_id:
+                assert c[0][2][0]["sum"] == pytest.approx(11.0)
+                break
+        else:  # pragma: no cover
+            pytest.fail("peak consumption series not emitted")
+
+    async def test_active_bands_updated_after_import(self, hass: HomeAssistant) -> None:
+        coord = _make_coordinator(hass)
+        intervals = [_iv(datetime(2026, 4, 28, 7, 0, tzinfo=UTC), 1.0, 0.42, "peak")]
+        with patch(_PATCH_ADD_STATS):
+            await coord._import_intervals(intervals, 0.0, 0.0)
+        assert "peak" in coord._active_tou_bands
+
+
+# ---------------------------------------------------------------------------
+# Time-of-Use: recorder helper methods
+# ---------------------------------------------------------------------------
+
+
+class TestTouRecorderHelpers:
+    async def test_baseline_sums_returns_last_sum_per_id(
+        self, hass: HomeAssistant
+    ) -> None:
+        coord = _make_coordinator(hass)
+        cons_id, cost_id = coord._tariff_stat_ids("peak")
+        rows = {
+            cons_id: [{"sum": 10.0}, {"sum": 22.0}],
+            cost_id: [{"sum": 3.0}, {"sum": 7.5}],
+        }
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
+            out = await coord._get_tariff_baseline_sums(
+                {cons_id, cost_id}, datetime(2026, 4, 28, tzinfo=UTC)
+            )
+        assert out[cons_id] == pytest.approx(22.0)
+        assert out[cost_id] == pytest.approx(7.5)
+
+    async def test_baseline_sums_empty_ids_short_circuits(
+        self, hass: HomeAssistant
+    ) -> None:
+        coord = _make_coordinator(hass)
+        assert await coord._get_tariff_baseline_sums(set(), datetime.now(UTC)) == {}
+
+    async def test_baseline_sums_missing_rows_default_zero(
+        self, hass: HomeAssistant
+    ) -> None:
+        coord = _make_coordinator(hass)
+        cons_id, _ = coord._tariff_stat_ids("shoulder")
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance({})):
+            out = await coord._get_tariff_baseline_sums({cons_id}, datetime.now(UTC))
+        assert out[cons_id] == 0.0
+
+    async def test_stored_tou_bands_detects_present_band(
+        self, hass: HomeAssistant
+    ) -> None:
+        coord = _make_coordinator(hass)
+        peak_cons_id, _ = coord._tariff_stat_ids("peak")
+        with patch(
+            _PATCH_GET_INSTANCE, _mock_get_instance({peak_cons_id: [{"sum": 1.0}]})
+        ):
+            bands = await coord._get_stored_tou_bands()
+        assert bands == {"peak"}
+
+    async def test_stored_tou_bands_empty_when_no_rows(
+        self, hass: HomeAssistant
+    ) -> None:
+        coord = _make_coordinator(hass)
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance({})):
+            assert await coord._get_stored_tou_bands() == set()
+
+
+# ---------------------------------------------------------------------------
+# Time-of-Use: _fetch_and_import wiring (rates, active_tariffs, reload)
+# ---------------------------------------------------------------------------
+
+
+def _tou_plan() -> PlanRates:
+    return PlanRates(
+        product_name="Time of Use Saver",
+        unit_rates=[
+            {"kind": "detail", "type": "c/kWh", "price": 41.9, "title": "Peak"}
+        ],
+        supply_charge_cents_per_day=131.714,
+        tou_unit_rates={"peak": 41.9, "offpeak": 18.04, "shoulder": 22.55},
+    )
+
+
+class TestFetchAndImportTou:
+    async def test_tou_rates_and_active_tariffs_in_data(
+        self, hass: HomeAssistant
+    ) -> None:
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _tou_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
+            ),
+            patch.object(
+                coord,
+                "_resolve_tou_state",
+                new_callable=AsyncMock,
+                return_value=({"peak", "offpeak"}, {}),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        assert result.unit_rate_peak_aud_per_kwh == pytest.approx(0.419)
+        assert result.unit_rate_offpeak_aud_per_kwh == pytest.approx(0.1804)
+        assert result.unit_rate_shoulder_aud_per_kwh == pytest.approx(0.2255)
+        assert {"peak", "offpeak"} <= result.active_tariffs
+
+    async def test_flat_plan_leaves_tou_rates_none(self, hass: HomeAssistant) -> None:
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
+            ),
+            patch.object(
+                coord,
+                "_resolve_tou_state",
+                new_callable=AsyncMock,
+                return_value=(set(), {}),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        assert result.unit_rate_peak_aud_per_kwh is None
+        assert result.active_tariffs == frozenset()
+
+    async def test_reload_scheduled_when_new_band_appears(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Non-first refresh + newly stored ToU band → schedule_reload fires once."""
+        from custom_components.haggle.coordinator import HaggleData
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _tou_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+        # Simulate a prior successful refresh (so this is not the first one).
+        coord.data = HaggleData(0.0, 0.0, None, None, None, 0.0)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
+            ),
+            patch.object(
+                coord,
+                "_resolve_tou_state",
+                new_callable=AsyncMock,
+                return_value=({"peak"}, {}),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+            patch.object(
+                coord.hass.config_entries, "async_schedule_reload"
+            ) as mock_reload,
+        ):
+            await coord._fetch_and_import()
+
+        mock_reload.assert_called_once()
+
+    async def test_no_reload_on_first_refresh(self, hass: HomeAssistant) -> None:
+        """First refresh (coord.data is None) must not schedule a reload."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _tou_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new_callable=AsyncMock,
+                return_value=(80.0, 60.0),
+            ),
+            patch.object(
+                coord,
+                "_resolve_tou_state",
+                new_callable=AsyncMock,
+                return_value=({"peak"}, {}),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+            patch.object(
+                coord.hass.config_entries, "async_schedule_reload"
+            ) as mock_reload,
+        ):
+            await coord._fetch_and_import()
+
+        mock_reload.assert_not_called()

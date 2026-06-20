@@ -49,8 +49,8 @@ custom_components/haggle/
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import
-├── sensor.py            # 6 SensorEntityDescription entries; HaggleEnergySensor
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import (aggregate + per-tariff ToU series)
+├── sensor.py            # 9 SensorEntityDescription entries (3 conditional ToU rate sensors); HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
@@ -65,15 +65,18 @@ tests/
 ├── fixtures/
 │   ├── hourly_response.json         # 30-min interval data (Current/Hourly)
 │   ├── overview_response.json       # /v3/overview with accounts + contracts
-│   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates
+│   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates (flat rate)
+│   ├── tou_plan_response.json       # Time-of-Use plan — per-band gstInclusiveRates
+│   ├── tou_hourly_response.json     # mixed peak/offpeak/shoulder/normal intervals
 │   └── bill_period_response.json    # usage summary
 ├── test_init.py                     # setup/unload smoke tests
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
-├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, _safe_float
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, _safe_float
 ├── test_pinning.py                  # SPKI extraction + host-name guards
-└── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, numeric guards
+├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
+└── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
@@ -301,6 +304,19 @@ GET /mobile/bff/api/v2/plan/energy/{contractNumber}
 Returns `gstInclusiveRates` list with `c/kWh` and `c/day` entries. Supply charge
 is a `c/day` entry with `title` containing "Supply charge".
 
+**Time-of-Use rate mapping (heuristic — needs real-capture validation)**: AGL
+does not return a machine `tariffType` field on plan rates. ToU bands are
+inferred from the free-text `kind:"header"` row and the per-rate `title` via a
+keyword match (`parser._classify_tariff`: `shoulder` → shoulder; `off peak`/
+`off-peak`/`offpeak` → offpeak; then bare `peak` → peak; anything else → None,
+so unmatched bands surface as `unavailable`, never a misleading `0.0`). The
+**statistics split does NOT depend on this** — it is driven entirely by the
+well-documented per-interval `consumption.type`. Only the per-tariff *rate
+sensors* rely on the plan-text heuristic. `tests/fixtures/tou_plan_response.json`
+is shape-extrapolated from `plan_response.json` (headers "Peak"/"Shoulder"/
+"Off Peak"); validate against a real ToU plan capture and correct the heuristic
+if AGL labels bands differently (tracked in #90).
+
 ### TLS pinning (Trust-On-First-Use)
 
 Both `secure.agl.com.au` and `api.platform.agl.com.au` are pinned by SPKI hash.
@@ -352,6 +368,20 @@ The HA Energy dashboard requires:
 - **`unit_class="energy"` is required** on the consumption statistic for it to appear in
   the Energy dashboard's "add consumption source" picker. `unit_class=None` silently excludes
   it from the UI filter even though the data is in the DB.
+- **Time-of-Use (ToU) per-tariff series**: on a contract whose interval data carries
+  `consumption.type` values other than `normal` (i.e. `peak`/`offpeak`/`shoulder`), the
+  coordinator ALSO writes one series per tariff type present, named band-distinctly:
+  - `haggle:consumption_<tariff>_<contract_number>` — kWh, `unit_class="energy"`, `has_sum=True`
+  - `haggle:cost_<tariff>_<contract_number>` — AUD, `unit_class=None`, `has_sum=True`
+
+  where `<tariff> ∈ {peak, offpeak, shoulder, normal}`. The per-tariff series sum back to
+  the aggregate (the `normal`/anytime band is included precisely so no kWh is lost). The
+  aggregate series is always written too, for backward compatibility.
+  - **Double-count warning**: a ToU user must add ONLY the per-tariff consumption series to
+    the Energy dashboard, NOT the aggregate `haggle:consumption_<contract>` as well — adding
+    both counts every kWh twice. Flat-rate users add only the aggregate (no per-tariff series
+    exist for them). Each band uses a stable, band-labelled `StatisticMetaData.name`
+    (`TARIFF_LABELS` in `const.py`) so the picker can tell them apart.
 - Resume point: `get_last_statistics(hass, 1, stat_id, True, {"start", "sum"})` — returns
   the last-imported hour so incremental updates don't re-import already-stored rows.
 - Each import call is idempotent: `(statistic_id, start)` updates in place.
@@ -376,6 +406,13 @@ The HA Energy dashboard requires:
   from Hourly or Daily usage requests returns HTTP 500 with no useful error body.
 - **Don't set `unit_class=None` on the consumption statistic** — HA's Energy dashboard
   consumption picker filters by `unit_class="energy"`. `None` silently hides the statistic.
+- **Don't add BOTH the aggregate and the per-tariff consumption series to the Energy
+  dashboard for one ToU contract** — they overlap (per-tariff series are a partition of the
+  aggregate), so adding both double-counts every kWh. The integration writes both for
+  backward compatibility; the docs/CHANGELOG tell ToU users to add only the per-tariff
+  series and flat-rate users to add only the aggregate. When adding a new per-tariff series,
+  always emit the `normal`/anytime band too (`TOU_SERIES_TARIFFS`) so the partition is
+  complete and no kWh silently vanishes from the breakdown.
 - **No committing directly to `main`** — the `guard-main-branch` hook blocks it.
   Use a feature branch + PR.
 - **No mutable GitHub Action refs** — pin every `uses: owner/action@…` to a
