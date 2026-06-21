@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
+- #91 — clear external statistics on integration removal.
+- #114 — harden the per-tariff cumulative-sum baseline for long-absent bands.
+
+---
+
+## [0.3.1] — 2026-06-21
+
 ### Fixed
 
 - **Phantom kWh spike in the cumulative sum at every local midnight.** The
@@ -30,12 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `haggle:*` rows from `statistics` / `statistics_short_term` and let the
   30-day backfill rebuild from scratch (same procedure as the v0.2.1 undercount
   recovery).
-
-### Targets for next sprint
-
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
-- #91 — clear external statistics on integration removal.
-- #114 — harden the per-tariff cumulative-sum baseline for long-absent bands.
 
 ---
 
