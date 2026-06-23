@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Bumped `homeassistant` floor from `>=2026.5.1` to `>=2026.6.3` (Dependabot #111); aligned `hacs.json` floor to match.
+- Bumped `aiohttp` floor from `>=3.13.5` to `>=3.14.1` (Dependabot #106).
+- Bumped `pytest-homeassistant-custom-component` pin from `>=0.13.330,<0.13.331` to `>=0.13.339,<0.13.340`; updated alignment comment (Dependabot #110).
+- Bumped `ruff` floor from `>=0.15.13` to `>=0.15.17` (Dependabot #112).
+- Bumped `actions/checkout` from `v6.0.2` to `v6.0.3` in all workflows (Dependabot #96).
+- Bumped `astral-sh/setup-uv` from `v8.1.0` to `v8.2.0` in `ci.yml` (Dependabot #93).
+- Bumped `codecov/codecov-action` from `v6.0.1` to `v7.0.0` in `ci.yml` (Dependabot #102).
+- Bumped `home-assistant/actions` SHA in `hassfest.yml` (Dependabot #103).
+- Bumped `github/codeql-action` from `v4.36.0` to `v4.36.2` in `codeql.yml` (Dependabot #104).
+
 ### Targets for next sprint
 
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
