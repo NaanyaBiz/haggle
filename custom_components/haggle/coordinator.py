@@ -62,6 +62,12 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+# Lower bound for the reach-back baseline lookup (#114). Earlier than any
+# possible recorder row, so a series whose last stored hour predates the normal
+# look-back window is still found. Bounded ABOVE at the fetch cutoff by the
+# caller, so it never reads a sum from inside the rewindow being rewritten.
+_EARLIEST_HISTORY = datetime(1970, 1, 1, tzinfo=UTC)
+
 
 def _safe_float(raw: Any) -> float:
     """Coerce raw API value to a non-negative finite float, defaulting to 0.0."""
@@ -314,34 +320,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """Return cumulative sums at the last hour strictly before before_dt.
 
         Used by the trailing-rewindow path so newly-imported rows resume from
-        the correct baseline. Looks back 2 days to tolerate sparse data.
-        Returns (0.0, 0.0) if no rows exist in the look-back window.
+        the correct baseline. Looks back 2 days to tolerate sparse data, with a
+        reach-back fallback for a series whose last row predates that window.
+        Returns (0.0, 0.0) if the series has no stored rows at all.
         """
-        from homeassistant.components.recorder.statistics import (
-            statistics_during_period,
+        sums = await self._baseline_sums_before(
+            {stat_id_cons, stat_id_cost}, before_dt, look_back_days=2
         )
-        from homeassistant.helpers.recorder import get_instance
-
-        look_back = before_dt - timedelta(days=2)
-        result = await get_instance(self.hass).async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            look_back,
-            before_dt,
-            {stat_id_cons, stat_id_cost},
-            "hour",
-            None,
-            {"sum"},
-        )
-
-        def _last_sum(stat_id: str) -> float:
-            rows = result.get(stat_id) or []
-            if not rows:
-                return 0.0
-            last = rows[-1].get("sum")
-            return float(last) if last is not None else 0.0
-
-        return _last_sum(stat_id_cons), _last_sum(stat_id_cost)
+        return sums[stat_id_cons], sums[stat_id_cost]
 
     async def _get_tariff_baseline_sums(
         self, stat_ids: set[str], before_dt: datetime
@@ -351,8 +337,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         Batched (one recorder call for all per-tariff series) so adding ToU
         doesn't multiply executor round-trips. Looks back BACKFILL_DAYS — wide
         enough that a sparse band (e.g. shoulder only on weekdays) still finds
-        its true last sum rather than resetting to 0.0. Series with no rows in
-        the window return 0.0.
+        its true last sum rather than resetting to 0.0.
+        """
+        return await self._baseline_sums_before(
+            set(stat_ids), before_dt, look_back_days=BACKFILL_DAYS
+        )
+
+    async def _baseline_sums_before(
+        self, stat_ids: set[str], before_dt: datetime, *, look_back_days: int
+    ) -> dict[str, float]:
+        """Return {stat_id: cumulative sum at the last hour strictly before before_dt}.
+
+        Resolution is two-stage. First a cheap bounded window of `look_back_days`
+        ending at before_dt — this covers the normal case and every
+        sparse-but-recent band in a single batched recorder call. Any series
+        with NO rows in that window is then resolved with a second lookup that
+        reaches back to the start of recorded history (still bounded above at
+        before_dt).
+
+        The reach-back stage exists for #114: a per-tariff band can be absent
+        for longer than the window (e.g. a shoulder band the plan stops using
+        for a month) and then reappear inside the trailing rewindow. Without it
+        the baseline falls to 0.0 and _emit_series restarts that series'
+        cumulative sum from zero — a downward step that breaks its
+        TOTAL_INCREASING monotonicity. The lookup stays strictly *before*
+        before_dt (never get_last_statistics) precisely so it cannot read a sum
+        from inside the rewindow rows about to be rewritten. A series with no
+        stored rows at all resolves to 0.0.
         """
         if not stat_ids:
             return {}
@@ -361,22 +372,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         from homeassistant.helpers.recorder import get_instance
 
-        look_back = before_dt - timedelta(days=BACKFILL_DAYS)
-        result = await get_instance(self.hass).async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            look_back,
-            before_dt,
-            set(stat_ids),
-            "hour",
-            None,
-            {"sum"},
-        )
-        out: dict[str, float] = {}
+        instance = get_instance(self.hass)
+
+        async def _last_sums(start_dt: datetime, ids: set[str]) -> dict[str, float]:
+            result = await instance.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start_dt,
+                before_dt,
+                set(ids),
+                "hour",
+                None,
+                {"sum"},
+            )
+            sums: dict[str, float] = {}
+            for stat_id in ids:
+                rows = result.get(stat_id) or []
+                last = rows[-1].get("sum") if rows else None
+                if last is not None:
+                    sums[stat_id] = float(last)
+            return sums
+
+        out = await _last_sums(before_dt - timedelta(days=look_back_days), stat_ids)
+        missing = {stat_id for stat_id in stat_ids if stat_id not in out}
+        if missing:
+            out.update(await _last_sums(_EARLIEST_HISTORY, missing))
         for stat_id in stat_ids:
-            rows = result.get(stat_id) or []
-            last = rows[-1].get("sum") if rows else None
-            out[stat_id] = float(last) if last is not None else 0.0
+            out.setdefault(stat_id, 0.0)
         return out
 
     async def _get_stored_tou_bands(self) -> set[str]:
