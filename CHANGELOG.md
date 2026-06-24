@@ -10,8 +10,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Targets for next sprint
 
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
-- #91 — clear external statistics on integration removal.
-- #114 — harden the per-tariff cumulative-sum baseline for long-absent bands.
+
+---
+
+## [0.3.2] — 2026-06-24
+
+### Fixed
+
+- **Per-tariff cumulative-sum baseline could reset to 0 for a long-absent band
+  (#114).** The trailing-rewindow baseline lookup searched only the
+  `BACKFILL_DAYS` (30-day) window before the fetch cutoff. A ToU band absent for
+  longer than that window but with older stored history resolved to a `0.0`
+  baseline; if the band then reappeared inside the 7-day rewindow, its cumulative
+  `sum` restarted from zero — a downward step that breaks the per-band
+  `TOTAL_INCREASING` monotonicity for that one series. Baseline resolution now
+  has a second, reach-back stage: any series with no rows in the normal window is
+  looked up again from the start of recorded history, still bounded strictly
+  *before* the fetch cutoff (never `get_last_statistics`, which would read a sum
+  from inside the rewindow rows about to be rewritten). The cheap windowed lookup
+  still resolves the normal and sparse-but-recent case in a single batched call;
+  the reach-back fires only for genuinely missing series. The same hardening now
+  also covers the aggregate baseline. Regression tests:
+  `test_baseline_reaches_back_when_band_absent_from_window`,
+  `test_baseline_no_reach_back_when_band_in_window`, and a per-hour partition
+  assertion `test_per_tariff_states_partition_aggregate`.
+
+### Changed
+
+- **Platform floor raised to Home Assistant 2026.6.3** (was 2026.5.1) and
+  **`aiohttp>=3.14.1`** (was 3.13.5); `hacs.json` minimum bumped to match, so
+  HACS refuses to install on older HA. Test harness pinned to
+  `pytest-homeassistant-custom-component>=0.13.339,<0.13.340` to track the new HA
+  patch, and dev-tooling floor `ruff>=0.15.17`.
+- **GitHub Actions rolled forward (all SHA-pinned)**: `actions/checkout` v6.0.3,
+  `astral-sh/setup-uv` v8.2.0, `codecov/codecov-action` v7.0.0,
+  `github/codeql-action` v4.36.2, and `home-assistant/actions/hassfest`.
+
+### Notes
+
+- **#91 (clear external statistics on uninstall) — resolved as won't-implement,
+  retain history.** Deleting the `haggle:*` recorder statistics on uninstall
+  would silently and unrecoverably destroy the user's historical Energy-dashboard
+  data. Orphaned statistics are harmless and the user can prune them on their own
+  terms via **Developer Tools → Statistics**. `async_remove_entry` now documents
+  the deliberate omission so it isn't "fixed" later.
 
 ---
 
