@@ -37,11 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Platform floor raised to Home Assistant 2026.6.3** (was 2026.5.1) and
-  **`aiohttp>=3.14.1`** (was 3.13.5); `hacs.json` minimum bumped to match, so
-  HACS refuses to install on older HA. Test harness pinned to
-  `pytest-homeassistant-custom-component>=0.13.339,<0.13.340` to track the new HA
-  patch, and dev-tooling floor `ruff>=0.15.17`.
+- **Platform floor raised to Home Assistant 2026.6.3** (was 2026.5.1);
+  `hacs.json` minimum bumped to match, so HACS refuses to install on older HA.
+  Test harness pinned to `pytest-homeassistant-custom-component>=0.13.339,<0.13.340`
+  (which pins `homeassistant==2026.6.3`), and dev-tooling floor `ruff>=0.15.17`.
+  `aiohttp` stays at `>=3.13.5`: HA pins `aiohttp==3.13.5` exactly, so the
+  dependabot `aiohttp>=3.14.1` bump (#106) is unsatisfiable until HA moves it
+  upstream — left open rather than merged.
 - **GitHub Actions rolled forward (all SHA-pinned)**: `actions/checkout` v6.0.3,
   `astral-sh/setup-uv` v8.2.0, `codecov/codecov-action` v7.0.0,
   `github/codeql-action` v4.36.2, and `home-assistant/actions/hassfest`.
