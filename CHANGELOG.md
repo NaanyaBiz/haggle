@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency rollup 2026-06-26: `pytest` floor `>=8.0` → `>=9.1.1` (#120);
+  `homeassistant` runtime floor `>=2026.5.1` → `>=2026.6.3` (#111);
+  `pytest-homeassistant-custom-component` pin `0.13.330` → `0.13.339`
+  (HA 2026.6.3 test harness, #110); `ruff` `>=0.15.13` → `>=0.15.19` (#112,
+  #122); `hacs.json` minimum lifted to match. GitHub Actions SHA pins:
+  `actions/checkout` v6.0.3 (#96), `astral-sh/setup-uv` v8.2.0 (#93),
+  `codecov/codecov-action` v7.0.0 (#102), `home-assistant/actions/hassfest`
+  SHA updated (#103), `github/codeql-action` v4.36.2 (#104).
+
 ### Targets for next sprint
 
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
