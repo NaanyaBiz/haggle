@@ -26,7 +26,7 @@ dependencies = [
     # HA 2026.4 closed the 13 CVEs v0.1.0 inherited (SCA-M01..M05, SCA-L01..L08,
     # SCA-H02) via aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6;
     # 2026.5.0 keeps those at-or-above. HA 2026.4+ also requires Python 3.14.2.
-    "homeassistant>=2026.6.3",
+    "homeassistant>=2026.6.4",
     # HA pins aiohttp==3.13.5 exactly (still true on 2026.6.3/6.4), so this
     # floor cannot move ahead of HA — the aiohttp>=3.14.1 bump (#106) is
     # unsatisfiable until HA bumps it upstream.
