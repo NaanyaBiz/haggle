@@ -151,6 +151,15 @@ async def async_remove_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> N
     `config_entry_id` references the now-gone entry. On reinstall, HA
     sees an entity_id collision and renames the new sensors with a `_2`
     suffix; the orphans then linger forever as `unavailable`.
+
+    Deliberately does NOT clear the `haggle:*` external statistics from the
+    recorder (#91). Those rows are the user's own historical energy/cost data;
+    silently destroying years of Energy-dashboard history on an uninstall would
+    be surprising and unrecoverable. Orphaned statistics are harmless and the
+    user can prune them on their own terms via
+    Developer Tools → Statistics → "Fix issue" (orphaned statistics), so the
+    non-destructive default is the right one. Do not add async_clear_statistics
+    here without an explicit opt-in.
     """
     registry = er.async_get(hass)
     entries = er.async_entries_for_config_entry(registry, entry.entry_id)

@@ -297,6 +297,17 @@ dashboard renders hourly deltas as `sum[h] - sum[h-1]`, so the spike was
 visible there). Using the earliest fetched hour is correct regardless of
 timezone or DST.
 
+The baseline lookup itself (`_baseline_sums_before`) is **two-stage**: a cheap
+batched window of `look_back_days` ending at the cutoff (2 days for the
+aggregate, `BACKFILL_DAYS` for per-tariff series), and — only for a series with
+NO rows in that window — a reach-back lookup from the start of recorded history.
+Both stages stay strictly *before* the cutoff, so neither ever reads a sum from
+inside the rewindow rows about to be rewritten (this is why `get_last_statistics`
+is wrong here). Without the reach-back, a ToU band absent for longer than the
+window and then reappearing inside the rewindow would reset its cumulative sum to
+0.0 — a downward step breaking that series' `TOTAL_INCREASING` monotonicity
+(#114, fixed v0.3.2).
+
 ### Previous Bill Period
 
 ```
@@ -479,6 +490,13 @@ The HA Energy dashboard requires:
   whose `config_entry_id` references the now-gone entry; reinstall causes
   `_2`-suffixed sensor IDs that linger as `unavailable` forever. See
   `__init__.py::async_remove_entry`.
+- **Don't clear the `haggle:*` external statistics in `async_remove_entry`.**
+  Those rows are the user's own historical energy/cost data; deleting them on
+  uninstall would silently and unrecoverably destroy years of Energy-dashboard
+  history. Orphaned statistics are harmless and the user can prune them via
+  Developer Tools → Statistics. Decided won't-implement on #91 (v0.3.2);
+  `async_remove_entry` documents the deliberate omission. Do not add
+  `async_clear_statistics` here without an explicit opt-in.
 - **Don't fire backfill requests in a tight loop.** AGL's BFF will 429
   if 7 sequential GETs land in <1 s. `_fetch_range` sleeps
   `BACKFILL_INTER_REQUEST_DELAY` between days and breaks out of the chunk

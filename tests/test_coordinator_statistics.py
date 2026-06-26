@@ -945,6 +945,50 @@ class TestImportIntervalsTou:
             assert f"{DOMAIN}:{STAT_CONSUMPTION}_{band}_{_CONTRACT}" in ids
             assert f"{DOMAIN}:cost_{band}_{_CONTRACT}" in ids
 
+    async def test_per_tariff_states_partition_aggregate(
+        self, hass: HomeAssistant
+    ) -> None:
+        """#114: per-tariff consumption states sum back to the aggregate state,
+        hour by hour — so the per-band series are a true partition with no kWh
+        lost or double-counted (presence/count alone wouldn't catch a drop)."""
+        coord = _make_coordinator(hass)
+        intervals = [
+            # Two bands sharing the 07:00 UTC hour, plus a second hour, so the
+            # partition is checked per-hour and not merely in total.
+            _iv(datetime(2026, 4, 28, 7, 0, tzinfo=UTC), 1.0, 0.42, "peak"),
+            _iv(datetime(2026, 4, 28, 7, 30, tzinfo=UTC), 0.5, 0.20, "shoulder"),
+            _iv(datetime(2026, 4, 28, 8, 0, tzinfo=UTC), 0.4, 0.07, "offpeak"),
+            _iv(datetime(2026, 4, 28, 8, 30, tzinfo=UTC), 0.2, 0.03, "normal"),
+        ]
+
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord, "_get_baseline_sums", new=AsyncMock(return_value=(0.0, 0.0))
+            ),
+            patch.object(
+                coord, "_get_tariff_baseline_sums", new=AsyncMock(return_value={})
+            ),
+        ):
+            await coord._import_intervals(intervals)
+
+        # {statistic_id: {hour_start: state}} across every emitted series.
+        states: dict[str, dict[datetime, float]] = {}
+        for call in mock_add.call_args_list:
+            stat_id = call[0][1]["statistic_id"]
+            states[stat_id] = {s["start"]: s["state"] for s in call[0][2]}
+
+        agg = states[f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"]
+        bands = ("peak", "offpeak", "shoulder", "normal")
+        for hour, agg_state in agg.items():
+            band_total = sum(
+                states.get(f"{DOMAIN}:{STAT_CONSUMPTION}_{b}_{_CONTRACT}", {}).get(
+                    hour, 0.0
+                )
+                for b in bands
+            )
+            assert band_total == pytest.approx(agg_state)
+
     async def test_flat_rate_only_emits_aggregate(self, hass: HomeAssistant) -> None:
         """Only `normal` intervals and no known ToU bands → aggregate series only."""
         coord = _make_coordinator(hass)
@@ -1078,6 +1122,53 @@ class TestTouRecorderHelpers:
         with patch(_PATCH_GET_INSTANCE, _mock_get_instance({})):
             out = await coord._get_tariff_baseline_sums({cons_id}, datetime.now(UTC))
         assert out[cons_id] == 0.0
+
+    async def test_baseline_reaches_back_when_band_absent_from_window(
+        self, hass: HomeAssistant
+    ) -> None:
+        """#114: a band with no rows in the look-back window but older stored
+        history resumes from its true last sum — not 0.0 — so a band that goes
+        quiet for longer than the window then reappears inside the trailing
+        rewindow keeps its cumulative sum monotonic instead of stepping down.
+        """
+        from custom_components.haggle.coordinator import _EARLIEST_HISTORY
+
+        coord = _make_coordinator(hass)
+        cons_id, _ = coord._tariff_stat_ids("shoulder")
+        before = datetime(2026, 6, 1, tzinfo=UTC)
+
+        def _executor(_func: object, _hass: object, start_dt: datetime, *_rest: object):
+            # Narrow window → band absent; reach-back to history start → found.
+            if start_dt == _EARLIEST_HISTORY:
+                return {cons_id: [{"sum": 5.0}, {"sum": 42.0}]}
+            return {}
+
+        mock_instance = MagicMock()
+        mock_instance.async_add_executor_job = AsyncMock(side_effect=_executor)
+        with patch(_PATCH_GET_INSTANCE, MagicMock(return_value=mock_instance)):
+            out = await coord._get_tariff_baseline_sums({cons_id}, before)
+
+        assert out[cons_id] == pytest.approx(42.0)
+        # Two recorder calls: the narrow window, then the reach-back fallback.
+        assert mock_instance.async_add_executor_job.await_count == 2
+
+    async def test_baseline_no_reach_back_when_band_in_window(
+        self, hass: HomeAssistant
+    ) -> None:
+        """#114: when the band has rows in the normal look-back window, the
+        extra reach-back lookup is skipped (a single recorder round-trip)."""
+        coord = _make_coordinator(hass)
+        cons_id, _ = coord._tariff_stat_ids("peak")
+        mock_instance = MagicMock()
+        mock_instance.async_add_executor_job = AsyncMock(
+            return_value={cons_id: [{"sum": 9.0}]}
+        )
+        with patch(_PATCH_GET_INSTANCE, MagicMock(return_value=mock_instance)):
+            out = await coord._get_tariff_baseline_sums(
+                {cons_id}, datetime(2026, 6, 1, tzinfo=UTC)
+            )
+        assert out[cons_id] == pytest.approx(9.0)
+        assert mock_instance.async_add_executor_job.await_count == 1
 
     async def test_stored_tou_bands_detects_present_band(
         self, hass: HomeAssistant
