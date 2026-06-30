@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Lock file refreshed to match declared constraints** (`uv.lock` was stale against
+  `pyproject.toml`). Dependency updates bundled in this sync: `homeassistant` 2026.5.1 →
+  2026.6.3, `pytest-homeassistant-custom-component` 0.13.330 → 0.13.339, `zeroconf`
+  0.148.0 → 0.149.16, plus transitive bumps (`aiodns`, `aiohttp-asyncmdnsresolver`,
+  `coverage`, `cryptography`, `fnv-hash-fast`, `orjson`, `propcache`, `pydantic`,
+  `pyopenssl`, `requests`, `ruff`, `syrupy`, `ulid-transform`, `uv`, `yarl`).
+  Closes #125. — Dependabot PRs #106 (#aiohttp), #120 (pytest), #121 (HA floor),
+  and #123 (phac) remain blocked; see details in tracking issue #72.
+
 ### Targets for next sprint
 
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
