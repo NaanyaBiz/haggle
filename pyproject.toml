@@ -41,7 +41,7 @@ dev = [
     # Pins a specific homeassistant patch — keep this aligned with the runtime
     # floor above so transitive resolution stays consistent.
     "pytest-homeassistant-custom-component>=0.13.339,<0.13.340",
-    "ruff>=0.15.17",
+    "ruff>=0.15.20",
     "mypy>=2.1.0",
     "pre-commit>=4.6.0",
 ]
