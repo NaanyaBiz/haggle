@@ -37,7 +37,9 @@ _CONTRACT = "9999999999"
 _BASE_KEYS = {d.key for d in SENSOR_DESCRIPTIONS}
 
 
-def _data(active: frozenset[str], **rates: float | None) -> HaggleData:
+def _data(
+    active: frozenset[str], has_solar: bool = False, **rates: float | None
+) -> HaggleData:
     return HaggleData(
         consumption_period_kwh=0.0,
         consumption_period_cost_aud=0.0,
@@ -49,6 +51,7 @@ def _data(active: frozenset[str], **rates: float | None) -> HaggleData:
         unit_rate_peak_aud_per_kwh=rates.get("peak"),
         unit_rate_offpeak_aud_per_kwh=rates.get("offpeak"),
         unit_rate_shoulder_aud_per_kwh=rates.get("shoulder"),
+        has_solar=has_solar,
     )
 
 
@@ -141,3 +144,31 @@ class TestTouRateNativeValue:
             entry.runtime_data.coordinator, entry, TOU_RATE_DESCRIPTIONS["peak"]
         )
         assert sensor.native_value == 0.419
+
+
+class TestSolarRegistration:
+    async def test_solar_contract_registers_generation_sensors(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.const import (
+            DATA_GENERATION_CREDIT,
+            DATA_GENERATION_KWH,
+        )
+
+        keys = await _setup_keys(hass, _data(frozenset(), has_solar=True))
+        assert DATA_GENERATION_KWH in keys
+        assert DATA_GENERATION_CREDIT in keys
+        assert set(keys) >= _BASE_KEYS
+
+    async def test_non_solar_contract_has_no_generation_sensors(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.const import (
+            DATA_GENERATION_CREDIT,
+            DATA_GENERATION_KWH,
+        )
+
+        keys = await _setup_keys(hass, _data(frozenset()))
+        assert DATA_GENERATION_KWH not in keys
+        assert DATA_GENERATION_CREDIT not in keys
+        assert set(keys) == _BASE_KEYS

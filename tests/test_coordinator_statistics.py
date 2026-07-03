@@ -1356,3 +1356,144 @@ class TestFetchAndImportTou:
             await coord._fetch_and_import()
 
         mock_reload.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Solar generation import (#128)
+# ---------------------------------------------------------------------------
+
+
+class TestSolarGeneration:
+    async def test_import_generation_writes_generation_and_credit_series(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Feed-in intervals produce haggle:generation_* and *_credit series."""
+        coord = _make_coordinator(hass)
+        intervals = [
+            _make_interval(datetime(2026, 6, 29, 2, 0, tzinfo=UTC), kwh=1.276),
+            _make_interval(datetime(2026, 6, 29, 2, 30, tzinfo=UTC), kwh=1.168),
+        ]
+
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(10.0, 1.0)),
+            ),
+        ):
+            await coord._import_generation(intervals)
+
+        assert mock_add.call_count == 2
+        gen_meta = mock_add.call_args_list[0][0][1]
+        credit_meta = mock_add.call_args_list[1][0][1]
+        assert gen_meta["statistic_id"] == f"{DOMAIN}:generation_{_CONTRACT}"
+        assert gen_meta["unit_class"] == "energy"
+        assert gen_meta["unit_of_measurement"] == "kWh"
+        assert gen_meta["has_sum"] is True
+        assert credit_meta["statistic_id"] == f"{DOMAIN}:generation_credit_{_CONTRACT}"
+        assert credit_meta["unit_class"] is None
+        assert credit_meta["unit_of_measurement"] == "AUD"
+
+        # Both 30-min slots aggregate into the 02:00 hour, on the baseline.
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert len(gen_stats) == 1
+        assert gen_stats[0]["state"] == pytest.approx(1.276 + 1.168)
+        assert gen_stats[0]["sum"] == pytest.approx(10.0 + 1.276 + 1.168)
+        assert coord._latest_generation_kwh == pytest.approx(12.444)
+
+    async def test_import_generation_empty_is_noop(self, hass: HomeAssistant) -> None:
+        coord = _make_coordinator(hass)
+        with patch(_PATCH_ADD_STATS) as mock_add:
+            await coord._import_generation([])
+        assert mock_add.call_count == 0
+
+    async def test_fetch_range_include_solar_fetches_solar_endpoint(
+        self, hass: HomeAssistant
+    ) -> None:
+        """include_solar=True adds one solar fetch per day with the right variant."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        mock_client.async_get_usage_hourly_previous.return_value = []
+        mock_client.async_get_solar_hourly.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        bill_start = date(2026, 6, 29)
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await coord._fetch_range(
+                date(2026, 6, 28),
+                date(2026, 6, 29),
+                bill_start,
+                include_solar=True,
+            )
+
+        calls = mock_client.async_get_solar_hourly.call_args_list
+        assert len(calls) == 2
+        # Day before bill_start uses the Previous variant; day inside, Current.
+        assert calls[0][0][1] == date(2026, 6, 28)
+        assert calls[0][1]["previous"] is True
+        assert calls[1][0][1] == date(2026, 6, 29)
+        assert calls[1][1]["previous"] is False
+
+    async def test_fetch_range_without_solar_makes_no_solar_calls(
+        self, hass: HomeAssistant
+    ) -> None:
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await coord._fetch_range(date(2026, 6, 29), date(2026, 6, 29), None)
+
+        assert mock_client.async_get_solar_hourly.call_count == 0
+
+    async def test_refresh_has_solar_sets_flag_from_overview(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                has_solar=True,
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        assert coord._has_solar is False
+        await coord._refresh_has_solar()
+        assert coord._has_solar is True
+
+    async def test_refresh_has_solar_ignores_other_contracts(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number="0000000000",
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                has_solar=True,
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        await coord._refresh_has_solar()
+        assert coord._has_solar is False
+
+    async def test_refresh_has_solar_sticky_on_error(self, hass: HomeAssistant) -> None:
+        from custom_components.haggle.agl.client import AGLError
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.side_effect = AGLError("boom")
+        coord = _make_coordinator(hass, client=mock_client)
+        coord._has_solar = True
+        await coord._refresh_has_solar()
+        assert coord._has_solar is True

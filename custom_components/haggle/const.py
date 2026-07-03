@@ -92,6 +92,12 @@ AGL_SCALING: Final = "36.514404_108.057_40.670903_120.357_0_0_0_0"
 # Statistic ID suffixes — full ID is f"{DOMAIN}:{STAT_*}_{contract_number}"
 STAT_CONSUMPTION: Final = "consumption"  # → haggle:consumption_{contract}
 STAT_COST: Final = "cost"  # → haggle:cost_{contract}
+# Solar feed-in (export) series — written only for contracts with hasSolar.
+# The generation series is a "Return to grid" source in the Energy dashboard.
+STAT_GENERATION: Final = "generation"  # → haggle:generation_{contract}
+STAT_GENERATION_CREDIT: Final = (
+    "generation_credit"  # → haggle:generation_credit_{contract}
+)
 
 # Time-of-Use tariff types — the value of `consumption.type` on each interval.
 TARIFF_PEAK: Final = "peak"
@@ -141,3 +147,6 @@ DATA_SUPPLY_CHARGE: Final = "supply_charge_aud_per_day"  # AUD/day
 DATA_UNIT_RATE_PEAK: Final = "unit_rate_peak_aud_per_kwh"
 DATA_UNIT_RATE_OFFPEAK: Final = "unit_rate_offpeak_aud_per_kwh"
 DATA_UNIT_RATE_SHOULDER: Final = "unit_rate_shoulder_aud_per_kwh"
+# Solar feed-in cumulatives — only populated/registered on hasSolar contracts.
+DATA_GENERATION_KWH: Final = "latest_generation_kwh"  # TOTAL_INCREASING sensor
+DATA_GENERATION_CREDIT: Final = "latest_generation_credit_aud"  # cumulative AUD

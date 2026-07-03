@@ -615,3 +615,50 @@ class TestParseIntervalReadingsTou:
         # kWh from outer consumption.quantity, not inner values.quantity.
         peak = [r for r in readings if r.rate_type == "peak"]
         assert sorted(r.kwh for r in peak) == [pytest.approx(0.5), pytest.approx(1.0)]
+
+
+class TestParseSolarIntervals:
+    """feedIn extraction from the ElectricitySolar /Hourly response (#128).
+
+    Fixture shape is a real anonymised capture (Ausgrid NSW, 2026-06-29);
+    the daytime non-zero feedIn values are extrapolated onto that shape —
+    the capture's real slots were night-time zeros.
+    """
+
+    def test_feedin_outer_quantity_and_amount(self) -> None:
+        data = load_fixture("solar_hourly_response.json")
+        readings = parse_interval_readings(data, source_field="feedIn")
+        # 3 daytime export slots survive; the two night zero-on-zero feedIn
+        # slots and the pending/none placeholders are dropped.
+        assert len(readings) == 3
+        kwhs = {r.kwh for r in readings}
+        assert kwhs == {0.502, 1.276, 1.168}
+        # Inner values.quantity (DPI/chart-scaled) must not leak through.
+        assert kwhs.isdisjoint({0.31, 0.79, 0.72})
+        credits = {r.cost_aud for r in readings}
+        assert credits == {0.0165, 0.0421, 0.0385}
+
+    def test_consumption_side_of_solar_response_parses_with_default(self) -> None:
+        data = load_fixture("solar_hourly_response.json")
+        readings = parse_interval_readings(data)
+        # All five real consumption slots survive (pending/none dropped).
+        assert len(readings) == 5
+        assert {r.kwh for r in readings} == {0.141, 0.112, 0.124, 0.067, 0.066}
+
+    def test_feedin_filters_pending_and_none(self) -> None:
+        data = load_fixture("solar_hourly_response.json")
+        readings = parse_interval_readings(data, source_field="feedIn")
+        from datetime import UTC, datetime
+
+        dts = {r.dt for r in readings}
+        assert datetime(2026, 6, 29, 14, 0, tzinfo=UTC) not in dts  # pending
+        assert datetime(2026, 6, 29, 14, 30, tzinfo=UTC) not in dts  # none
+
+
+class TestParseOverviewSolar:
+    def test_has_solar_true_on_solar_contract(self) -> None:
+        data = load_fixture("overview_solar_response.json")
+        contracts = parse_overview(data)
+        assert len(contracts) == 1
+        assert contracts[0].has_solar is True
+        assert contracts[0].contract_number == "9999999999"

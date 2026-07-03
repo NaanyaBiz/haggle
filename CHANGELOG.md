@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Solar generation (feed-in) support** (#128). Contracts that report
+  `hasSolar` in `/v3/overview` now also fetch the `ElectricitySolar` Hourly
+  endpoint each cycle and write two new statistics series per contract:
+  - `haggle:generation_<contract>` — exported kWh (`unit_class="energy"`), an
+    Energy-dashboard **"Return to grid"** source
+  - `haggle:generation_credit_<contract>` — AUD feed-in credit
+  Values come from the response's `feedIn` block (outer `quantity`/`amount`,
+  same schema as `consumption` — documented from a real capture provided on
+  #128). Two new sensors, **Solar generation** (cumulative kWh) and **Solar
+  feed-in credit** (cumulative AUD), register only on solar contracts;
+  non-solar installs are unchanged. Backfill, trailing-rewindow self-healing,
+  and the earliest-fetched-hour baseline rule all apply to the new series.
+  If solar is added to a contract later, the integration detects the
+  `hasSolar` flip on the next poll and reloads to add the sensors.
+
 ### Fixed
 
 - **Parser now filters `consumption.type = "pending"` intervals (#126).** AGL
@@ -36,7 +53,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Targets for next sprint
 
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
 
 ---
 

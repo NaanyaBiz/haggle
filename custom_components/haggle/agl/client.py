@@ -304,6 +304,26 @@ class AglClient:
         data = await self._get(url)
         return parse_interval_readings(data)
 
+    # --- Solar (feed-in) ---
+
+    async def async_get_solar_hourly(
+        self, contract_number: str, day: date, *, previous: bool = False
+    ) -> list[IntervalReading]:
+        """Fetch ElectricitySolar /Hourly feed-in intervals for a single day.
+
+        Same envelope, headers, and scaling requirement as the Electricity
+        endpoint — the path substitutes the ElectricitySolar segment and each
+        item carries an extra "feedIn" block (documented from a real capture,
+        #128). Returns the feedIn side only: kwh = exported kWh, cost_aud =
+        AUD feed-in credit for the slot. `previous=True` selects the
+        Previous/Hourly variant for days before the current bill period.
+        """
+        period_segment = "Previous" if previous else "Current"
+        period = f"{day}_{day}"
+        url = f"{self.BASE_URL}/api/v2/usage/smart/ElectricitySolar/{contract_number}/{period_segment}/Hourly?period={period}&scaling={AGL_SCALING}"
+        data = await self._get(url)
+        return parse_interval_readings(data, source_field="feedIn")
+
     # --- Plan ---
 
     async def async_get_plan(self, contract_number: str) -> PlanRates:

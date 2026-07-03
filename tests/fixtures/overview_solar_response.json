@@ -1,0 +1,30 @@
+{
+  "accounts": [
+    {
+      "contracts": [
+        {
+          "hasSolar": true,
+          "contractNumber": "9999999999",
+          "title": "1 Jan - 31 Jan 2024",
+          "label": "Cost So Far",
+          "labelValue": "$35.36",
+          "additionalLabel": "Sold To Grid",
+          "additionalLabelValue": "+ $7.43",
+          "hasCarbonNeutral": false,
+          "meterType": "smart",
+          "serviceHub": "https://api.platform.agl.com.au/mobile/bff/api/v1/servicehub/energy/9999999999",
+          "type": "electricityContract",
+          "status": "active"
+        }
+      ],
+      "address": "1 Sample Street SUBURB QLD 4000",
+      "tooltip": {
+        "title": "Figures inclusive of GST.",
+        "subtitle": "See how these amounts are calculated.",
+        "url": "https://www.agl.com.au/help-support/energy/billing-and-payments/bill-questions-answered/energy-usage-calculations"
+      },
+      "type": "energyAccount",
+      "accountNumber": "1234567890"
+    }
+  ]
+}

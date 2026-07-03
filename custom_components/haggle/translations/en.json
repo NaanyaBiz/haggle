@@ -53,6 +53,12 @@
       },
       "supply_charge": {
         "name": "Supply charge"
+      },
+      "generation": {
+        "name": "Solar generation"
+      },
+      "generation_credit": {
+        "name": "Solar feed-in credit"
       }
     }
   }

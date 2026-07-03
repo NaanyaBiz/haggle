@@ -45,6 +45,8 @@ from .const import (
     SCAN_INTERVAL_HOURLY,
     STAT_CONSUMPTION,
     STAT_COST,
+    STAT_GENERATION,
+    STAT_GENERATION_CREDIT,
     TARIFF_LABELS,
     TARIFF_OFFPEAK,
     TARIFF_PEAK,
@@ -98,6 +100,11 @@ class HaggleData:
     unit_rate_peak_aud_per_kwh: float | None = None
     unit_rate_offpeak_aud_per_kwh: float | None = None
     unit_rate_shoulder_aud_per_kwh: float | None = None
+    # Solar extras — has_solar gates conditional generation-sensor
+    # registration; False on non-solar contracts so those sensors never appear.
+    has_solar: bool = False
+    latest_generation_kwh: float = 0.0
+    latest_generation_credit_aud: float = 0.0
 
 
 class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
@@ -128,12 +135,25 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # the schedule-reload-on-growth path in _maybe_reload_for_new_tariffs.
         self._active_tou_bands: set[str] = set()
         self._prev_active_tou_bands: set[str] = set()
+        # Solar feed-in state. has_solar comes from /v3/overview each cycle;
+        # _prev_has_solar drives the reload-when-solar-appears path.
+        self._has_solar: bool = False
+        self._prev_has_solar: bool = False
+        self._latest_generation_kwh: float = 0.0
+        self._latest_generation_credit: float = 0.0
 
     def _tariff_stat_ids(self, tariff: str) -> tuple[str, str]:
         """Return (consumption_id, cost_id) for a per-tariff series."""
         return (
             f"{DOMAIN}:{STAT_CONSUMPTION}_{tariff}_{self.contract_number}",
             f"{DOMAIN}:{STAT_COST}_{tariff}_{self.contract_number}",
+        )
+
+    def _generation_stat_ids(self) -> tuple[str, str]:
+        """Return (generation_id, generation_credit_id) for the solar series."""
+        return (
+            f"{DOMAIN}:{STAT_GENERATION}_{self.contract_number}",
+            f"{DOMAIN}:{STAT_GENERATION_CREDIT}_{self.contract_number}",
         )
 
     async def _async_setup(self) -> None:
@@ -155,6 +175,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # Fetch live sensor data first — summary gives bill_start for endpoint selection.
         summary = await self.client.async_get_usage_summary(self.contract_number)
         plan = await self.client.async_get_plan(self.contract_number)
+        await self._refresh_has_solar()
 
         bill_start: date = summary.start
 
@@ -178,6 +199,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # bumps it forward when the import produces new rows.
         self._latest_cumulative_kwh = last_cons_sum or 0.0
 
+        if self._has_solar:
+            stat_id_gen, stat_id_credit = self._generation_stat_ids()
+            last_gen_sum, _ = await self._get_last_stat(stat_id_gen)
+            last_credit_sum, _ = await self._get_last_stat(stat_id_credit)
+            self._latest_generation_kwh = last_gen_sum or 0.0
+            self._latest_generation_credit = last_credit_sum or 0.0
+
         # Mark which ToU bands already have stored statistics so the per-tariff
         # series are emitted only for a contract that has been seen using ToU
         # (flat-rate contracts stay on the aggregate series alone). The
@@ -190,6 +218,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 fetch_end,
                 bill_start,
                 known_bands=frozenset(self._active_tou_bands),
+                include_solar=self._has_solar,
             )
 
         # Extract rates from plan.
@@ -210,8 +239,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             cents = plan.tou_unit_rates.get(tariff)
             return cents / 100.0 if cents is not None else None
 
-        # A new ToU band appearing after first refresh means rate sensors need
-        # to be added; schedule a (loop-safe, monotonic-growth) reload.
+        # A new ToU band (or solar newly detected) appearing after first
+        # refresh means sensors need to be added; schedule a loop-safe reload.
         self._maybe_reload_for_new_tariffs()
 
         # Parse bill-period totals.
@@ -235,7 +264,30 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             unit_rate_peak_aud_per_kwh=_tou_rate(TARIFF_PEAK),
             unit_rate_offpeak_aud_per_kwh=_tou_rate(TARIFF_OFFPEAK),
             unit_rate_shoulder_aud_per_kwh=_tou_rate(TARIFF_SHOULDER),
+            has_solar=self._has_solar,
+            latest_generation_kwh=self._latest_generation_kwh,
+            latest_generation_credit_aud=self._latest_generation_credit,
         )
+
+    async def _refresh_has_solar(self) -> None:
+        """Update the solar flag from /v3/overview.
+
+        Sticky-on-failure: an overview error keeps the previous flag rather
+        than flapping the generation series off for one cycle. hasSolar never
+        goes back to False once seen True in-process — retiring a solar system
+        mid-contract is rare enough that a reload/restart picking it up is fine.
+        """
+        try:
+            contracts = await self.client.async_get_overview()
+        except AGLError as err:
+            _LOGGER.debug(
+                "Overview fetch failed; keeping has_solar=%s: %s", self._has_solar, err
+            )
+            return
+        for contract in contracts:
+            if contract.contract_number == self.contract_number:
+                self._has_solar = self._has_solar or contract.has_solar
+                return
 
     def _maybe_reload_for_new_tariffs(self) -> None:
         """Schedule a reload when a ToU band first appears after first refresh.
@@ -249,12 +301,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         reloads — the platform is set up fresh straight after it.
         """
         new_bands = self._active_tou_bands - self._prev_active_tou_bands
+        solar_appeared = self._has_solar and not self._prev_has_solar
         self._prev_active_tou_bands = set(self._active_tou_bands)
-        if self.data is not None and new_bands:
+        self._prev_has_solar = self._has_solar
+        if self.data is not None and (new_bands or solar_appeared):
             _LOGGER.info(
-                "New ToU tariff band(s) %s detected; scheduling reload to add "
-                "rate sensors",
+                "New ToU tariff band(s) %s / solar_appeared=%s detected; "
+                "scheduling reload to add sensors",
                 sorted(new_bands),
+                solar_appeared,
             )
             self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
 
@@ -435,6 +490,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         bill_start: date | None,
         *,
         known_bands: frozenset[str] = frozenset(),
+        include_solar: bool = False,
     ) -> None:
         """Fetch [start..end] with smart endpoint selection, then import.
 
@@ -442,16 +498,24 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         doesn't hammer AGL's BFF in under a second. On rate-limit the loop
         stops early — the next 24h poll cycle will resume from the last
         successfully imported date.
+
+        With include_solar, each day additionally fetches the ElectricitySolar
+        feed-in intervals (a second, delay-separated request per day). The
+        consumption series keeps reading the proven Electricity endpoint — the
+        solar endpoint's own consumption block is ignored until it has been
+        reconciled against a real bill.
         """
         all_intervals: list[IntervalReading] = []
+        solar_intervals: list[IntervalReading] = []
         current = start
         first = True
         while current <= end:
             if not first:
                 await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
             first = False
+            previous = bill_start is not None and current < bill_start
             try:
-                if bill_start is not None and current < bill_start:
+                if previous:
                     readings = await self.client.async_get_usage_hourly_previous(
                         self.contract_number, current
                     )
@@ -467,12 +531,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 break
             except AGLError as err:
                 _LOGGER.debug("Fetch skip %s: %s", current, err)
+            if include_solar:
+                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+                try:
+                    solar_intervals.extend(
+                        await self.client.async_get_solar_hourly(
+                            self.contract_number, current, previous=previous
+                        )
+                    )
+                except AGLRateLimitError as err:
+                    _LOGGER.warning(
+                        "AGL rate-limited at %s (solar); halting backfill chunk: %s",
+                        current,
+                        err,
+                    )
+                    break
+                except AGLError as err:
+                    _LOGGER.debug("Solar fetch skip %s: %s", current, err)
             current += timedelta(days=1)
 
         if all_intervals:
             await self._import_intervals(all_intervals, known_bands=known_bands)
+        # Partial solar batches import too — idempotent, and the trailing
+        # rewindow re-fetches the last REWINDOW_DAYS so short gaps self-heal.
+        if solar_intervals:
+            await self._import_generation(solar_intervals)
         # If no intervals were fetched (e.g. AGL had no data for the whole
-        # range), leave _latest_cumulative_kwh as the caller seeded it — the
+        # range), leave the cumulative seeds as the caller set them — the
         # most recent stored cumulative remains the sensor value.
 
     @staticmethod
@@ -531,15 +616,6 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         fold ~10 h of about-to-be-overwritten old sums into the baseline and
         re-add them — spiking the cumulative sum every local midnight.
         """
-        # Local imports: recorder must not be imported at module level.
-        from homeassistant.components.recorder.models import (
-            StatisticData,
-            StatisticMeanType,
-            StatisticMetaData,
-        )
-        from homeassistant.components.recorder.statistics import (
-            async_add_external_statistics,
-        )
         from homeassistant.const import UnitOfEnergy
 
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
@@ -574,34 +650,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             self._get_tariff_baseline_sums(band_ids, cutoff),
         )
 
-        def _emit_series(
-            stat_id: str,
-            name: str,
-            unit: str,
-            unit_class: str | None,
-            hourly: dict[datetime, float],
-            initial_sum: float,
-        ) -> float:
-            """Build the cumulative hourly rows for one series and import them."""
-            running = initial_sum
-            stats: list[StatisticData] = []
-            for h in sorted(hourly):
-                running += hourly[h]
-                stats.append(StatisticData(start=h, state=hourly[h], sum=running))
-            async_add_external_statistics(
-                self.hass,
-                StatisticMetaData(
-                    mean_type=StatisticMeanType.NONE,
-                    unit_class=unit_class,
-                    has_sum=True,
-                    name=name,
-                    source=DOMAIN,
-                    statistic_id=stat_id,
-                    unit_of_measurement=unit,
-                ),
-                stats,
-            )
-            return running
+        _emit_series = self._emit_series
 
         kwh = UnitOfEnergy.KILO_WATT_HOUR
         contract = self.contract_number
@@ -655,3 +704,94 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # Update the in-memory cumulative for the TOTAL_INCREASING sensor.
         # hour_cons is non-empty here (we returned early otherwise).
         self._latest_cumulative_kwh = cons_sum
+
+    def _emit_series(
+        self,
+        stat_id: str,
+        name: str,
+        unit: str,
+        unit_class: str | None,
+        hourly: dict[datetime, float],
+        initial_sum: float,
+    ) -> float:
+        """Build the cumulative hourly rows for one series and import them.
+
+        Idempotent on (statistic_id, start) — safe for rewindow overwrites.
+        Returns the final cumulative sum.
+        """
+        # Local imports: recorder must not be imported at module level.
+        from homeassistant.components.recorder.models import (
+            StatisticData,
+            StatisticMeanType,
+            StatisticMetaData,
+        )
+        from homeassistant.components.recorder.statistics import (
+            async_add_external_statistics,
+        )
+
+        running = initial_sum
+        stats: list[StatisticData] = []
+        for h in sorted(hourly):
+            running += hourly[h]
+            stats.append(StatisticData(start=h, state=hourly[h], sum=running))
+        async_add_external_statistics(
+            self.hass,
+            StatisticMetaData(
+                mean_type=StatisticMeanType.NONE,
+                unit_class=unit_class,
+                has_sum=True,
+                name=name,
+                source=DOMAIN,
+                statistic_id=stat_id,
+                unit_of_measurement=unit,
+            ),
+            stats,
+        )
+        return running
+
+    async def _import_generation(self, intervals: list[IntervalReading]) -> None:
+        """Aggregate solar feed-in intervals to hourly and push to statistics.
+
+        Writes haggle:generation_<contract> (exported kWh, unit_class="energy"
+        so it appears in the Energy dashboard "Return to grid" picker) and
+        haggle:generation_credit_<contract> (AUD feed-in credit). Uses the same
+        earliest-fetched-hour baseline cutoff as the consumption import — see
+        _import_intervals for why a fetch_start-derived UTC midnight is wrong.
+        """
+        from homeassistant.const import UnitOfEnergy
+
+        hour_kwh: dict[datetime, float] = {}
+        hour_credit: dict[datetime, float] = {}
+        for r in intervals:
+            h = r.dt.replace(minute=0, second=0, microsecond=0)
+            hour_kwh[h] = hour_kwh.get(h, 0.0) + r.kwh
+            hour_credit[h] = hour_credit.get(h, 0.0) + r.cost_aud
+
+        if not hour_kwh:
+            return
+
+        stat_id_gen, stat_id_credit = self._generation_stat_ids()
+        cutoff = min(hour_kwh)
+        base_gen, base_credit = await self._get_baseline_sums(
+            stat_id_gen, stat_id_credit, cutoff
+        )
+
+        contract = self.contract_number
+        gen_sum = self._emit_series(
+            stat_id_gen,
+            f"AGL Solar Generation ({contract})",
+            UnitOfEnergy.KILO_WATT_HOUR,
+            "energy",
+            hour_kwh,
+            base_gen,
+        )
+        credit_sum = self._emit_series(
+            stat_id_credit,
+            f"AGL Solar Feed-in Credit ({contract})",
+            "AUD",
+            None,
+            hour_credit,
+            base_credit,
+        )
+        self._latest_generation_kwh = gen_sum
+        self._latest_generation_credit = credit_sum

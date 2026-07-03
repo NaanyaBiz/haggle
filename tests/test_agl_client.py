@@ -396,3 +396,100 @@ def test_unused_methods_removed_from_client() -> None:
     assert not hasattr(AglClient, "async_get_servicehub")
     assert not hasattr(AglClient, "async_get_usage_daily")
     assert not hasattr(AglClient, "async_close")
+
+
+_SOLAR_HOURLY_RESPONSE = {
+    "resourceType": "electricity-solar",
+    "granularity": "hourly",
+    "timeZone": "Australia/Sydney",
+    "sections": [
+        {
+            "startDate": "2026-06-29",
+            "items": [
+                {
+                    "dateTime": "2026-06-29T02:00:00Z",
+                    "consumption": {
+                        "values": {"amount": 0.07, "quantity": 0.07},
+                        "amount": 0.041,
+                        "quantity": 0.112,
+                        "type": "normal",
+                    },
+                    "feedIn": {
+                        "values": {"amount": 0.79, "quantity": 0.79},
+                        "amount": 0.0421,
+                        "quantity": 1.276,
+                        "type": "normal",
+                    },
+                },
+                {
+                    "dateTime": "2026-06-29T13:00:00Z",
+                    "consumption": {
+                        "values": {"amount": 0.05, "quantity": 0.05},
+                        "amount": 0.025,
+                        "quantity": 0.067,
+                        "type": "normal",
+                    },
+                    "feedIn": {
+                        "values": {"amount": 0.0, "quantity": 0.0},
+                        "amount": 0.0,
+                        "quantity": 0.0,
+                        "type": "normal",
+                    },
+                },
+            ],
+        }
+    ],
+}
+
+
+class TestAglClientSolar:
+    def _make_client(
+        self, response_data: dict, status: int = 200
+    ) -> tuple[AglClient, MagicMock]:
+        session = _make_session(response_data, status)
+        auth = AglAuth("v1.tok", AsyncMock())
+        client = AglClient(auth, session)
+        return client, session
+
+    async def test_get_solar_hourly_url_and_feedin_parsing(self) -> None:
+        from datetime import date
+
+        client, session = self._make_client(_SOLAR_HOURLY_RESPONSE)
+        with patch.object(
+            client._auth,
+            "async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="tok",
+        ):
+            readings = await client.async_get_solar_hourly(
+                "9999999999", date(2026, 6, 29)
+            )
+
+        url = session.get.call_args[0][0]
+        assert "/api/v2/usage/smart/ElectricitySolar/9999999999/Current/Hourly" in url
+        assert "period=2026-06-29_2026-06-29" in url
+        assert "scaling=" in url
+
+        # feedIn outer quantity/amount only; the zero-on-zero night slot drops.
+        assert len(readings) == 1
+        assert readings[0].kwh == 1.276
+        assert readings[0].cost_aud == 0.0421
+        # The consumption block must not leak into the feedIn series.
+        assert readings[0].kwh != 0.112
+
+    async def test_get_solar_hourly_previous_variant(self) -> None:
+        from datetime import date
+
+        client, session = self._make_client(_SOLAR_HOURLY_RESPONSE)
+        with patch.object(
+            client._auth,
+            "async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="tok",
+        ):
+            await client.async_get_solar_hourly(
+                "9999999999", date(2026, 6, 29), previous=True
+            )
+
+        url = session.get.call_args[0][0]
+        assert "/ElectricitySolar/9999999999/Previous/Hourly" in url
