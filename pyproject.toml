@@ -35,7 +35,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=9.1.1",
+    "pytest>=8.0",
     "pytest-asyncio>=0.24",
     "pytest-cov>=7.1.0",
     # Pins a specific homeassistant patch — keep this aligned with the runtime
@@ -115,7 +115,7 @@ disallow_untyped_defs = false
 
 # ---------- pytest ----------
 [tool.pytest.ini_options]
-minversion = "9.1.1"
+minversion = "8.0"
 testpaths = ["tests"]
 addopts = [
     "-ra",
