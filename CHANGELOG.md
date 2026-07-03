@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Platform floor raised to Home Assistant 2026.7.0** (was 2026.6.3); `hacs.json`
+  minimum bumped to match. Test harness pinned to
+  `pytest-homeassistant-custom-component>=0.13.344,<0.13.345` (which pins
+  `homeassistant==2026.7.0` and `pytest==9.0.3`); `ruff>=0.15.20`.
+  `pytest` stays at `>=8.0` — `phcc==0.13.344` pins `pytest==9.0.3` exactly, so
+  the Dependabot `pytest>=9.1.1` bump (#120) is unsatisfiable alongside phcc and
+  is excluded from this rollup.
+  `aiohttp` remains at `>=3.13.5` — HA still pins `aiohttp==3.13.5`, so
+  Dependabot PR #106 (`aiohttp>=3.14.1`) is left open until HA moves upstream.
+- **GitHub Actions rolled forward (all SHA-pinned)**:
+  `actions/checkout` v7.0.0, `actions/setup-python` v6.3.0,
+  `github/codeql-action` v4.36.3.
+
 ### Targets for next sprint
 
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU capture.
