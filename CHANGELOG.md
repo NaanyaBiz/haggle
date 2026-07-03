@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Parser now filters `consumption.type = "pending"` intervals (#126).** AGL
+  returns `"pending"` (distinct from `"none"`) for 30-min and daily slots where
+  the AEMO meter read exists in their system but has not yet been delivered to the
+  BFF — confirmed via proxy trace. These slots carry non-zero `quantity`/`amount`
+  values that look real but are preliminary estimates; letting them through caused
+  phantom readings in the statistics that were never overwritten once the real AEMO
+  value arrived (unlike the zero-on-zero placeholder case). Both
+  `parse_interval_readings` and `parse_daily_readings` now skip `"pending"` the
+  same way they skip `"none"`.
+
 ### Changed
 
 - **Platform floor raised to Home Assistant 2026.7.0** (was 2026.6.3); `hacs.json`
