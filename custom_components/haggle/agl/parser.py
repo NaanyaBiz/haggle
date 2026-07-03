@@ -90,19 +90,20 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
 def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
-    Filters out items with type='none' (future/unavailable slots) and
-    placeholder slots where kWh and cost are both zero (AGL returns these
-    for days where AEMO meter reads have not yet been delivered, even with
-    a non-``none`` type — they would otherwise create phantom flat rows in
-    the statistics table that the resume logic would never re-check).
+    Filters out items with type='none' or type='pending' (future/unavailable
+    slots) and placeholder slots where kWh and cost are both zero (AGL returns
+    these for days where AEMO meter reads have not yet been delivered, even with
+    a non-``none`` type — they would otherwise create phantom flat rows in the
+    statistics table that the resume logic would never re-check).
     dateTime is slot-start UTC; kwh from consumption.quantity (outer).
     """
+    _skip_types = {"none", "pending"}
     readings: list[IntervalReading] = []
     for section in data.get("sections") or []:
         for item in section.get("items") or []:
             consumption = item.get("consumption") or {}
             rate_type: str = consumption.get("type", "none")
-            if rate_type == "none":
+            if rate_type in _skip_types:
                 continue
             dt_str: str = item.get("dateTime", "")
             try:
@@ -137,7 +138,7 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
     for section in data.get("sections") or []:
         for item in section.get("items") or []:
             consumption = item.get("consumption") or {}
-            if consumption.get("type") == "none":
+            if consumption.get("type") in {"none", "pending"}:
                 continue
             dt_str: str = item.get("dateTime", "")
             try:

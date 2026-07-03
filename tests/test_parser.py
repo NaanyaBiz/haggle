@@ -225,6 +225,36 @@ class TestParseIntervalReadings:
         readings = parse_interval_readings(data)
         assert readings == []
 
+    def test_filters_pending_type(self) -> None:
+        """Intervals with type='pending' (AEMO data not yet available) must be dropped."""
+        data = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-07-01T00:00:00Z",
+                            "consumption": {
+                                "type": "pending",
+                                "quantity": 0.5,
+                                "amount": 0.1,
+                            },
+                        },
+                        {
+                            "dateTime": "2026-07-01T00:30:00Z",
+                            "consumption": {
+                                "type": "normal",
+                                "quantity": 0.3,
+                                "amount": 0.05,
+                            },
+                        },
+                    ]
+                }
+            ]
+        }
+        readings = parse_interval_readings(data)
+        assert len(readings) == 1
+        assert readings[0].rate_type == "normal"
+
 
 # ---------------------------------------------------------------------------
 # parse_overview
@@ -470,6 +500,36 @@ class TestParseDailyReadings:
         }
         readings = parse_daily_readings(data)
         assert readings == []
+
+    def test_daily_filters_pending_type(self) -> None:
+        """Daily slots with type='pending' must be dropped."""
+        data = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-07-01T00:00:00Z",
+                            "consumption": {
+                                "type": "pending",
+                                "quantity": 5.2,
+                                "amount": 1.75,
+                            },
+                        },
+                        {
+                            "dateTime": "2026-07-02T00:00:00Z",
+                            "consumption": {
+                                "type": "normal",
+                                "quantity": 4.8,
+                                "amount": 1.60,
+                            },
+                        },
+                    ]
+                }
+            ]
+        }
+        readings = parse_daily_readings(data)
+        assert len(readings) == 1
+        assert readings[0].day == date(2026, 7, 2)
 
 
 # ---------------------------------------------------------------------------
