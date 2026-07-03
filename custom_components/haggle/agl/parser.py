@@ -97,13 +97,13 @@ def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
     statistics table that the resume logic would never re-check).
     dateTime is slot-start UTC; kwh from consumption.quantity (outer).
     """
-    _SKIP_TYPES = {"none", "pending"}
+    _skip_types = {"none", "pending"}
     readings: list[IntervalReading] = []
     for section in data.get("sections") or []:
         for item in section.get("items") or []:
             consumption = item.get("consumption") or {}
             rate_type: str = consumption.get("type", "none")
-            if rate_type in _SKIP_TYPES:
+            if rate_type in _skip_types:
                 continue
             dt_str: str = item.get("dateTime", "")
             try:
