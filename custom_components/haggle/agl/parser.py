@@ -87,7 +87,9 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
     return contracts
 
 
-def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
+def parse_interval_readings(
+    data: dict[str, Any], *, source_field: str = "consumption"
+) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
     Filters out items with type='none' or type='pending' (future/unavailable
@@ -96,13 +98,22 @@ def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
     a non-``none`` type — they would otherwise create phantom flat rows in the
     statistics table that the resume logic would never re-check).
     dateTime is slot-start UTC; kwh from consumption.quantity (outer).
+
+    ``source_field`` selects which per-item block to read. The default
+    "consumption" covers the Electricity endpoint; the ElectricitySolar
+    endpoint additionally carries a shape-identical "feedIn" block (exported
+    kWh in the outer ``quantity``, AUD feed-in credit in the outer ``amount``)
+    — pass source_field="feedIn" to extract it. Zero-on-zero feedIn slots are
+    real (no sun at night), but dropping them is still correct: a zero delta
+    never moves the cumulative sum, and the trailing rewindow re-visits the
+    hour anyway.
     """
     _skip_types = {"none", "pending"}
     readings: list[IntervalReading] = []
     for section in data.get("sections") or []:
         for item in section.get("items") or []:
-            consumption = item.get("consumption") or {}
-            rate_type: str = consumption.get("type", "none")
+            block = item.get(source_field) or {}
+            rate_type: str = block.get("type", "none")
             if rate_type in _skip_types:
                 continue
             dt_str: str = item.get("dateTime", "")
@@ -112,8 +123,8 @@ def parse_interval_readings(data: dict[str, Any]) -> list[IntervalReading]:
                     dt = dt.replace(tzinfo=UTC)
             except (ValueError, AttributeError):
                 continue
-            kwh = _safe_float(consumption.get("quantity"))
-            cost_aud = _safe_float(consumption.get("amount"))
+            kwh = _safe_float(block.get("quantity"))
+            cost_aud = _safe_float(block.get("amount"))
             if kwh == 0.0 and cost_aud == 0.0:
                 continue
             readings.append(

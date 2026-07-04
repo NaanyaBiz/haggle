@@ -32,6 +32,8 @@ from .const import (
     DATA_CONSUMPTION_COST,
     DATA_CONSUMPTION_KWH,
     DATA_CONSUMPTION_PERIOD,
+    DATA_GENERATION_CREDIT,
+    DATA_GENERATION_KWH,
     DATA_SUPPLY_CHARGE,
     DATA_UNIT_RATE,
     DATA_UNIT_RATE_OFFPEAK,
@@ -113,6 +115,31 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
 # .active_tariffs) so flat-rate users never see empty peak/offpeak/shoulder
 # sensors. Same pattern as `unit_rate`: MEASUREMENT, AUD/kWh, NO device_class
 # (MONETARY is for cumulative amounts, not unit prices).
+# Solar feed-in sensors, registered only when the contract reports hasSolar
+# (coordinator.data.has_solar) so non-solar users never see empty generation
+# sensors. Cumulative values are fed via import_statistics like consumption;
+# these entities mirror the latest known sums.
+SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+    SensorEntityDescription(
+        key=DATA_GENERATION_KWH,
+        translation_key="generation",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=3,
+    ),
+    # Cumulative AUD credited — a running monetary total, so MONETARY + TOTAL
+    # (the one valid state_class pairing for cumulative money).
+    SensorEntityDescription(
+        key=DATA_GENERATION_CREDIT,
+        translation_key="generation_credit",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="AUD",
+        suggested_display_precision=2,
+    ),
+)
+
 TOU_RATE_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     TARIFF_PEAK: SensorEntityDescription(
         key=DATA_UNIT_RATE_PEAK,
@@ -150,6 +177,9 @@ async def async_setup_entry(
     descriptions.extend(
         desc for band, desc in TOU_RATE_DESCRIPTIONS.items() if band in active
     )
+    # Solar generation sensors only for contracts that report hasSolar.
+    if coordinator.data and coordinator.data.has_solar:
+        descriptions.extend(SOLAR_DESCRIPTIONS)
     async_add_entities(
         HaggleEnergySensor(coordinator, entry, desc) for desc in descriptions
     )

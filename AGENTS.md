@@ -49,8 +49,8 @@ custom_components/haggle/
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import (aggregate + per-tariff ToU series)
-├── sensor.py            # 9 SensorEntityDescription entries (3 conditional ToU rate sensors); HaggleEnergySensor
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts)
+├── sensor.py            # 11 SensorEntityDescription entries (3 conditional ToU rate sensors, 2 conditional solar sensors); HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
@@ -68,6 +68,8 @@ tests/
 │   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates (flat rate)
 │   ├── tou_plan_response.json       # Time-of-Use plan — per-band gstInclusiveRates
 │   ├── tou_hourly_response.json     # mixed peak/offpeak/shoulder/normal intervals
+│   ├── solar_hourly_response.json   # ElectricitySolar response with consumption + feedIn blocks
+│   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
 │   └── bill_period_response.json    # usage summary
 ├── test_init.py                     # setup/unload smoke tests
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
@@ -318,6 +320,33 @@ Used for backfill of dates **before** the current billing period start (`bill_pe
 Confirmed working back to at least 2025-12-24 (single-day period params). Requires the same
 `Accept-Features`/`Client-Device`/`scaling` headers as `Current/Hourly`.
 
+### Solar Generation (feed-in)
+
+```
+GET /mobile/bff/api/v2/usage/smart/ElectricitySolar/{contractNumber}/Current/Hourly?period=YYYY-MM-DD_YYYY-MM-DD&scaling=...
+```
+
+Documented from a real capture provided on #128 (2026-07-03). Same envelope,
+headers, and `scaling` requirement as the `Electricity` endpoint — the path
+substitutes the `ElectricitySolar` segment, `resourceType` comes back as
+`electricity-solar`, and each item carries **both** a `consumption` block and a
+shape-identical **`feedIn`** block:
+
+- **Exported kWh**: `feedIn.quantity` (outer) — same outer-vs-inner rule as
+  consumption; `feedIn.values.*` is the DPI/chart-scaled helper, do not read it.
+- **Feed-in credit**: `feedIn.amount` (outer) — AUD credited for the slot.
+- **`feedIn.type`**: same status vocabulary (`normal`/`none`/`pending`); filter
+  `none`/`pending` as usual. Zero-on-zero feedIn slots are *real* at night
+  (no sun) but are still safe to drop — a zero delta never moves the sum.
+- **Contract discovery**: `accounts[].contracts[].hasSolar` in `/v3/overview`
+  gates the feature (the overview also shows a "Sold To Grid" label pair on
+  solar contracts). A `Previous/Hourly` variant is assumed symmetric with the
+  consumption endpoint (unconfirmed against a real capture — the fetch loop
+  tolerates per-day errors either way).
+- The solar response's own `consumption` block is **ignored** — the aggregate
+  consumption series keeps reading the proven `Electricity` endpoint until the
+  solar-side consumption numbers have been reconciled against a real bill.
+
 ### Plan / Rates
 
 ```
@@ -388,6 +417,11 @@ The HA Energy dashboard requires:
 - Statistic IDs per contract:
   - `haggle:consumption_<contract_number>` — kWh, `has_sum=True`, **`unit_class="energy"`**
   - `haggle:cost_<contract_number>` — AUD, `has_sum=True`, `unit_class=None`
+  - On `hasSolar` contracts additionally:
+    `haggle:generation_<contract_number>` — exported kWh, `has_sum=True`,
+    `unit_class="energy"` (add as a **"Return to grid"** source in the Energy
+    dashboard) and `haggle:generation_credit_<contract_number>` — AUD,
+    `unit_class=None`.
 - **`unit_class="energy"` is required** on the consumption statistic for it to appear in
   the Energy dashboard's "add consumption source" picker. `unit_class=None` silently excludes
   it from the UI filter even though the data is in the DB.

@@ -1,0 +1,118 @@
+{
+  "resourceType": "electricity-solar",
+  "granularity": "hourly",
+  "timeZone": "Australia/Sydney",
+  "sections": [
+    {
+      "startDate": "2026-06-29",
+      "items": [
+        {
+          "dateTime": "2026-06-29T00:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.09, "quantity": 0.09},
+            "amount": 0.052,
+            "quantity": 0.141,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {"amount": 0.31, "quantity": 0.31},
+            "amount": 0.0165,
+            "quantity": 0.502,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-29T02:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.07, "quantity": 0.07},
+            "amount": 0.041,
+            "quantity": 0.112,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {"amount": 0.79, "quantity": 0.79},
+            "amount": 0.0421,
+            "quantity": 1.276,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-29T02:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.08, "quantity": 0.08},
+            "amount": 0.046,
+            "quantity": 0.124,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {"amount": 0.72, "quantity": 0.72},
+            "amount": 0.0385,
+            "quantity": 1.168,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-29T13:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.0491, "quantity": 0.049},
+            "amount": 0.024871,
+            "quantity": 0.067,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-29T13:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.0483, "quantity": 0.0483},
+            "amount": 0.024499,
+            "quantity": 0.066,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-29T14:00:00Z",
+          "consumption": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "pending"
+          },
+          "feedIn": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "pending"
+          }
+        },
+        {
+          "dateTime": "2026-06-29T14:30:00Z",
+          "consumption": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "none"
+          },
+          "feedIn": {
+            "values": {"amount": 0.0, "quantity": 0.0},
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "none"
+          }
+        }
+      ],
+      "initialSelection": 23
+    }
+  ]
+}
