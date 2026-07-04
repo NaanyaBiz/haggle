@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+---
+
+## [0.4.0-beta.1] — 2026-07-05
+
+> **Pre-release for community validation.** Solar generation support (#128)
+> has not yet been confirmed against a live solar contract, and the
+> `"pending"` interval filter (#126) awaits confirmation from an affected
+> ToU account. Install via HACS with "Show beta versions" enabled.
+
 ### Added
 
 - **Solar generation (feed-in) support** (#128). Contracts that report
@@ -50,15 +68,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **GitHub Actions rolled forward (all SHA-pinned)**:
   `actions/checkout` v7.0.0, `actions/setup-python` v6.3.0,
   `github/codeql-action` v4.36.3.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 
