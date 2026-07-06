@@ -128,6 +128,51 @@ class TestDiagnosticsLeaks:
         assert f"{DOMAIN}:consumption_{contract_ref}" in result["statistics"]
         assert f"{DOMAIN}:generation_{contract_ref}" in result["statistics"]
 
+    async def test_anon_refs_are_keyed_not_bare_hashes(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A bare sha256 of a 10-digit AGL id is brute-forceable (~2^33
+        candidates); the refs must be HMAC-keyed so an attacker with the
+        diagnostics file cannot enumerate identifiers offline."""
+        import hashlib
+
+        entry = await _make_entry(hass)
+        with _patched_last_stat():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+
+        bare_contract = "anon-" + hashlib.sha256(_CONTRACT.encode()).hexdigest()[:10]
+        bare_account = "anon-" + hashlib.sha256(_ACCOUNT.encode()).hexdigest()[:10]
+        assert result["contract_ref"] != bare_contract
+        assert result["account_ref"] != bare_account
+
+
+class TestDiagnosticsSetupFailed:
+    async def test_reduced_payload_without_runtime_data(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Setup failures leave runtime_data unset — exactly when diagnostics
+        matter; the payload degrades instead of raising."""
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=_ENTRY_DATA,
+            unique_id=f"{_ACCOUNT}_{_CONTRACT}",
+        )
+        entry.add_to_hass(hass)
+        # No runtime_data assigned — as after a failed async_setup_entry.
+
+        result = await async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["runtime_available"] is False
+        assert result["coordinator"] is None
+        assert result["statistics"] == {}
+        # The reduced payload is still leak-safe and still useful.
+        blob = json.dumps(result)
+        assert _TOKEN not in blob
+        assert _CONTRACT not in blob
+        assert _ACCOUNT not in blob
+        assert result["entry"]["pin_present_auth"] is True
+        assert result["contract_ref"].startswith("anon-")
+
 
 class TestDiagnosticsSchema:
     async def test_schema_and_core_blocks(self, hass: HomeAssistant) -> None:

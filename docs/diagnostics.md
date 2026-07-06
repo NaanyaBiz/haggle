@@ -18,7 +18,7 @@ The file is built to be posted publicly:
 | Data | Treatment |
 |---|---|
 | AGL refresh token | **Redacted** (`**REDACTED**`) — never included. |
-| Account number / contract number | **Never included.** Replaced everywhere (including inside statistic IDs and the entry unique_id) by stable anonymous references like `anon-3f9c2a81d0`. The same install always produces the same reference, so repeat reports correlate, but the reference cannot be reversed to the number. |
+| Account number / contract number | **Never included.** Replaced everywhere (including inside statistic IDs and the entry unique_id) by stable anonymous references like `anon-3f9c2a81d0`. References are HMAC-keyed to your Home Assistant install's private instance id, so the same install always produces the same reference (repeat reports correlate) but the number cannot be recovered — not even by brute-forcing all possible 10-digit identifiers, which a bare hash would allow. |
 | TLS SPKI pins | Reduced to presence booleans (`pin_present_auth` / `pin_present_bff`). |
 | Usage figures, rates, tariff bands, solar flags, timestamps | Included — they are the diagnostic payload and are not personally identifying. |
 | HA core / Python / OS versions | Added automatically by Home Assistant's diagnostics wrapper (`home_assistant` block). |
@@ -34,7 +34,8 @@ fall back to treating the file as opaque JSON.
 |---|---|---|
 | `schema_version` | Payload shape contract (currently `1`). | Gate parsing on it. |
 | `integration.version` | Installed Haggle version. | Satisfies the "Haggle version" triage check. |
-| `contract_ref` / `account_ref` | Stable anonymous install identifiers. | Correlate multiple reports from the same install. |
+| `contract_ref` / `account_ref` | Stable anonymous install identifiers (HMAC-keyed per install). | Correlate multiple reports from the same install. |
+| `runtime_available` | Whether setup succeeded far enough to have runtime state. | `false` → the setup failure itself is the bug (auth/network); `coordinator` is `null` and `statistics` empty — don't chase data-shape theories. |
 | `timezone` | HA's configured timezone. | Midnight-spike / wrong-day class of bugs are timezone-sensitive. |
 | `entry.pin_present_auth` / `entry.pin_present_bff` | TOFU TLS pins captured? | `false` on both → entry predates pinning or Reconfigure never ran. |
 | `coordinator.last_update_success` | Did the most recent poll succeed? | `false` → look at auth/network before data-shape theories. |
