@@ -19,6 +19,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `schema_version` (see `docs/diagnostics.md`). The bug-report form now asks
   for the file, and the automated triage routine parses it when attached.
 
+### Documentation
+
+- **Energy dashboard setup guide** (`docs/energy-dashboard.md`): which
+  `haggle:…` statistics to add per plan type (flat / ToU / solar), sensor
+  glossary, data-timing expectations, and troubleshooting — including the
+  "whole day as one bar on the wrong date" symptom caused by charting a
+  `sensor.…` entity instead of a statistic (#137, also observed on #126).
+- README refreshed: HACS default-store install (no more custom-repository
+  steps), current status (ToU in validation, solar in beta), new Energy
+  dashboard and Solar sections. `info.md` no longer tells users the
+  cumulative Consumption sensor "fits the Grid consumption slot" — that
+  instruction was the #137 footgun.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
