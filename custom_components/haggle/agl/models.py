@@ -71,3 +71,6 @@ class PlanRates:
     supply_charge_cents_per_day: float = 0.0
     # Time-of-Use unit rates, tariff type → c/kWh; empty for flat-rate plans.
     tou_unit_rates: dict[str, float] = field(default_factory=dict)
+    # Solar feed-in tariff, c/kWh. Lives in gstExclusiveRates (FiT is GST-free),
+    # not gstInclusiveRates. None when the plan has no feed-in rate.
+    feed_in_rate_cents_per_kwh: float | None = None

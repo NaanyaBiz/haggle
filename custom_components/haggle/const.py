@@ -150,3 +150,7 @@ DATA_UNIT_RATE_SHOULDER: Final = "unit_rate_shoulder_aud_per_kwh"
 # Solar feed-in cumulatives — only populated/registered on hasSolar contracts.
 DATA_GENERATION_KWH: Final = "latest_generation_kwh"  # TOTAL_INCREASING sensor
 DATA_GENERATION_CREDIT: Final = "latest_generation_credit_aud"  # cumulative AUD
+# Bill-period solar totals (match the app's "Sold To Grid" tile) + feed-in rate.
+DATA_GENERATION_PERIOD: Final = "generation_period_kwh"  # kWh exported this period
+DATA_GENERATION_PERIOD_CREDIT: Final = "generation_period_credit_aud"  # AUD credited
+DATA_FEED_IN_RATE: Final = "feed_in_rate_aud_per_kwh"  # AUD/kWh

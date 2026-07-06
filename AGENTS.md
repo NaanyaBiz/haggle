@@ -49,8 +49,8 @@ custom_components/haggle/
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts)
-├── sensor.py            # 11 SensorEntityDescription entries (3 conditional ToU rate sensors, 2 conditional solar sensors); HaggleEnergySensor
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
+├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
@@ -68,7 +68,8 @@ tests/
 │   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates (flat rate)
 │   ├── tou_plan_response.json       # Time-of-Use plan — per-band gstInclusiveRates
 │   ├── tou_hourly_response.json     # mixed peak/offpeak/shoulder/normal intervals
-│   ├── solar_hourly_response.json   # ElectricitySolar response with consumption + feedIn blocks
+│   ├── solar_hourly_response.json   # REAL full-day ElectricitySolar capture (2026-07-01, app-reconciled)
+│   ├── solar_plan_response.json     # solar plan — feed-in rate in gstExclusiveRates
 │   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
 │   └── bill_period_response.json    # usage summary
 ├── test_init.py                     # setup/unload smoke tests
@@ -326,16 +327,22 @@ Confirmed working back to at least 2025-12-24 (single-day period params). Requir
 GET /mobile/bff/api/v2/usage/smart/ElectricitySolar/{contractNumber}/Current/Hourly?period=YYYY-MM-DD_YYYY-MM-DD&scaling=...
 ```
 
-Documented from a real capture provided on #128 (2026-07-03). Same envelope,
-headers, and `scaling` requirement as the `Electricity` endpoint — the path
-substitutes the `ElectricitySolar` segment, `resourceType` comes back as
-`electricity-solar`, and each item carries **both** a `consumption` block and a
-shape-identical **`feedIn`** block:
+Documented from real captures provided on #128 (2026-07-03, plus a full-day
+2026-07-01 capture with app reference figures). Same envelope, headers, and
+`scaling` requirement as the `Electricity` endpoint — the path substitutes the
+`ElectricitySolar` segment, `resourceType` comes back as `electricity-solar`,
+and each item carries **both** a `consumption` block and a shape-identical
+**`feedIn`** block:
 
-- **Exported kWh**: `feedIn.quantity` (outer) — same outer-vs-inner rule as
-  consumption; `feedIn.values.*` is the DPI/chart-scaled helper, do not read it.
+- **Exported kWh**: `feedIn.quantity` (outer) — **CONFIRMED 2026-07-06**
+  against the AGL app for the 2026-07-01 capture: `sum(outer feedIn.quantity)`
+  = 8.019 kWh vs the app's "Sold to Grid 8.02 kWh"; `sum(outer feedIn.amount)`
+  = $1.3629 vs the app's $1.36. The inner `feedIn.values.*` sums to 6.1448
+  (the usual DPI/chart-scaled undercount) — do not read it. Regression test:
+  `tests/test_parser.py::TestParseSolarIntervals::test_feedin_reconciles_with_agl_app_figures`.
 - **Feed-in credit**: `feedIn.amount` (outer) — AUD credited for the slot.
-- **`feedIn.type`**: same status vocabulary (`normal`/`none`/`pending`); filter
+- **`feedIn.type`**: same vocabulary as consumption INCLUDING ToU bands — the
+  2026-07-01 capture carries `normal` and `peak` typed feedIn slots. Filter
   `none`/`pending` as usual. Zero-on-zero feedIn slots are *real* at night
   (no sun) but are still safe to drop — a zero delta never moves the sum.
 - **Contract discovery**: `accounts[].contracts[].hasSolar` in `/v3/overview`
@@ -343,9 +350,22 @@ shape-identical **`feedIn`** block:
   solar contracts). A `Previous/Hourly` variant is assumed symmetric with the
   consumption endpoint (unconfirmed against a real capture — the fetch loop
   tolerates per-day errors either way).
-- The solar response's own `consumption` block is **ignored** — the aggregate
-  consumption series keeps reading the proven `Electricity` endpoint until the
-  solar-side consumption numbers have been reconciled against a real bill.
+- The solar response's own `consumption` block is **ignored** at runtime but
+  is now reconciled: its outer sums on the 2026-07-01 capture (6.072 kWh /
+  $2.2537) match the app's consumption figures (6.07 / $2.25), i.e. it
+  mirrors the `Electricity` endpoint. The aggregate consumption series still
+  reads the proven `Electricity` endpoint.
+- **Backfill is per-series** (beta.2): `_fetch_range` takes separate
+  consumption and solar `(start, end) | None` ranges, each resolved from that
+  series' own resume point. A contract that gains solar later (or upgrades
+  into solar support) backfills generation from the 30-day floor without
+  re-fetching consumption days; the app-matching bill-period sensors stay
+  `unknown` until the generation series reaches the trailing rewindow.
+- The beta.1 "numbers don't match" report (#128) was a **window artifact** —
+  a cumulative-since-backfill sensor compared against the app's
+  billing-period tile — not a field bug. When validating against the app,
+  compare the *period* sensors (or per-day Energy dashboard bars), never the
+  cumulative totals.
 
 ### Plan / Rates
 
@@ -355,6 +375,15 @@ GET /mobile/bff/api/v2/plan/energy/{contractNumber}
 
 Returns `gstInclusiveRates` list with `c/kWh` and `c/day` entries. Supply charge
 is a `c/day` entry with `title` containing "Supply charge".
+
+**Solar feed-in tariff lives in `gstExclusiveRates`**, not `gstInclusiveRates`
+(FiT is GST-free, so this is correct behaviour on AGL's side, not an
+inconsistency): a `kind:"detail"`, `type:"c/kWh"` row with `title` containing
+"feed-in"/"feed in" (confirmed from a real solar plan capture on #128;
+fixture: `tests/fixtures/solar_plan_response.json`). `parse_plan` scans both
+lists; a plan without a matching row leaves
+`PlanRates.feed_in_rate_cents_per_kwh = None` and the rate sensor reads
+`unavailable`.
 
 **Time-of-Use rate mapping (heuristic — needs real-capture validation)**: AGL
 does not return a machine `tariffType` field on plan rates. ToU bands are

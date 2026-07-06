@@ -59,6 +59,15 @@
       },
       "generation_credit": {
         "name": "Solar feed-in credit"
+      },
+      "generation_period": {
+        "name": "Solar sold this period"
+      },
+      "generation_period_credit": {
+        "name": "Solar feed-in credit this period"
+      },
+      "feed_in_rate": {
+        "name": "Solar feed-in rate"
       }
     }
   }

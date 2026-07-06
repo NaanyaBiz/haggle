@@ -32,8 +32,11 @@ from .const import (
     DATA_CONSUMPTION_COST,
     DATA_CONSUMPTION_KWH,
     DATA_CONSUMPTION_PERIOD,
+    DATA_FEED_IN_RATE,
     DATA_GENERATION_CREDIT,
     DATA_GENERATION_KWH,
+    DATA_GENERATION_PERIOD,
+    DATA_GENERATION_PERIOD_CREDIT,
     DATA_SUPPLY_CHARGE,
     DATA_UNIT_RATE,
     DATA_UNIT_RATE_OFFPEAK,
@@ -137,6 +140,36 @@ SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement="AUD",
         suggested_display_precision=2,
+    ),
+    # --- Bill-period solar totals (mirror the consumption period sensors) ---
+    # TOTAL without last_reset: HA treats a decrease as a reset, which is
+    # exactly the bill-rollover behaviour. `unknown` until the generation
+    # series has backfilled to the trailing rewindow — a mid-backfill partial
+    # could never match the AGL app's "Sold To Grid" tile (#128).
+    SensorEntityDescription(
+        key=DATA_GENERATION_PERIOD,
+        translation_key="generation_period",
+        device_class=SensorDeviceClass.ENERGY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
+        suggested_display_precision=2,
+    ),
+    SensorEntityDescription(
+        key=DATA_GENERATION_PERIOD_CREDIT,
+        translation_key="generation_period_credit",
+        device_class=SensorDeviceClass.MONETARY,
+        state_class=SensorStateClass.TOTAL,
+        native_unit_of_measurement="AUD",
+        suggested_display_precision=2,
+    ),
+    # Feed-in tariff is a unit price, not a cumulative amount: MEASUREMENT +
+    # AUD/kWh, NO device_class (same rule as the other rate sensors).
+    SensorEntityDescription(
+        key=DATA_FEED_IN_RATE,
+        translation_key="feed_in_rate",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/kWh",
+        suggested_display_precision=4,
     ),
 )
 

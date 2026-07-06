@@ -243,9 +243,24 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
             }
         )
 
+    # Solar feed-in tariff lives in gstExclusiveRates (FiT is GST-free, so
+    # AGL correctly reports it there — confirmed from a real solar plan
+    # capture on #128). Matched by title so an unrelated GST-exclusive row
+    # can never masquerade as the feed-in rate; unmatched plans stay None
+    # (sensor reads `unavailable`, never a misleading 0.0).
+    feed_in_rate: float | None = None
+    for rate in data.get("gstExclusiveRates") or []:
+        if rate.get("kind") != "detail" or rate.get("type") != "c/kWh":
+            continue
+        title = rate.get("title") or ""
+        if "feed-in" in title.lower() or "feed in" in title.lower():
+            feed_in_rate = _safe_float(rate.get("price"))
+            break
+
     return PlanRates(
         product_name=product_name,
         unit_rates=unit_rates,
         supply_charge_cents_per_day=supply_charge,
         tou_unit_rates=tou_unit_rates,
+        feed_in_rate_cents_per_kwh=feed_in_rate,
     )

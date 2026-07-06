@@ -450,7 +450,7 @@ class TestFetchRange:
         end = today - timedelta(days=3)  # all days are before bill_start
 
         with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._fetch_range(start, end, bill_start)
+            await coord._fetch_range((start, end), None, bill_start)
 
         assert mock_client.async_get_usage_hourly_previous.call_count == 3
         mock_client.async_get_usage_hourly.assert_not_called()
@@ -469,7 +469,7 @@ class TestFetchRange:
         end = today - timedelta(days=1)
 
         with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._fetch_range(start, end, bill_start)
+            await coord._fetch_range((start, end), None, bill_start)
 
         assert mock_client.async_get_usage_hourly.call_count == 3
         mock_client.async_get_usage_hourly_previous.assert_not_called()
@@ -487,7 +487,7 @@ class TestFetchRange:
         end = today - timedelta(days=1)
 
         with patch.object(coord, "_import_intervals", new_callable=AsyncMock):
-            await coord._fetch_range(start, end, None)
+            await coord._fetch_range((start, end), None, None)
 
         assert mock_client.async_get_usage_hourly.call_count == 2
         mock_client.async_get_usage_hourly_previous.assert_not_called()
@@ -512,7 +512,7 @@ class TestFetchRange:
                 "custom_components.haggle.coordinator.asyncio.sleep", new=AsyncMock()
             ),
         ):
-            await coord._fetch_range(start, end, None)  # must not raise
+            await coord._fetch_range((start, end), None, None)  # must not raise
 
         # All days attempted despite errors; no intervals → _import_intervals not called
         assert mock_client.async_get_usage_hourly.call_count == 3
@@ -545,7 +545,7 @@ class TestFetchRange:
                 "custom_components.haggle.coordinator.asyncio.sleep", new=AsyncMock()
             ),
         ):
-            await coord._fetch_range(start, end, None)
+            await coord._fetch_range((start, end), None, None)
 
         # Two attempts only: day 1 succeeded, day 2 halted the loop.
         assert mock_client.async_get_usage_hourly.call_count == 2
@@ -571,7 +571,7 @@ class TestFetchRange:
             patch.object(coord, "_import_intervals", new_callable=AsyncMock),
             patch("custom_components.haggle.coordinator.asyncio.sleep", new=sleep_mock),
         ):
-            await coord._fetch_range(start, end, None)
+            await coord._fetch_range((start, end), None, None)
 
         # 3 fetches, 2 inter-request sleeps (no sleep before first).
         assert mock_client.async_get_usage_hourly.call_count == 3
@@ -625,7 +625,7 @@ class TestFetchAndImport:
             await coord._fetch_and_import()
 
         assert mock_range.called
-        actual_start = mock_range.call_args[0][0]
+        actual_start = mock_range.call_args[0][0][0]
         assert actual_start == expected_start
 
     async def test_big_gap_resumes_incrementally_without_rewindow(
@@ -653,9 +653,9 @@ class TestFetchAndImport:
         ):
             await coord._fetch_and_import()
 
-        assert mock_range.call_args[0][0] == expected_start
+        assert mock_range.call_args[0][0][0] == expected_start
         # Throttle: fetch_end at most BACKFILL_CHUNK_DAYS - 1 past fetch_start.
-        fetch_end = mock_range.call_args[0][1]
+        fetch_end = mock_range.call_args[0][0][1]
         assert (fetch_end - expected_start).days <= BACKFILL_CHUNK_DAYS - 1
 
     async def test_trailing_rewindow_when_within_window(
@@ -685,7 +685,7 @@ class TestFetchAndImport:
 
         # Rewindow re-fetches even though last_stat_date is "up to date".
         mock_range.assert_called_once()
-        assert mock_range.call_args[0][0] == expected_start
+        assert mock_range.call_args[0][0][0] == expected_start
 
     async def test_rewindow_clamped_to_backfill_floor(
         self, hass: HomeAssistant
@@ -714,7 +714,7 @@ class TestFetchAndImport:
         ):
             await coord._fetch_and_import()
 
-        assert mock_range.call_args[0][0] >= backfill_floor
+        assert mock_range.call_args[0][0][0] >= backfill_floor
 
     async def test_returns_haggle_data_instance(self, hass: HomeAssistant) -> None:
         from custom_components.haggle.coordinator import HaggleData
@@ -891,7 +891,7 @@ class TestUTCDateBoundary:
 
         # The UTC `today` is 2026-05-02; backfill starts BACKFILL_DAYS earlier.
         expected_start = date(2026, 5, 2) - timedelta(days=BACKFILL_DAYS)
-        assert mock_range.call_args[0][0] == expected_start
+        assert mock_range.call_args[0][0][0] == expected_start
 
 
 # ---------------------------------------------------------------------------
@@ -1408,10 +1408,99 @@ class TestSolarGeneration:
             await coord._import_generation([])
         assert mock_add.call_count == 0
 
-    async def test_fetch_range_include_solar_fetches_solar_endpoint(
+    async def test_zero_export_day_writes_resume_marker(
         self, hass: HomeAssistant
     ) -> None:
-        """include_solar=True adds one solar fetch per day with the right variant."""
+        """A fetched all-zero day gets one zero-delta row so resume advances.
+
+        Codex review on PR #144: without a marker, a cloudy zero-export week
+        (a full chunk) or a solar system newer than the backfill floor would
+        refetch the same days forever and never unlock the period sensors.
+        """
+        coord = _make_coordinator(hass)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(10.0, 1.0)),
+            ),
+        ):
+            await coord._import_generation([], fetched_days=[date(2026, 6, 29)])
+
+        assert mock_add.call_count == 2
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert len(gen_stats) == 1
+        assert gen_stats[0]["state"] == 0.0
+        # Zero delta: the cumulative sum stays on the baseline.
+        assert gen_stats[0]["sum"] == pytest.approx(10.0)
+        # Marker lands inside the local day (floored to the hour).
+        from homeassistant.util import dt as dt_util
+
+        marker = gen_stats[0]["start"]
+        expected = dt_util.as_utc(
+            dt_util.start_of_local_day(date(2026, 6, 29))
+        ).replace(minute=0, second=0, microsecond=0)
+        assert marker == expected
+
+    async def test_no_marker_when_day_has_real_intervals(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A day with surviving intervals must not get an extra zero row."""
+        from homeassistant.util import dt as dt_util
+
+        day = date(2026, 6, 29)
+        slot = dt_util.as_utc(dt_util.start_of_local_day(day)) + timedelta(hours=3)
+        coord = _make_coordinator(hass)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_generation(
+                [_make_interval(slot, kwh=1.0)], fetched_days=[day]
+            )
+
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert len(gen_stats) == 1  # the real hour only, no marker row
+
+    async def test_fetch_range_marks_zero_days_but_not_errored_days(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Successful-but-empty solar days count as fetched; errored days don't."""
+        from custom_components.haggle.agl.client import AGLError
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        mock_client.async_get_solar_hourly.side_effect = [
+            [],  # day 1: success, zero export → marked
+            AGLError("HTTP 500"),  # day 2: errored → NOT marked, retried later
+            [],  # day 3: success → marked
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        day_range = (date(2026, 6, 27), date(2026, 6, 29))
+        with (
+            patch.object(
+                coord, "_import_generation", new_callable=AsyncMock
+            ) as mock_gen,
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await coord._fetch_range(day_range, day_range, None)
+
+        mock_gen.assert_called_once()
+        assert mock_gen.call_args.kwargs["fetched_days"] == [
+            date(2026, 6, 27),
+            date(2026, 6, 29),
+        ]
+
+    async def test_fetch_range_solar_range_fetches_solar_endpoint(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A solar_range adds one solar fetch per day with the right variant."""
         mock_client = AsyncMock()
         mock_client.async_get_usage_hourly.return_value = []
         mock_client.async_get_usage_hourly_previous.return_value = []
@@ -1419,13 +1508,12 @@ class TestSolarGeneration:
         coord = _make_coordinator(hass, client=mock_client)
 
         bill_start = date(2026, 6, 29)
-        with patch("asyncio.sleep", new=AsyncMock()):
-            await coord._fetch_range(
-                date(2026, 6, 28),
-                date(2026, 6, 29),
-                bill_start,
-                include_solar=True,
-            )
+        day_range = (date(2026, 6, 28), date(2026, 6, 29))
+        with (
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await coord._fetch_range(day_range, day_range, bill_start)
 
         calls = mock_client.async_get_solar_hourly.call_args_list
         assert len(calls) == 2
@@ -1443,9 +1531,82 @@ class TestSolarGeneration:
         coord = _make_coordinator(hass, client=mock_client)
 
         with patch("asyncio.sleep", new=AsyncMock()):
-            await coord._fetch_range(date(2026, 6, 29), date(2026, 6, 29), None)
+            await coord._fetch_range((date(2026, 6, 29), date(2026, 6, 29)), None, None)
 
         assert mock_client.async_get_solar_hourly.call_count == 0
+
+    async def test_fetch_range_disjoint_ranges_skip_other_series(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Each series only fetches days inside its own range.
+
+        The upgrade shape: consumption is caught up (trailing rewindow) while
+        the new generation series backfills from 30 days back. Consumption
+        must not re-fetch the solar backlog days, and vice versa.
+        """
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        mock_client.async_get_solar_hourly.return_value = []
+        coord = _make_coordinator(hass, client=mock_client)
+
+        cons_range = (date(2026, 6, 27), date(2026, 6, 29))
+        solar_range = (date(2026, 6, 1), date(2026, 6, 3))
+        with (
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await coord._fetch_range(cons_range, solar_range, None)
+
+        cons_days = [c[0][1] for c in mock_client.async_get_usage_hourly.call_args_list]
+        solar_days = [
+            c[0][1] for c in mock_client.async_get_solar_hourly.call_args_list
+        ]
+        assert cons_days == [
+            date(2026, 6, 27),
+            date(2026, 6, 28),
+            date(2026, 6, 29),
+        ]
+        assert solar_days == [date(2026, 6, 1), date(2026, 6, 2), date(2026, 6, 3)]
+
+    async def test_fetch_range_solar_rate_limit_still_imports_partial(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A 429 on the solar endpoint halts the chunk but imports both batches.
+
+        The consumption batch and the partial solar batch are idempotent, so
+        importing them preserves each series' own resume point for next cycle.
+        """
+        from custom_components.haggle.agl.client import AGLRateLimitError
+
+        reading = _make_interval(datetime(2026, 6, 29, 2, 0, tzinfo=UTC), kwh=1.0)
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = [reading]
+        mock_client.async_get_solar_hourly.side_effect = [
+            [reading],  # day 1 ok
+            AGLRateLimitError("HTTP 429"),  # day 2 — halt
+            [reading],  # day 3 — must not be attempted
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        day_range = (date(2026, 6, 28), date(2026, 6, 30))
+        with (
+            patch.object(
+                coord, "_import_intervals", new_callable=AsyncMock
+            ) as mock_imp,
+            patch.object(
+                coord, "_import_generation", new_callable=AsyncMock
+            ) as mock_gen,
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await coord._fetch_range(day_range, day_range, None)
+
+        # Solar halted on day 2; day 3 fetched for neither series.
+        assert mock_client.async_get_solar_hourly.call_count == 2
+        assert mock_client.async_get_usage_hourly.call_count == 2
+        # Both partial batches still imported.
+        mock_imp.assert_called_once()
+        mock_gen.assert_called_once()
+        assert mock_gen.call_args[0][0] == [reading]
 
     async def test_refresh_has_solar_sets_flag_from_overview(
         self, hass: HomeAssistant
@@ -1497,3 +1658,228 @@ class TestSolarGeneration:
         coord._has_solar = True
         await coord._refresh_has_solar()
         assert coord._has_solar is True
+
+
+# ---------------------------------------------------------------------------
+# Per-series backfill ranges (#128 beta.2) — solar catches up independently
+# ---------------------------------------------------------------------------
+
+
+def _solar_contract() -> object:
+    from custom_components.haggle.agl.models import Contract
+
+    return Contract(
+        contract_number=_CONTRACT,
+        account_number="1234567890",
+        address="",
+        fuel_type="electricityContract",
+        status="active",
+        has_solar=True,
+    )
+
+
+class TestPerSeriesBackfill:
+    async def test_upgrader_solar_backfills_from_floor_while_consumption_rewindows(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Upgrade shape: consumption caught up, generation series empty.
+
+        The generation series must start its own 30-day backfill instead of
+        inheriting consumption's trailing rewindow (which would silently cap
+        solar history at REWINDOW_DAYS forever).
+        """
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        mock_client.async_get_overview.return_value = [_solar_contract()]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)  # consumption caught up
+            return (None, None)  # generation/credit series empty
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        cons_range, solar_range = mock_range.call_args[0][0:2]
+        assert cons_range == (today - timedelta(days=REWINDOW_DAYS), yesterday)
+        backfill_floor = today - timedelta(days=BACKFILL_DAYS)
+        assert solar_range == (
+            backfill_floor,
+            backfill_floor + timedelta(days=BACKFILL_CHUNK_DAYS - 1),
+        )
+
+    async def test_fresh_solar_install_ranges_coincide(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Both series empty → both ranges are the same first backfill chunk."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        mock_client.async_get_overview.return_value = [_solar_contract()]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        cons_range, solar_range = mock_range.call_args[0][0:2]
+        assert cons_range == solar_range
+
+    async def test_non_solar_contract_passes_no_solar_range(
+        self, hass: HomeAssistant
+    ) -> None:
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        assert mock_range.call_args[0][1] is None
+
+
+# ---------------------------------------------------------------------------
+# Bill-period solar totals (#128 beta.2) — match the app's "Sold To Grid" tile
+# ---------------------------------------------------------------------------
+
+
+class TestGenerationPeriodTotals:
+    async def test_returns_none_when_no_generation_stats(
+        self, hass: HomeAssistant
+    ) -> None:
+        coord = _make_coordinator(hass)
+        today = datetime.now(UTC).date()
+        result = await coord._get_generation_period_totals(
+            today - timedelta(days=10), None, today
+        )
+        assert result == (None, None)
+
+    async def test_returns_none_while_backfill_behind_rewindow(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Mid-backfill partials never publish — they can't match the app."""
+        coord = _make_coordinator(hass)
+        today = datetime.now(UTC).date()
+        stale = today - timedelta(days=REWINDOW_DAYS + 1)
+        result = await coord._get_generation_period_totals(
+            today - timedelta(days=10), stale, today
+        )
+        assert result == (None, None)
+
+    async def test_caught_up_returns_latest_minus_bill_start_baseline(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Period totals = in-memory latest sums - sums at bill_start midnight."""
+        from homeassistant.util import dt as dt_util
+
+        coord = _make_coordinator(hass)
+        coord._latest_generation_kwh = 18.019
+        coord._latest_generation_credit = 2.3629
+        today = datetime.now(UTC).date()
+        bill_start = today - timedelta(days=12)
+
+        with patch.object(
+            coord,
+            "_get_baseline_sums",
+            new=AsyncMock(return_value=(10.0, 1.0)),
+        ) as mock_base:
+            kwh, credit = await coord._get_generation_period_totals(
+                bill_start, today - timedelta(days=1), today
+            )
+
+        assert kwh == pytest.approx(8.019)
+        assert credit == pytest.approx(1.3629)
+        cutoff = mock_base.call_args[0][2]
+        assert cutoff == dt_util.start_of_local_day(bill_start)
+
+    async def test_clamps_negative_diff_to_zero(self, hass: HomeAssistant) -> None:
+        coord = _make_coordinator(hass)
+        coord._latest_generation_kwh = 5.0
+        coord._latest_generation_credit = 0.5
+        today = datetime.now(UTC).date()
+
+        with patch.object(
+            coord,
+            "_get_baseline_sums",
+            new=AsyncMock(return_value=(6.0, 1.0)),
+        ):
+            kwh, credit = await coord._get_generation_period_totals(
+                today - timedelta(days=3), today - timedelta(days=1), today
+            )
+
+        assert kwh == 0.0
+        assert credit == 0.0
+
+    async def test_fetch_and_import_wires_period_totals_and_feed_in_rate(
+        self, hass: HomeAssistant
+    ) -> None:
+        """HaggleData carries the period totals and the AUD/kWh feed-in rate."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        plan = _empty_plan()
+        plan.feed_in_rate_cents_per_kwh = 1.2
+        mock_client.async_get_plan.return_value = plan
+        mock_client.async_get_overview.return_value = [_solar_contract()]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            data = await coord._fetch_and_import()
+
+        assert data.feed_in_rate_aud_per_kwh == pytest.approx(0.012)
+        # Generation series empty → gated to None, not a partial number.
+        assert data.generation_period_kwh is None
+        assert data.generation_period_credit_aud is None
+
+    async def test_feed_in_rate_none_without_plan_rate(
+        self, hass: HomeAssistant
+    ) -> None:
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            data = await coord._fetch_and_import()
+
+        assert data.feed_in_rate_aud_per_kwh is None
