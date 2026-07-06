@@ -12,33 +12,44 @@ Assistant Energy dashboard using AGL's authenticated mobile API.
 
 ## Setup
 
-1. Install via HACS *Custom repositories* → add this repo URL → install **Haggle**.
-2. Restart Home Assistant.
-3. *Settings* → *Devices & Services* → *Add integration* → search **AGL Haggle**.
-4. A login URL is displayed. Open it in your **real browser** (not HA's built-in
+1. Install **Haggle** from HACS, then restart Home Assistant.
+2. *Settings* → *Devices & Services* → *Add integration* → search **AGL Haggle**.
+3. A login URL is displayed. Open it in your **real browser** (not HA's built-in
    browser) and complete your AGL login including any MFA prompt.
-5. After login AGL redirects to a "Not Found" page. Copy the full URL from your
+4. After login AGL redirects to a "Not Found" page. Copy the full URL from your
    browser's address bar and paste it back into the HA dialog.
-6. If you have multiple electricity contracts, select the one to monitor.
+5. If you have multiple electricity contracts, select the one to monitor.
 
 The integration polls once per day. AGL interval data lags 24–48 h, so
 recently-used electricity may not appear immediately.
 
+## Energy dashboard
+
+Add the **`haggle:…` statistics** as your dashboard sources — never the
+`sensor.…` entities (they update once per day and would chart a whole day as
+one bar on the wrong date):
+
+- **Flat rate:** `haggle:consumption_<contract>` as *Grid consumption*.
+- **Time-of-Use:** only the per-tariff series (peak / off-peak / shoulder /
+  anytime) — not the aggregate as well, or every kWh counts twice.
+- **Solar:** additionally `haggle:generation_<contract>` as *Return to grid*.
+
+Full guide:
+[docs/energy-dashboard.md](https://github.com/NaanyaBiz/haggle/blob/main/docs/energy-dashboard.md)
+
 ## Sensors
 
-- **Consumption** (`sensor.agl_consumption_*`) — cumulative kWh,
-  fits the Energy dashboard *Grid consumption* slot.
-- **Consumption this period** — kWh for the current bill period.
-- **Consumption cost** — AUD cost for the current bill period.
+- **Consumption** — cumulative kWh imported so far (at-a-glance total; not an
+  Energy-dashboard source).
+- **Consumption this period / Consumption cost** — kWh and AUD for the current
+  bill period.
 - **Bill projection** — AGL's estimated bill for the period.
-- **Unit rate** — your current c/kWh tariff.
-- **Supply charge** — daily supply charge in AUD.
+- **Unit rate / Supply charge** — your tariff and daily supply charge.
 
-On a **Time-of-Use** plan, Haggle also writes per-tariff consumption/cost
-statistics and peak / off-peak / shoulder rate sensors — add only the
-per-tariff consumption sources to the Energy dashboard (not the aggregate as
-well). ToU support is implemented but not yet validated against a real AGL ToU
-account; feedback from ToU customers is welcome.
+Time-of-Use contracts also get peak / off-peak / shoulder rate sensors.
+Solar contracts also get **Solar sold this period**, **Solar feed-in credit
+this period** (both matching the AGL app's "Sold To Grid" tile), cumulative
+generation/credit totals, and **Solar feed-in rate**.
 
 ## Provenance
 

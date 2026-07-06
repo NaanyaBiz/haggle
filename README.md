@@ -14,10 +14,13 @@ dashboard.
 > **Australia only.** Requires an AGL Energy electricity account with a smart
 > meter (most Australian metropolitan installations).
 
-> **Status:** `v0.3.0`. The flat-rate consumption/cost path is stable and runs
-> live in the maintainer's Home Assistant. **Time-of-Use (ToU) support is
-> implemented but not yet verified against a real AGL ToU account** — see
-> [Time-of-Use (ToU)](#time-of-use-tou) below. See
+> **Status:** `v0.4.0-beta.2`. The flat-rate consumption/cost path is stable
+> and runs live in the maintainer's Home Assistant. **Time-of-Use** support is
+> in validation with real ToU customers
+> ([#126](https://github.com/NaanyaBiz/haggle/issues/126)), and **solar
+> feed-in** support is in beta validation
+> ([#128](https://github.com/NaanyaBiz/haggle/issues/128)) — enable
+> "Show beta versions" in HACS to try either. See
 > [`CHANGELOG.md`](./CHANGELOG.md) for milestone detail.
 
 ## Why
@@ -25,54 +28,71 @@ dashboard.
 AGL is one of Australia's largest electricity retailers. Their mobile app
 exposes half-hourly interval data for smart-meter accounts. `haggle` uses the
 same authenticated API endpoints that AGL's own mobile clients use, fetches
-your smart-meter intervals, and surfaces consumption and cost as proper HA
-energy sensors (`device_class=energy`, `state_class=total_increasing`).
+your smart-meter intervals, and feeds them into Home Assistant's long-term
+statistics so the Energy dashboard shows your usage on the hours it actually
+happened.
 
 ## Install
 
-> Not yet HACS-listed (PR queued). Install via HACS *Custom repository*.
+Haggle is in the [HACS](https://hacs.xyz/) default store:
 
-The fastest path is the badge above — click it on a machine with [My Home
-Assistant](https://my.home-assistant.io/) configured and HACS will open the
-"add repository" dialog pre-filled. Otherwise:
-
-1. HACS → *Integrations* → *Custom repositories* → add this repo URL → category **Integration**.
-2. Install **Haggle**, then restart Home Assistant.
-3. *Settings* → *Devices & Services* → *Add integration* → search **AGL Haggle**.
-4. A login URL is shown. Open it in your **real browser** (handles Akamai
+1. HACS → search **Haggle** → *Download*, then restart Home Assistant.
+   (Or click the badge above on a machine with
+   [My Home Assistant](https://my.home-assistant.io/) configured.)
+2. *Settings* → *Devices & Services* → *Add integration* → search **AGL Haggle**.
+3. A login URL is shown. Open it in your **real browser** (handles Akamai
    bot-protection and MFA transparently). Complete your AGL login.
-5. After login, AGL redirects to a "Not Found" page. Copy the full URL from
+4. After login, AGL redirects to a "Not Found" page. Copy the full URL from
    your browser's address bar and paste it into the HA dialog.
-6. If you have multiple electricity contracts, select the one to monitor.
+5. If you have multiple electricity contracts, select the one to monitor.
 
-The integration will backfill 30 days of history on first run, then poll
-once per day. AGL interval data lags 24–48 h.
+The integration will backfill 30 days of history on first run (throttled to
+7 days per daily poll), then poll once per day. AGL interval data lags
+24–48 h.
+
+## Energy dashboard
+
+**Add the `haggle:…` statistics as your dashboard sources — never the
+`sensor.…` entities.** The statistics carry your real half-hourly history;
+the sensor entities update once per day and would render a whole day as one
+bar on the wrong date.
+
+- **Flat rate:** add `haggle:consumption_<contract>` as *Grid consumption*.
+- **Time-of-Use:** add only the per-tariff series (peak / off-peak /
+  shoulder / anytime) — not the aggregate as well, or every kWh counts twice.
+- **Solar:** additionally add `haggle:generation_<contract>` as
+  *Return to grid*.
+
+Full setup guide, sensor glossary, data-timing expectations, and
+troubleshooting: **[docs/energy-dashboard.md](./docs/energy-dashboard.md)**.
 
 ## Time-of-Use (ToU)
 
-On a flat-rate contract, `haggle` writes one consumption series and one cost
-series — that is the path that runs live today.
-
 On a **Time-of-Use** contract — where AGL tags each 30-minute interval as
-`peak`, `off-peak`, or `shoulder` — `haggle` additionally writes a separate
-consumption + cost statistic per tariff band (peak / off-peak / shoulder /
-anytime), each selectable as its own Energy-dashboard source, plus a per-band
-unit-rate sensor. The split is driven entirely by AGL's per-interval tariff
-tags, so it does not depend on guessing your plan's rate structure.
+`peak`, `off-peak`, or `shoulder` — `haggle` writes a separate consumption +
+cost statistic per tariff band (peak / off-peak / shoulder / anytime), each
+selectable as its own Energy-dashboard source, plus per-band unit-rate
+sensors. The split is driven entirely by AGL's per-interval tariff tags.
 
-- **Energy dashboard:** a ToU contract should add **only the per-tariff
-  consumption sources** — *not* the aggregate "AGL Electricity Consumption"
-  source as well, or every kWh is counted twice. Flat-rate contracts add only
-  the aggregate.
+> ToU is in validation with real AGL ToU customers. The usage/cost split
+> follows AGL's documented per-interval tags; the per-band **rate sensors**
+> infer their band from free-text plan wording and may read `unavailable`
+> ([#90](https://github.com/NaanyaBiz/haggle/issues/90)). Locally-derived
+> tariff windows are planned
+> ([#141](https://github.com/NaanyaBiz/haggle/issues/141)).
 
-> ⚠️ **ToU is unverified.** The maintainer's live account is flat-rate, so ToU
-> has only ever been exercised against synthetic test data, never a real AGL ToU
-> contract. The usage/cost **split** is expected to be correct (it follows the
-> documented `consumption.type` tag), but the per-band **rate sensors** infer
-> their band from free-text plan wording and may read `unavailable`. If you run a
-> ToU plan, testing and feedback are very welcome — see issues
-> [#90](https://github.com/NaanyaBiz/haggle/issues/90) and
-> [#114](https://github.com/NaanyaBiz/haggle/issues/114).
+## Solar (feed-in)
+
+On contracts with rooftop solar, `haggle` also fetches your export data and
+writes `haggle:generation_<contract>` (exported kWh — an Energy-dashboard
+*Return to grid* source) and `haggle:generation_credit_<contract>` (feed-in
+credit). Sensors cover the current billing period (matching the AGL app's
+"Sold To Grid" tile), cumulative totals, and your feed-in rate.
+
+> Solar is in beta validation
+> ([#128](https://github.com/NaanyaBiz/haggle/issues/128)) — the field
+> mapping is confirmed against a real capture and the AGL app; install
+> `v0.4.0-beta.2` via HACS "Show beta versions" to try it.
 
 ## Develop
 
