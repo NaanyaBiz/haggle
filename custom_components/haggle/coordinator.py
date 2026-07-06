@@ -648,8 +648,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 else:
                     if solar_readings is not None:
                         solar_intervals.extend(solar_readings)
-                        # Only a *successful* fetch marks the day as covered —
-                        # an errored day must stay unmarked so it is retried.
+                        # Only a *successful* fetch marks the day as covered.
+                        # An errored day stays unmarked; it is retried until a
+                        # LATER day in the chunk writes rows (same
+                        # skip-and-continue semantics as consumption — see
+                        # _fetch_day_solar docstring for the tradeoff).
                         fetched_solar_days.append(current)
             current += timedelta(days=1)
 
@@ -696,7 +699,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """Fetch one day of solar feed-in intervals (same contract as above).
 
         Returns None on a skippable AGLError so the caller does NOT count the
-        day as fetched (no zero-marker row → the day is retried next cycle).
+        day as fetched (no zero-marker row). The day is retried while the
+        resume point still trails it; once a LATER day in the chunk imports
+        rows, resume moves past the gap and — outside the trailing rewindow —
+        it is not revisited. Deliberate tradeoff, same skip-and-continue
+        semantics as the consumption backfill (#34): halting at the first
+        errored day would let a permanently-500ing old day (AGL does this on
+        very old dates) stall the backfill and the period sensors forever,
+        which is worse than a rare one-day historical hole.
         AGLRateLimitError propagates so the caller halts the whole chunk.
         """
         try:
