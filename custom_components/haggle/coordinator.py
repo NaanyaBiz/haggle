@@ -34,6 +34,7 @@ from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
 )
+from homeassistant.util import dt as dt_util
 
 from .agl.client import AGLAuthError, AGLError, AGLRateLimitError
 from .const import (
@@ -105,6 +106,14 @@ class HaggleData:
     has_solar: bool = False
     latest_generation_kwh: float = 0.0
     latest_generation_credit_aud: float = 0.0
+    # Bill-period solar totals (match the AGL app's "Sold To Grid" tile).
+    # None until the generation series has backfilled to the current rewindow
+    # — publishing a mid-backfill partial would show numbers that can't match
+    # the app (the exact confusion reported on #128 for beta.1).
+    generation_period_kwh: float | None = None
+    generation_period_credit_aud: float | None = None
+    # Solar feed-in tariff (AUD/kWh) from the plan's gstExclusiveRates.
+    feed_in_rate_aud_per_kwh: float | None = None
 
 
 class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
@@ -183,28 +192,41 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # in lockstep, and every cumulative-sum baseline is now looked up inside
         # _import_intervals (against the earliest fetched-interval hour), so the
         # cost stat's last row is no longer needed here.
-        last_cons_sum, last_stat_date = await self._get_last_stat(stat_id_cons)
+        last_cons_sum, last_cons_date = await self._get_last_stat(stat_id_cons)
 
         # AGL `dateTime` slots are UTC; using `date.today()` (OS local time)
         # would skew the fetch range by a day around midnight in non-UTC zones.
         today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
-        fetch_start = self._resolve_fetch_start(today, last_stat_date)
-        fetch_end = min(
-            yesterday, fetch_start + timedelta(days=BACKFILL_CHUNK_DAYS - 1)
-        )
-
         # Seed the sensor with the most-recent known cumulative; _fetch_range
         # bumps it forward when the import produces new rows.
         self._latest_cumulative_kwh = last_cons_sum or 0.0
 
+        # Each series resolves its own fetch range from its own resume point,
+        # chunk-capped independently. A single consumption-derived range would
+        # starve a generation series added by upgrade: consumption is caught up,
+        # so the range never reaches further back than the trailing rewindow and
+        # the older BACKFILL_DAYS of solar history would never arrive.
+        cons_range = self._chunked_range(
+            self._resolve_fetch_start(today, last_cons_date), yesterday
+        )
+
+        # Pre-fetch generation resume state. last_gen_date also gates the
+        # bill-period totals below: reading it BEFORE the fetch guarantees the
+        # rows behind the bill_start baseline were committed in an earlier
+        # cycle, not queued in the recorder by this one.
+        last_gen_date: date | None = None
+        solar_range: tuple[date, date] | None = None
         if self._has_solar:
             stat_id_gen, stat_id_credit = self._generation_stat_ids()
-            last_gen_sum, _ = await self._get_last_stat(stat_id_gen)
+            last_gen_sum, last_gen_date = await self._get_last_stat(stat_id_gen)
             last_credit_sum, _ = await self._get_last_stat(stat_id_credit)
             self._latest_generation_kwh = last_gen_sum or 0.0
             self._latest_generation_credit = last_credit_sum or 0.0
+            solar_range = self._chunked_range(
+                self._resolve_fetch_start(today, last_gen_date), yesterday
+            )
 
         # Mark which ToU bands already have stored statistics so the per-tariff
         # series are emitted only for a contract that has been seen using ToU
@@ -212,13 +234,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # per-tariff baseline sums themselves are resolved in _import_intervals.
         self._active_tou_bands |= await self._get_stored_tou_bands()
 
-        if fetch_start <= yesterday:
+        if cons_range or solar_range:
             await self._fetch_range(
-                fetch_start,
-                fetch_end,
+                cons_range,
+                solar_range,
                 bill_start,
                 known_bands=frozenset(self._active_tou_bands),
-                include_solar=self._has_solar,
             )
 
         # Extract rates from plan.
@@ -238,6 +259,21 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         def _tou_rate(tariff: str) -> float | None:
             cents = plan.tou_unit_rates.get(tariff)
             return cents / 100.0 if cents is not None else None
+
+        feed_in_cents = plan.feed_in_rate_cents_per_kwh
+        feed_in_rate_aud = feed_in_cents / 100.0 if feed_in_cents is not None else None
+
+        # Bill-period solar totals — after the fetch so this cycle's rows are
+        # included in the in-memory latest sums.
+        generation_period_kwh: float | None = None
+        generation_period_credit: float | None = None
+        if self._has_solar:
+            (
+                generation_period_kwh,
+                generation_period_credit,
+            ) = await self._get_generation_period_totals(
+                bill_start, last_gen_date, today
+            )
 
         # A new ToU band (or solar newly detected) appearing after first
         # refresh means sensors need to be added; schedule a loop-safe reload.
@@ -267,6 +303,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             has_solar=self._has_solar,
             latest_generation_kwh=self._latest_generation_kwh,
             latest_generation_credit_aud=self._latest_generation_credit,
+            generation_period_kwh=generation_period_kwh,
+            generation_period_credit_aud=generation_period_credit,
+            feed_in_rate_aud_per_kwh=feed_in_rate_aud,
         )
 
     async def _refresh_has_solar(self) -> None:
@@ -341,6 +380,17 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if last_stat_date < today - timedelta(days=REWINDOW_DAYS):
             return last_stat_date + timedelta(days=1)
         return max(today - timedelta(days=REWINDOW_DAYS), backfill_floor)
+
+    @staticmethod
+    def _chunked_range(start: date, yesterday: date) -> tuple[date, date] | None:
+        """Cap a series' fetch start to one BACKFILL_CHUNK_DAYS chunk.
+
+        Returns None when the series has nothing to fetch (start past
+        yesterday — AGL never has data for today).
+        """
+        if start > yesterday:
+            return None
+        return start, min(yesterday, start + timedelta(days=BACKFILL_CHUNK_DAYS - 1))
 
     async def _get_last_stat(self, stat_id: str) -> tuple[float | None, date | None]:
         """Return (last_sum, last_date) for stat_id, or (None, None) if no rows."""
@@ -483,71 +533,111 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         return {band for stat_id, band in id_to_band.items() if result.get(stat_id)}
 
+    async def _get_generation_period_totals(
+        self,
+        bill_start: date,
+        last_gen_date: date | None,
+        today: date,
+    ) -> tuple[float | None, float | None]:
+        """Return (kWh, AUD) exported since bill_start, or (None, None).
+
+        Matches the AGL app's billing-period "Sold To Grid" tile: latest
+        cumulative sum minus the stored sum at local midnight of bill_start.
+
+        Gated on the PRE-FETCH generation resume point: values publish only
+        once the series was already caught up to the trailing rewindow at the
+        start of this cycle. Mid-backfill partials are suppressed (None →
+        sensor `unknown`) because they cannot match the app — the exact
+        confusion behind the beta.1 report on #128. Using the pre-fetch date
+        also sidesteps the recorder's async write queue: every row behind the
+        bill_start baseline was committed by an earlier cycle, never queued by
+        this one. The latest sums are the in-memory values returned
+        synchronously by _emit_series, so they are exact either way.
+
+        Known limitation (not gated): a billing period longer than
+        BACKFILL_DAYS — quarterly bills — starts before the backfill floor,
+        so the baseline resolves to 0.0 and the totals cover only the stored
+        history. Gating on it would leave quarterly-billed users permanently
+        unavailable.
+
+        Half-hour timezones (e.g. ACST, local midnight = 14:30Z): the hourly
+        row strictly before the cutoff contains the day's first 30-min slot,
+        so at most one midnight slot folds into the baseline — solar export at
+        local midnight is zero, so no correction is needed.
+        """
+        if last_gen_date is None or last_gen_date < today - timedelta(
+            days=REWINDOW_DAYS
+        ):
+            return None, None
+        stat_id_gen, stat_id_credit = self._generation_stat_ids()
+        cutoff = dt_util.start_of_local_day(bill_start)
+        base_gen, base_credit = await self._get_baseline_sums(
+            stat_id_gen, stat_id_credit, cutoff
+        )
+        kwh = max(0.0, self._latest_generation_kwh - base_gen)
+        credit = max(0.0, self._latest_generation_credit - base_credit)
+        return kwh, credit
+
     async def _fetch_range(
         self,
-        start: date,
-        end: date,
+        cons_range: tuple[date, date] | None,
+        solar_range: tuple[date, date] | None,
         bill_start: date | None,
         *,
         known_bands: frozenset[str] = frozenset(),
-        include_solar: bool = False,
     ) -> None:
-        """Fetch [start..end] with smart endpoint selection, then import.
+        """Fetch per-series day ranges with smart endpoint selection, then import.
 
-        Sleeps between per-day requests so a chunk-of-7 first-install backfill
-        doesn't hammer AGL's BFF in under a second. On rate-limit the loop
-        stops early — the next 24h poll cycle will resume from the last
-        successfully imported date.
+        Each series carries its own (start, end) so a generation series that is
+        behind (e.g. solar support added by upgrade while consumption is caught
+        up) backfills from its own resume point without re-fetching consumption
+        days — and vice versa. A day outside both ranges is skipped without a
+        request. Worst case (fully disjoint chunks) is 7 + 7 requests, the same
+        peak load as a steady-state solar cycle (7 days x 2 requests).
 
-        With include_solar, each day additionally fetches the ElectricitySolar
-        feed-in intervals (a second, delay-separated request per day). The
-        consumption series keeps reading the proven Electricity endpoint — the
-        solar endpoint's own consumption block is ignored until it has been
+        Sleeps between requests so a chunk-of-7 first-install backfill doesn't
+        hammer AGL's BFF in under a second. AGL rate limits are account-wide,
+        so an AGLRateLimitError from either endpoint halts the whole chunk —
+        each series resumes from its own last imported date next cycle.
+
+        The consumption series keeps reading the proven Electricity endpoint —
+        the solar endpoint's own consumption block is ignored until it has been
         reconciled against a real bill.
         """
+        ranges = [r for r in (cons_range, solar_range) if r is not None]
+        if not ranges:
+            return
         all_intervals: list[IntervalReading] = []
         solar_intervals: list[IntervalReading] = []
-        current = start
+        current = min(r[0] for r in ranges)
+        loop_end = max(r[1] for r in ranges)
         first = True
-        while current <= end:
-            if not first:
-                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
-            first = False
+        rate_limited = False
+        while current <= loop_end and not rate_limited:
+            fetch_cons = cons_range is not None and (
+                cons_range[0] <= current <= cons_range[1]
+            )
+            fetch_solar = solar_range is not None and (
+                solar_range[0] <= current <= solar_range[1]
+            )
             previous = bill_start is not None and current < bill_start
-            try:
-                if previous:
-                    readings = await self.client.async_get_usage_hourly_previous(
-                        self.contract_number, current
-                    )
-                else:
-                    readings = await self.client.async_get_usage_hourly(
-                        self.contract_number, current
-                    )
-                all_intervals.extend(readings)
-            except AGLRateLimitError as err:
-                _LOGGER.warning(
-                    "AGL rate-limited at %s; halting backfill chunk: %s", current, err
-                )
-                break
-            except AGLError as err:
-                _LOGGER.debug("Fetch skip %s: %s", current, err)
-            if include_solar:
-                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
-                try:
-                    solar_intervals.extend(
-                        await self.client.async_get_solar_hourly(
-                            self.contract_number, current, previous=previous
-                        )
-                    )
-                except AGLRateLimitError as err:
-                    _LOGGER.warning(
-                        "AGL rate-limited at %s (solar); halting backfill chunk: %s",
-                        current,
-                        err,
-                    )
+            if fetch_cons:
+                if not first:
+                    await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+                first = False
+                readings = await self._fetch_day_consumption(current, previous)
+                if readings is None:  # rate-limited
                     break
-                except AGLError as err:
-                    _LOGGER.debug("Solar fetch skip %s: %s", current, err)
+                all_intervals.extend(readings)
+            if fetch_solar:
+                if not first:
+                    await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+                first = False
+                solar_readings = await self._fetch_day_solar(current, previous)
+                if solar_readings is None:  # rate-limited
+                    rate_limited = True
+                else:
+                    solar_intervals.extend(solar_readings)
             current += timedelta(days=1)
 
         if all_intervals:
@@ -559,6 +649,46 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # If no intervals were fetched (e.g. AGL had no data for the whole
         # range), leave the cumulative seeds as the caller set them — the
         # most recent stored cumulative remains the sensor value.
+
+    async def _fetch_day_consumption(
+        self, day: date, previous: bool
+    ) -> list[IntervalReading] | None:
+        """Fetch one day of consumption intervals.
+
+        Returns [] on a skippable AGLError (logged, the loop continues) and
+        None on AGLRateLimitError so the caller halts the chunk.
+        """
+        try:
+            if previous:
+                return await self.client.async_get_usage_hourly_previous(
+                    self.contract_number, day
+                )
+            return await self.client.async_get_usage_hourly(self.contract_number, day)
+        except AGLRateLimitError as err:
+            _LOGGER.warning(
+                "AGL rate-limited at %s; halting backfill chunk: %s", day, err
+            )
+            return None
+        except AGLError as err:
+            _LOGGER.debug("Fetch skip %s: %s", day, err)
+            return []
+
+    async def _fetch_day_solar(
+        self, day: date, previous: bool
+    ) -> list[IntervalReading] | None:
+        """Fetch one day of solar feed-in intervals (same contract as above)."""
+        try:
+            return await self.client.async_get_solar_hourly(
+                self.contract_number, day, previous=previous
+            )
+        except AGLRateLimitError as err:
+            _LOGGER.warning(
+                "AGL rate-limited at %s (solar); halting backfill chunk: %s", day, err
+            )
+            return None
+        except AGLError as err:
+            _LOGGER.debug("Solar fetch skip %s: %s", day, err)
+            return []
 
     @staticmethod
     def _bucket_hourly(

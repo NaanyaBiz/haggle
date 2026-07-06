@@ -151,24 +151,83 @@ class TestSolarRegistration:
         self, hass: HomeAssistant
     ) -> None:
         from custom_components.haggle.const import (
+            DATA_FEED_IN_RATE,
             DATA_GENERATION_CREDIT,
             DATA_GENERATION_KWH,
+            DATA_GENERATION_PERIOD,
+            DATA_GENERATION_PERIOD_CREDIT,
         )
 
         keys = await _setup_keys(hass, _data(frozenset(), has_solar=True))
         assert DATA_GENERATION_KWH in keys
         assert DATA_GENERATION_CREDIT in keys
+        assert DATA_GENERATION_PERIOD in keys
+        assert DATA_GENERATION_PERIOD_CREDIT in keys
+        assert DATA_FEED_IN_RATE in keys
         assert set(keys) >= _BASE_KEYS
 
     async def test_non_solar_contract_has_no_generation_sensors(
         self, hass: HomeAssistant
     ) -> None:
         from custom_components.haggle.const import (
+            DATA_FEED_IN_RATE,
             DATA_GENERATION_CREDIT,
             DATA_GENERATION_KWH,
+            DATA_GENERATION_PERIOD,
+            DATA_GENERATION_PERIOD_CREDIT,
         )
 
         keys = await _setup_keys(hass, _data(frozenset()))
         assert DATA_GENERATION_KWH not in keys
         assert DATA_GENERATION_CREDIT not in keys
+        assert DATA_GENERATION_PERIOD not in keys
+        assert DATA_GENERATION_PERIOD_CREDIT not in keys
+        assert DATA_FEED_IN_RATE not in keys
         assert set(keys) == _BASE_KEYS
+
+
+class TestSolarDescriptions:
+    def test_period_sensors_mirror_consumption_period_pattern(self) -> None:
+        """Bill-period totals reset at rollover: TOTAL, never TOTAL_INCREASING."""
+        from homeassistant.components.sensor import (
+            SensorDeviceClass,
+            SensorStateClass,
+        )
+
+        from custom_components.haggle.const import (
+            DATA_GENERATION_PERIOD,
+            DATA_GENERATION_PERIOD_CREDIT,
+        )
+        from custom_components.haggle.sensor import SOLAR_DESCRIPTIONS
+
+        by_key = {d.key: d for d in SOLAR_DESCRIPTIONS}
+        period = by_key[DATA_GENERATION_PERIOD]
+        assert period.state_class is SensorStateClass.TOTAL
+        assert period.device_class is SensorDeviceClass.ENERGY
+        credit = by_key[DATA_GENERATION_PERIOD_CREDIT]
+        assert credit.state_class is SensorStateClass.TOTAL
+        assert credit.device_class is SensorDeviceClass.MONETARY
+
+    def test_feed_in_rate_is_a_unit_price_not_monetary(self) -> None:
+        """Unit prices: MEASUREMENT + AUD/kWh, no device_class (repo rule)."""
+        from homeassistant.components.sensor import SensorStateClass
+
+        from custom_components.haggle.const import DATA_FEED_IN_RATE
+        from custom_components.haggle.sensor import SOLAR_DESCRIPTIONS
+
+        desc = {d.key: d for d in SOLAR_DESCRIPTIONS}[DATA_FEED_IN_RATE]
+        assert desc.device_class is None
+        assert desc.state_class is SensorStateClass.MEASUREMENT
+        assert desc.native_unit_of_measurement == "AUD/kWh"
+
+    async def test_period_sensor_unknown_until_backfill_caught_up(
+        self, hass: HomeAssistant
+    ) -> None:
+        """generation_period_kwh None → sensor unavailable, never a partial."""
+        from custom_components.haggle.const import DATA_GENERATION_PERIOD
+        from custom_components.haggle.sensor import SOLAR_DESCRIPTIONS
+
+        entry = _make_entry_with_coordinator(hass, _data(frozenset(), has_solar=True))
+        desc = {d.key: d for d in SOLAR_DESCRIPTIONS}[DATA_GENERATION_PERIOD]
+        sensor = HaggleEnergySensor(entry.runtime_data.coordinator, entry, desc)
+        assert sensor.native_value is None

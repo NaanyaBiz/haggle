@@ -18,6 +18,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0-beta.2] — 2026-07-06
+
+> **Pre-release for community validation** (#128 round 2). The beta.1 solar
+> field mapping is now **capture-validated**: on the tester's real 2026-07-01
+> capture the parser reproduces the AGL app's figures exactly (sold to grid
+> 8.019 kWh / $1.363 vs the app's 8.02 / $1.36; consumption 6.072 / $2.254 vs
+> 6.07 / $2.25). The mismatch reported against beta.1 was a *window* artifact
+> — a cumulative-since-backfill sensor compared against the app's
+> billing-period tile — not a data bug. Beta.2 adds bill-period sensors that
+> match the app tile directly.
+
+### Added
+
+- **Bill-period solar sensors** (#128): **Solar sold this period** (kWh) and
+  **Solar feed-in credit this period** (AUD) — computed from the generation
+  statistics since the current bill period start, so they line up with the
+  AGL app's "Sold To Grid" tile. They read `unknown` until the generation
+  series has backfilled to the trailing rewindow (a mid-backfill partial
+  could never match the app). Note: on quarterly billing the 30-day backfill
+  window is shorter than the bill period, so these sensors cover the stored
+  history only.
+- **Solar feed-in rate sensor** (#128): AGL reports the feed-in tariff under
+  `gstExclusiveRates` (FiT is GST-free) — the parser previously only read
+  `gstInclusiveRates`, so the rate never surfaced. New **Solar feed-in rate**
+  sensor (AUD/kWh) registers on solar contracts when the plan carries a
+  feed-in rate.
+
+### Fixed
+
+- **Generation series now backfills independently of consumption** (#128).
+  Previously the fetch window was resolved from the consumption series'
+  resume point alone, so an install that *upgraded* into solar support only
+  ever received the trailing 7-day rewindow of export history — the older
+  ~23 days of the 30-day backfill never arrived. Each series now resolves its
+  own chunked fetch range from its own resume point; disjoint ranges skip the
+  other series' days (no extra load on AGL's BFF).
+- `tests/fixtures/solar_hourly_response.json` replaced with the tester's real
+  full-day capture (48 slots, 11 non-zero export slots, mixed
+  `normal`/`peak` feedIn types); reconciliation totals are locked in as
+  regression tests.
+
+---
+
 ## [0.4.0-beta.1] — 2026-07-05
 
 > **Pre-release for community validation.** Solar generation support (#128)

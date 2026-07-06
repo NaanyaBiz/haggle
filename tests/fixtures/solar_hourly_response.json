@@ -4,111 +4,1014 @@
   "timeZone": "Australia/Sydney",
   "sections": [
     {
-      "startDate": "2026-06-29",
+      "startDate": "2026-07-01",
       "items": [
         {
-          "dateTime": "2026-06-29T00:00:00Z",
+          "dateTime": "2026-07-01T13:30:00Z",
           "consumption": {
-            "values": {"amount": 0.09, "quantity": 0.09},
-            "amount": 0.052,
-            "quantity": 0.141,
+            "values": {
+              "amount": 0.1138,
+              "quantity": 0.0521
+            },
+            "amount": 0.025238,
+            "quantity": 0.068,
             "type": "normal"
           },
           "feedIn": {
-            "values": {"amount": 0.31, "quantity": 0.31},
-            "amount": 0.0165,
-            "quantity": 0.502,
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-06-29T02:00:00Z",
+          "dateTime": "2026-07-01T13:00:00Z",
           "consumption": {
-            "values": {"amount": 0.07, "quantity": 0.07},
-            "amount": 0.041,
-            "quantity": 0.112,
+            "values": {
+              "amount": 0.1305,
+              "quantity": 0.0598
+            },
+            "amount": 0.02895,
+            "quantity": 0.078,
             "type": "normal"
           },
           "feedIn": {
-            "values": {"amount": 0.79, "quantity": 0.79},
-            "amount": 0.0421,
-            "quantity": 1.276,
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-06-29T02:30:00Z",
+          "dateTime": "2026-07-01T12:30:00Z",
           "consumption": {
-            "values": {"amount": 0.08, "quantity": 0.08},
-            "amount": 0.046,
-            "quantity": 0.124,
+            "values": {
+              "amount": 0.1155,
+              "quantity": 0.0529
+            },
+            "amount": 0.02561,
+            "quantity": 0.069,
             "type": "normal"
           },
           "feedIn": {
-            "values": {"amount": 0.72, "quantity": 0.72},
-            "amount": 0.0385,
-            "quantity": 1.168,
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-06-29T13:00:00Z",
+          "dateTime": "2026-07-01T12:00:00Z",
           "consumption": {
-            "values": {"amount": 0.0491, "quantity": 0.049},
-            "amount": 0.024871,
+            "values": {
+              "amount": 0.1255,
+              "quantity": 0.0575
+            },
+            "amount": 0.027837,
+            "quantity": 0.075,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T11:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1924,
+              "quantity": 0.0881
+            },
+            "amount": 0.042682,
+            "quantity": 0.115,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T11:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1573,
+              "quantity": 0.072
+            },
+            "amount": 0.03489,
+            "quantity": 0.094,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T10:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2326,
+              "quantity": 0.1065
+            },
+            "amount": 0.05159,
+            "quantity": 0.139,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T10:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2895,
+              "quantity": 0.1326
+            },
+            "amount": 0.064209,
+            "quantity": 0.173,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T09:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.5003,
+              "quantity": 0.2291
+            },
+            "amount": 0.110977,
+            "quantity": 0.299,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T09:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.4284,
+              "quantity": 0.1962
+            },
+            "amount": 0.095016,
+            "quantity": 0.256,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T08:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.5221,
+              "quantity": 0.2391
+            },
+            "amount": 0.115801,
+            "quantity": 0.312,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T08:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2527,
+              "quantity": 0.1157
+            },
+            "amount": 0.056045,
+            "quantity": 0.151,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T07:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.6961,
+              "quantity": 0.3188
+            },
+            "amount": 0.1544,
+            "quantity": 0.416,
+            "type": "peak"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T07:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.8752,
+              "quantity": 0.4008
+            },
+            "amount": 0.194115,
+            "quantity": 0.523,
+            "type": "peak"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T06:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.3397,
+              "quantity": 0.1556
+            },
+            "amount": 0.075346,
+            "quantity": 0.203,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T06:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1556,
+              "quantity": 0.0713
+            },
+            "amount": 0.034518,
+            "quantity": 0.093,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T05:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1205,
+              "quantity": 0.0552
+            },
+            "amount": 0.026723,
+            "quantity": 0.072,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T05:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0753,
+              "quantity": 0.0345
+            },
+            "amount": 0.016702,
+            "quantity": 0.045,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T04:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.092,
+              "quantity": 0.0421
+            },
+            "amount": 0.020414,
+            "quantity": 0.055,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T04:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.087,
+              "quantity": 0.0398
+            },
+            "amount": 0.019301,
+            "quantity": 0.052,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0146,
+              "quantity": 0.0146
+            },
+            "amount": 0.00323,
+            "quantity": 0.019,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T03:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0284,
+              "quantity": 0.013
+            },
+            "amount": 0.00631,
+            "quantity": 0.017,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.1425,
+              "quantity": 0.1425
+            },
+            "amount": 0.031612,
+            "quantity": 0.186,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T03:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.39,
+              "quantity": 0.39
+            },
+            "amount": 0.08651,
+            "quantity": 0.509,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T02:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.7617,
+              "quantity": 0.7617
+            },
+            "amount": 0.168942,
+            "quantity": 0.994,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T02:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0067,
+              "quantity": 0.0031
+            },
+            "amount": 0.001485,
+            "quantity": 0.004,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.7617,
+              "quantity": 0.7617
+            },
+            "amount": 0.168942,
+            "quantity": 0.994,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T01:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.8866,
+              "quantity": 0.8866
+            },
+            "amount": 0.196646,
+            "quantity": 1.157,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T01:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 1.0,
+              "quantity": 1.0
+            },
+            "amount": 0.2218,
+            "quantity": 1.305,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T00:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.8866,
+              "quantity": 0.8866
+            },
+            "amount": 0.196646,
+            "quantity": 1.157,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-07-01T00:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.7318,
+              "quantity": 0.7318
+            },
+            "amount": 0.162314,
+            "quantity": 0.955,
+            "type": "peak"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T23:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.5218,
+              "quantity": 0.5218
+            },
+            "amount": 0.115744,
+            "quantity": 0.681,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T23:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.0485,
+              "quantity": 0.0222
+            },
+            "amount": 0.010765,
+            "quantity": 0.029,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0475,
+              "quantity": 0.0475
+            },
+            "amount": 0.010538,
+            "quantity": 0.062,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T22:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1707,
+              "quantity": 0.0782
+            },
+            "amount": 0.037858,
+            "quantity": 0.102,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T22:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.6041,
+              "quantity": 0.2766
+            },
+            "amount": 0.133987,
+            "quantity": 0.361,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T21:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.8099,
+              "quantity": 0.3709
+            },
+            "amount": 0.179639,
+            "quantity": 0.484,
+            "type": "peak"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T21:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2811,
+              "quantity": 0.1287
+            },
+            "amount": 0.062355,
+            "quantity": 0.168,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T20:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2209,
+              "quantity": 0.1011
+            },
+            "amount": 0.048992,
+            "quantity": 0.132,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T20:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1707,
+              "quantity": 0.0782
+            },
+            "amount": 0.037858,
+            "quantity": 0.102,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T19:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.159,
+              "quantity": 0.0728
+            },
+            "amount": 0.035259,
+            "quantity": 0.095,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T19:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.241,
+              "quantity": 0.1103
+            },
+            "amount": 0.053447,
+            "quantity": 0.144,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T18:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2912,
+              "quantity": 0.1333
+            },
+            "amount": 0.064581,
+            "quantity": 0.174,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T18:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.2912,
+              "quantity": 0.1333
+            },
+            "amount": 0.064581,
+            "quantity": 0.174,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T17:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.3079,
+              "quantity": 0.141
+            },
+            "amount": 0.068292,
+            "quantity": 0.184,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T17:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.328,
+              "quantity": 0.1502
+            },
+            "amount": 0.072747,
+            "quantity": 0.196,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T16:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1272,
+              "quantity": 0.0582
+            },
+            "amount": 0.028208,
+            "quantity": 0.076,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T16:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1138,
+              "quantity": 0.0521
+            },
+            "amount": 0.025238,
+            "quantity": 0.068,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T15:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1205,
+              "quantity": 0.0552
+            },
+            "amount": 0.026723,
+            "quantity": 0.072,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T15:00:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1054,
+              "quantity": 0.0483
+            },
+            "amount": 0.023384,
+            "quantity": 0.063,
+            "type": "normal"
+          },
+          "feedIn": {
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
+            "amount": 0.0,
+            "quantity": 0.0,
+            "type": "normal"
+          }
+        },
+        {
+          "dateTime": "2026-06-30T14:30:00Z",
+          "consumption": {
+            "values": {
+              "amount": 0.1121,
+              "quantity": 0.0513
+            },
+            "amount": 0.024867,
             "quantity": 0.067,
             "type": "normal"
           },
           "feedIn": {
-            "values": {"amount": 0.0, "quantity": 0.0},
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
             "amount": 0.0,
             "quantity": 0.0,
             "type": "normal"
           }
         },
         {
-          "dateTime": "2026-06-29T13:30:00Z",
+          "dateTime": "2026-06-30T14:00:00Z",
           "consumption": {
-            "values": {"amount": 0.0483, "quantity": 0.0483},
-            "amount": 0.024499,
-            "quantity": 0.066,
+            "values": {
+              "amount": 0.1205,
+              "quantity": 0.0552
+            },
+            "amount": 0.026723,
+            "quantity": 0.072,
             "type": "normal"
           },
           "feedIn": {
-            "values": {"amount": 0.0, "quantity": 0.0},
+            "values": {
+              "amount": 0.0,
+              "quantity": 0.0
+            },
             "amount": 0.0,
             "quantity": 0.0,
             "type": "normal"
-          }
-        },
-        {
-          "dateTime": "2026-06-29T14:00:00Z",
-          "consumption": {
-            "values": {"amount": 0.0, "quantity": 0.0},
-            "amount": 0.0,
-            "quantity": 0.0,
-            "type": "pending"
-          },
-          "feedIn": {
-            "values": {"amount": 0.0, "quantity": 0.0},
-            "amount": 0.0,
-            "quantity": 0.0,
-            "type": "pending"
-          }
-        },
-        {
-          "dateTime": "2026-06-29T14:30:00Z",
-          "consumption": {
-            "values": {"amount": 0.0, "quantity": 0.0},
-            "amount": 0.0,
-            "quantity": 0.0,
-            "type": "none"
-          },
-          "feedIn": {
-            "values": {"amount": 0.0, "quantity": 0.0},
-            "amount": 0.0,
-            "quantity": 0.0,
-            "type": "none"
           }
         }
       ],

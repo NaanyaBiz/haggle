@@ -606,6 +606,46 @@ class TestParsePlanTou:
         assert plan.tou_unit_rates == {"peak": pytest.approx(40.0)}
 
 
+class TestParsePlanFeedInRate:
+    """Solar feed-in tariff lives in gstExclusiveRates (#128, FiT is GST-free)."""
+
+    def test_solar_plan_feed_in_rate_parsed(self) -> None:
+        plan = parse_plan(load_fixture("solar_plan_response.json"))
+        assert plan.feed_in_rate_cents_per_kwh == pytest.approx(1.2)
+        # The gstInclusiveRates side is unaffected.
+        assert plan.supply_charge_cents_per_day == pytest.approx(140.0)
+
+    def test_flat_plan_without_feed_in_is_none(self) -> None:
+        plan = parse_plan(load_fixture("plan_response.json"))
+        assert plan.feed_in_rate_cents_per_kwh is None
+
+    def test_unrelated_gst_exclusive_rows_ignored(self) -> None:
+        """Only a c/kWh detail row titled feed-in can set the rate."""
+        data = {
+            "gstExclusiveRates": [
+                {
+                    "kind": "detail",
+                    "type": "c/day",
+                    "price": 90.0,
+                    "title": "Membership",
+                },
+                {"kind": "header", "title": "Solar feed-in"},
+                {"kind": "detail", "type": "c/kWh", "price": 5.0, "title": "Demand"},
+            ]
+        }
+        plan = parse_plan(data)
+        assert plan.feed_in_rate_cents_per_kwh is None
+
+    def test_feed_in_title_variants_match(self) -> None:
+        for title in ("Solar feed-in", "Solar Feed In tariff", "FEED-IN credit"):
+            data = {
+                "gstExclusiveRates": [
+                    {"kind": "detail", "type": "c/kWh", "price": 3.3, "title": title}
+                ]
+            }
+            assert parse_plan(data).feed_in_rate_cents_per_kwh == pytest.approx(3.3)
+
+
 class TestParseIntervalReadingsTou:
     def test_mixed_tou_intervals_preserve_rate_type(self) -> None:
         readings = parse_interval_readings(load_fixture("tou_hourly_response.json"))
@@ -620,39 +660,95 @@ class TestParseIntervalReadingsTou:
 class TestParseSolarIntervals:
     """feedIn extraction from the ElectricitySolar /Hourly response (#128).
 
-    Fixture shape is a real anonymised capture (Ausgrid NSW, 2026-06-29);
-    the daytime non-zero feedIn values are extrapolated onto that shape —
-    the capture's real slots were night-time zeros.
+    Fixture is a REAL anonymised capture (full local day 2026-07-01, AEST)
+    provided on #128, reconciled against the AGL app for that same day:
+    "Sold to Grid: 8.02 kWh ($1.36)", "Consumption: 6.07 kWh ($2.25)".
+    These totals are the ground truth that validated reading the OUTER
+    feedIn.quantity/amount — do not change them without a new capture.
     """
 
-    def test_feedin_outer_quantity_and_amount(self) -> None:
+    def test_feedin_reconciles_with_agl_app_figures(self) -> None:
         data = load_fixture("solar_hourly_response.json")
         readings = parse_interval_readings(data, source_field="feedIn")
-        # 3 daytime export slots survive; the two night zero-on-zero feedIn
-        # slots and the pending/none placeholders are dropped.
-        assert len(readings) == 3
-        kwhs = {r.kwh for r in readings}
-        assert kwhs == {0.502, 1.276, 1.168}
-        # Inner values.quantity (DPI/chart-scaled) must not leak through.
-        assert kwhs.isdisjoint({0.31, 0.79, 0.72})
-        credits = {r.cost_aud for r in readings}
-        assert credits == {0.0165, 0.0421, 0.0385}
+        # 11 daytime export slots survive; 37 night zero-on-zero slots drop.
+        assert len(readings) == 11
+        assert sum(r.kwh for r in readings) == pytest.approx(8.019)
+        assert sum(r.cost_aud for r in readings) == pytest.approx(1.362924)
 
-    def test_consumption_side_of_solar_response_parses_with_default(self) -> None:
-        data = load_fixture("solar_hourly_response.json")
-        readings = parse_interval_readings(data)
-        # All five real consumption slots survive (pending/none dropped).
-        assert len(readings) == 5
-        assert {r.kwh for r in readings} == {0.141, 0.112, 0.124, 0.067, 0.066}
+    def test_uses_outer_feedin_quantity_not_inner_values(self) -> None:
+        """Inner values.* is the DPI/chart-scaled helper — it undercounts.
 
-    def test_feedin_filters_pending_and_none(self) -> None:
+        On the 2026-07-01 capture the inner series sums to 6.1448 kWh vs the
+        app-confirmed 8.02; reading it would repeat the v0.1.0 consumption
+        undercount bug on the export side.
+        """
         data = load_fixture("solar_hourly_response.json")
         readings = parse_interval_readings(data, source_field="feedIn")
+        total = sum(r.kwh for r in readings)
+        assert total != pytest.approx(6.1448)
+        # Spot-check one slot: 01:00Z outer 1.305 kWh, inner 1.0.
         from datetime import UTC, datetime
 
-        dts = {r.dt for r in readings}
-        assert datetime(2026, 6, 29, 14, 0, tzinfo=UTC) not in dts  # pending
-        assert datetime(2026, 6, 29, 14, 30, tzinfo=UTC) not in dts  # none
+        slot = {r.dt: r for r in readings}[datetime(2026, 7, 1, 1, 0, tzinfo=UTC)]
+        assert slot.kwh == pytest.approx(1.305)
+        assert slot.cost_aud == pytest.approx(0.2218)
+
+    def test_feedin_carries_tou_rate_types(self) -> None:
+        """Real solar responses type feedIn slots too (normal + peak seen)."""
+        data = load_fixture("solar_hourly_response.json")
+        all_types = {
+            item["feedIn"]["type"]
+            for section in data["sections"]
+            for item in section["items"]
+        }
+        assert all_types == {"normal", "peak"}
+
+    def test_consumption_side_of_solar_response_parses_with_default(self) -> None:
+        """The solar response's consumption block matches the app figures.
+
+        The coordinator ignores this block (the Electricity endpoint stays the
+        consumption source of truth) but the reconciliation is documented:
+        6.072 kWh / $2.2537 vs the app's 6.07 / $2.25 for 2026-07-01.
+        """
+        data = load_fixture("solar_hourly_response.json")
+        readings = parse_interval_readings(data)
+        assert len(readings) == 41
+        assert sum(r.kwh for r in readings) == pytest.approx(6.072)
+        assert sum(r.cost_aud for r in readings) == pytest.approx(2.253663)
+
+    def test_feedin_filters_pending_and_none(self) -> None:
+        """Synthetic payload — the real capture has no pending/none slots."""
+        data = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-07-01T04:00:00Z",
+                            "feedIn": {
+                                "amount": 0.1,
+                                "quantity": 0.5,
+                                "type": "pending",
+                            },
+                        },
+                        {
+                            "dateTime": "2026-07-01T04:30:00Z",
+                            "feedIn": {"amount": 0.1, "quantity": 0.5, "type": "none"},
+                        },
+                        {
+                            "dateTime": "2026-07-01T05:00:00Z",
+                            "feedIn": {
+                                "amount": 0.1,
+                                "quantity": 0.5,
+                                "type": "normal",
+                            },
+                        },
+                    ]
+                }
+            ]
+        }
+        readings = parse_interval_readings(data, source_field="feedIn")
+        assert len(readings) == 1
+        assert readings[0].rate_type == "normal"
 
 
 class TestParseOverviewSolar:
