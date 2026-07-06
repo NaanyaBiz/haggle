@@ -1408,6 +1408,95 @@ class TestSolarGeneration:
             await coord._import_generation([])
         assert mock_add.call_count == 0
 
+    async def test_zero_export_day_writes_resume_marker(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A fetched all-zero day gets one zero-delta row so resume advances.
+
+        Codex review on PR #144: without a marker, a cloudy zero-export week
+        (a full chunk) or a solar system newer than the backfill floor would
+        refetch the same days forever and never unlock the period sensors.
+        """
+        coord = _make_coordinator(hass)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(10.0, 1.0)),
+            ),
+        ):
+            await coord._import_generation([], fetched_days=[date(2026, 6, 29)])
+
+        assert mock_add.call_count == 2
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert len(gen_stats) == 1
+        assert gen_stats[0]["state"] == 0.0
+        # Zero delta: the cumulative sum stays on the baseline.
+        assert gen_stats[0]["sum"] == pytest.approx(10.0)
+        # Marker lands inside the local day (floored to the hour).
+        from homeassistant.util import dt as dt_util
+
+        marker = gen_stats[0]["start"]
+        expected = dt_util.as_utc(
+            dt_util.start_of_local_day(date(2026, 6, 29))
+        ).replace(minute=0, second=0, microsecond=0)
+        assert marker == expected
+
+    async def test_no_marker_when_day_has_real_intervals(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A day with surviving intervals must not get an extra zero row."""
+        from homeassistant.util import dt as dt_util
+
+        day = date(2026, 6, 29)
+        slot = dt_util.as_utc(dt_util.start_of_local_day(day)) + timedelta(hours=3)
+        coord = _make_coordinator(hass)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+        ):
+            await coord._import_generation(
+                [_make_interval(slot, kwh=1.0)], fetched_days=[day]
+            )
+
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert len(gen_stats) == 1  # the real hour only, no marker row
+
+    async def test_fetch_range_marks_zero_days_but_not_errored_days(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Successful-but-empty solar days count as fetched; errored days don't."""
+        from custom_components.haggle.agl.client import AGLError
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_hourly.return_value = []
+        mock_client.async_get_solar_hourly.side_effect = [
+            [],  # day 1: success, zero export → marked
+            AGLError("HTTP 500"),  # day 2: errored → NOT marked, retried later
+            [],  # day 3: success → marked
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        day_range = (date(2026, 6, 27), date(2026, 6, 29))
+        with (
+            patch.object(
+                coord, "_import_generation", new_callable=AsyncMock
+            ) as mock_gen,
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
+            await coord._fetch_range(day_range, day_range, None)
+
+        mock_gen.assert_called_once()
+        assert mock_gen.call_args.kwargs["fetched_days"] == [
+            date(2026, 6, 27),
+            date(2026, 6, 29),
+        ]
+
     async def test_fetch_range_solar_range_fetches_solar_endpoint(
         self, hass: HomeAssistant
     ) -> None:
@@ -1420,7 +1509,10 @@ class TestSolarGeneration:
 
         bill_start = date(2026, 6, 29)
         day_range = (date(2026, 6, 28), date(2026, 6, 29))
-        with patch("asyncio.sleep", new=AsyncMock()):
+        with (
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
             await coord._fetch_range(day_range, day_range, bill_start)
 
         calls = mock_client.async_get_solar_hourly.call_args_list
@@ -1459,7 +1551,10 @@ class TestSolarGeneration:
 
         cons_range = (date(2026, 6, 27), date(2026, 6, 29))
         solar_range = (date(2026, 6, 1), date(2026, 6, 3))
-        with patch("asyncio.sleep", new=AsyncMock()):
+        with (
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch("asyncio.sleep", new=AsyncMock()),
+        ):
             await coord._fetch_range(cons_range, solar_range, None)
 
         cons_days = [c[0][1] for c in mock_client.async_get_usage_hourly.call_args_list]

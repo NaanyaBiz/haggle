@@ -54,6 +54,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ~23 days of the 30-day backfill never arrived. Each series now resolves its
   own chunked fetch range from its own resume point; disjoint ranges skip the
   other series' days (no extra load on AGL's BFF).
+- **Zero-export days no longer stall the solar backfill.** A successfully
+  fetched day whose feed-in intervals are all zero (cloudy day, or a solar
+  system newer than the 30-day backfill floor) now writes a single
+  zero-delta marker row so the generation resume point advances; previously
+  a full chunk of such days was refetched forever and the period sensors
+  never unlocked. Found by Codex review on the beta.2 PR.
 - `tests/fixtures/solar_hourly_response.json` replaced with the tester's real
   full-day capture (48 slots, 11 non-zero export slots, mixed
   `normal`/`peak` feedIn types); reconciliation totals are locked in as

@@ -57,6 +57,8 @@ from .const import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
@@ -609,6 +611,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             return
         all_intervals: list[IntervalReading] = []
         solar_intervals: list[IntervalReading] = []
+        fetched_solar_days: list[date] = []
         current = min(r[0] for r in ranges)
         loop_end = max(r[1] for r in ranges)
         first = True
@@ -633,19 +636,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 if not first:
                     await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
                 first = False
-                solar_readings = await self._fetch_day_solar(current, previous)
-                if solar_readings is None:  # rate-limited
+                try:
+                    solar_readings = await self._fetch_day_solar(current, previous)
+                except AGLRateLimitError as err:
+                    _LOGGER.warning(
+                        "AGL rate-limited at %s (solar); halting backfill chunk: %s",
+                        current,
+                        err,
+                    )
                     rate_limited = True
                 else:
-                    solar_intervals.extend(solar_readings)
+                    if solar_readings is not None:
+                        solar_intervals.extend(solar_readings)
+                        # Only a *successful* fetch marks the day as covered —
+                        # an errored day must stay unmarked so it is retried.
+                        fetched_solar_days.append(current)
             current += timedelta(days=1)
 
         if all_intervals:
             await self._import_intervals(all_intervals, known_bands=known_bands)
         # Partial solar batches import too — idempotent, and the trailing
         # rewindow re-fetches the last REWINDOW_DAYS so short gaps self-heal.
-        if solar_intervals:
-            await self._import_generation(solar_intervals)
+        # fetched_solar_days matters even with zero intervals: an all-zero
+        # export day must still advance the generation resume point.
+        if solar_intervals or fetched_solar_days:
+            await self._import_generation(
+                solar_intervals, fetched_days=fetched_solar_days
+            )
         # If no intervals were fetched (e.g. AGL had no data for the whole
         # range), leave the cumulative seeds as the caller set them — the
         # most recent stored cumulative remains the sensor value.
@@ -676,19 +693,21 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     async def _fetch_day_solar(
         self, day: date, previous: bool
     ) -> list[IntervalReading] | None:
-        """Fetch one day of solar feed-in intervals (same contract as above)."""
+        """Fetch one day of solar feed-in intervals (same contract as above).
+
+        Returns None on a skippable AGLError so the caller does NOT count the
+        day as fetched (no zero-marker row → the day is retried next cycle).
+        AGLRateLimitError propagates so the caller halts the whole chunk.
+        """
         try:
             return await self.client.async_get_solar_hourly(
                 self.contract_number, day, previous=previous
             )
-        except AGLRateLimitError as err:
-            _LOGGER.warning(
-                "AGL rate-limited at %s (solar); halting backfill chunk: %s", day, err
-            )
-            return None
+        except AGLRateLimitError:
+            raise
         except AGLError as err:
             _LOGGER.debug("Solar fetch skip %s: %s", day, err)
-            return []
+            return None
 
     @staticmethod
     def _bucket_hourly(
@@ -879,7 +898,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         return running
 
-    async def _import_generation(self, intervals: list[IntervalReading]) -> None:
+    async def _import_generation(
+        self,
+        intervals: list[IntervalReading],
+        *,
+        fetched_days: Iterable[date] = (),
+    ) -> None:
         """Aggregate solar feed-in intervals to hourly and push to statistics.
 
         Writes haggle:generation_<contract> (exported kWh, unit_class="energy"
@@ -887,6 +911,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         haggle:generation_credit_<contract> (AUD feed-in credit). Uses the same
         earliest-fetched-hour baseline cutoff as the consumption import — see
         _import_intervals for why a fetch_start-derived UTC midnight is wrong.
+
+        A successfully fetched day whose intervals all filtered out (zero
+        export: cloudy day, or a solar system newer than the backfill floor)
+        still gets ONE zero-delta marker row at the hour of local midnight so
+        the generation resume point advances. Without it the backfill would
+        refetch the same all-zero chunk forever and the bill-period sensors
+        would never unlock (Codex review, PR #144). An AEMO-lag placeholder
+        day marked this way self-heals: the trailing rewindow re-fetches the
+        last REWINDOW_DAYS and the idempotent import overwrites the marker
+        (data lag is 24-48 h, well inside the window).
         """
         from homeassistant.const import UnitOfEnergy
 
@@ -896,6 +930,19 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             h = r.dt.replace(minute=0, second=0, microsecond=0)
             hour_kwh[h] = hour_kwh.get(h, 0.0) + r.kwh
             hour_credit[h] = hour_credit.get(h, 0.0) + r.cost_aud
+
+        for day in fetched_days:
+            day_start = dt_util.start_of_local_day(day)
+            day_end = day_start + timedelta(days=1)
+            if any(day_start <= h < day_end for h in hour_kwh):
+                continue
+            # Floor to the hour: half-hour zones (ACST) have local midnight at
+            # :30 past a UTC hour, and statistics rows start on the hour.
+            marker = dt_util.as_utc(day_start).replace(
+                minute=0, second=0, microsecond=0
+            )
+            hour_kwh.setdefault(marker, 0.0)
+            hour_credit.setdefault(marker, 0.0)
 
         if not hour_kwh:
             return
