@@ -1,0 +1,52 @@
+# Diagnostics
+
+Haggle supports Home Assistant's built-in diagnostics download. When filing a
+bug, attaching this file answers most triage questions (versions, plan type,
+solar, backfill state, timezone) in one step.
+
+## How to download
+
+**Settings → Devices & Services → Haggle → ⋮ (three-dot menu) →
+Download diagnostics.** Drag the resulting `.json` file into the
+"Diagnostics file" box of the
+[bug report form](https://github.com/NaanyaBiz/haggle/issues/new?template=bug.yml).
+
+## What is (and isn't) in the file
+
+The file is built to be posted publicly:
+
+| Data | Treatment |
+|---|---|
+| AGL refresh token | **Redacted** (`**REDACTED**`) — never included. |
+| Account number / contract number | **Never included.** Replaced everywhere (including inside statistic IDs and the entry unique_id) by stable anonymous references like `anon-3f9c2a81d0`. The same install always produces the same reference, so repeat reports correlate, but the reference cannot be reversed to the number. |
+| TLS SPKI pins | Reduced to presence booleans (`pin_present_auth` / `pin_present_bff`). |
+| Usage figures, rates, tariff bands, solar flags, timestamps | Included — they are the diagnostic payload and are not personally identifying. |
+| HA core / Python / OS versions | Added automatically by Home Assistant's diagnostics wrapper (`home_assistant` block). |
+
+## Schema v1 field reference
+
+For the automated triage routine and maintainers. The integration's payload
+is under the standard HA wrapper's `"data"` key. `schema_version` gates
+parsing — if it is missing or greater than the version documented here,
+fall back to treating the file as opaque JSON.
+
+| Field | Meaning | Diagnostic signal |
+|---|---|---|
+| `schema_version` | Payload shape contract (currently `1`). | Gate parsing on it. |
+| `integration.version` | Installed Haggle version. | Satisfies the "Haggle version" triage check. |
+| `contract_ref` / `account_ref` | Stable anonymous install identifiers. | Correlate multiple reports from the same install. |
+| `timezone` | HA's configured timezone. | Midnight-spike / wrong-day class of bugs are timezone-sensitive. |
+| `entry.pin_present_auth` / `entry.pin_present_bff` | TOFU TLS pins captured? | `false` on both → entry predates pinning or Reconfigure never ran. |
+| `coordinator.last_update_success` | Did the most recent poll succeed? | `false` → look at auth/network before data-shape theories. |
+| `coordinator.has_solar` | AGL reports solar on the contract. | `false` + a solar complaint → overview flag problem, not statistics. |
+| `coordinator.active_tou_bands` | ToU bands with stored statistics. | Empty on a self-described ToU account → interval tagging or plan problem. |
+| `coordinator.data.*` | Latest `HaggleData` snapshot (period totals, rates, cumulative sums, solar period values). | `generation_period_kwh: null` with solar → generation backfill not caught up yet (expected for ~4 cycles after install/upgrade). |
+| `statistics.<series>.last_date` | Most recent day imported per statistics series. | More than ~3 days behind today → fetch stall (rate limit, auth, or zero-day stall classes). A missing series that should exist → that feature never started. |
+| `statistics.<series>.last_sum` | Cumulative sum at the resume point. | Sudden mismatch vs. sensor values → baseline corruption class. |
+
+The `<series>` keys are the real statistic IDs with the contract number
+replaced by `contract_ref` — e.g. `haggle:consumption_anon-3f9c2a81d0`.
+
+**When the shape changes:** bump `DIAGNOSTICS_SCHEMA_VERSION` in
+`custom_components/haggle/diagnostics.py` and update this table in the same
+PR.

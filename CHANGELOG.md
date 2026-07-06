@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Diagnostics platform** (`diagnostics.py`): the integration card now has a
+  **Download diagnostics** button producing an anonymized JSON for bug
+  reports — refresh token redacted; account/contract numbers replaced
+  everywhere (statistic IDs and unique_id included) by stable `anon-…`
+  references; SPKI pins reduced to booleans. Payload carries integration
+  version, timezone, coordinator state (plan type, ToU bands, solar flags,
+  period totals), and per-series statistics resume state, versioned by
+  `schema_version` (see `docs/diagnostics.md`). The bug-report form now asks
+  for the file, and the automated triage routine parses it when attached.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from

@@ -49,6 +49,7 @@ custom_components/haggle/
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
+├── diagnostics.py       # anonymized config-entry diagnostics (schema v1) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
 ├── agl/
@@ -79,7 +80,11 @@ tests/
 ├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, _safe_float
 ├── test_pinning.py                  # SPKI extraction + host-name guards
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
-└── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
+├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
+└── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
+
+docs/
+└── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
@@ -499,6 +504,15 @@ The HA Energy dashboard requires:
   series and flat-rate users to add only the aggregate. When adding a new per-tariff series,
   always emit the `normal`/anytime band too (`TOU_SERIES_TARIFFS`) so the partition is
   complete and no kWh silently vanishes from the breakdown.
+- **Never add a diagnostics field without routing it through the scrub pass**
+  (`diagnostics.py::_scrub`). Diagnostics files are attached to public GitHub
+  issues — assume every field will be public. Account/contract numbers hide
+  inside composite strings (statistic IDs, display names, `unique_id`), which
+  is exactly what the final scrub pass exists to catch; the leak tests in
+  `tests/test_diagnostics.py` serialize the whole payload and assert the raw
+  values never appear. When the payload shape changes, bump
+  `DIAGNOSTICS_SCHEMA_VERSION` and update `docs/diagnostics.md` in the same PR
+  (the triage routine parses by that contract).
 - **No committing directly to `main`** — the `guard-main-branch` hook blocks it.
   Use a feature branch + PR.
 - **No mutable GitHub Action refs** — pin every `uses: owner/action@…` to a
