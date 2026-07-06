@@ -39,7 +39,7 @@ not for the Energy dashboard:
 | **Unit rate / Supply charge** | Your plan's c/kWh (as AUD/kWh) and daily supply charge. |
 | **Unit rate (peak / off-peak / shoulder)** | Per-band rates — ToU contracts only. |
 | **Solar generation / Solar feed-in credit** | Cumulative exported kWh / credited AUD ever imported — solar contracts only. Like **Consumption**, these are running totals: do not compare them to the app's billing-period tile. |
-| **Solar sold this period / Solar feed-in credit this period** | Exported kWh / credited AUD in the current billing period — these are the numbers that match the AGL app's "Sold To Grid" tile. |
+| **Solar sold this period / Solar feed-in credit this period** | Exported kWh / credited AUD in the current billing period — these are the numbers that match the AGL app's "Sold To Grid" tile. Caveat: on **quarterly billing**, a period that started more than 30 days ago predates the backfill window, so these cover only the stored 30-day history and will read lower than the app until a new period starts. |
 | **Solar feed-in rate** | Your feed-in tariff in AUD/kWh. |
 
 ## Data timing — what "normal" looks like
@@ -73,6 +73,8 @@ Compare like with like: the *period* sensors match the app's billing-period
 tile; the Energy dashboard's daily "Return to grid" bars match the app's
 daily solar view. The cumulative **Solar generation** sensor is a running
 total over all imported history and will never match a billing-period figure.
+On quarterly billing the period sensors under-read once the billing period is
+older than the 30-day backfill window (see the glossary above).
 
 **Recent days are missing.**
 Expected — 24–48 h feed lag. If a day is still missing after 3 days, check
