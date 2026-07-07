@@ -81,6 +81,9 @@ tests/
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
 └── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 
+docs/
+└── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
+
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
 └── validate_manifest.py # used by the validate-manifest Claude hook
