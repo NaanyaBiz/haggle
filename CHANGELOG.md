@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Solar generation: heal a **leading hole** in the generation statistics for
+  contracts upgraded from beta.1 (#128). Beta.1 seeded the generation series
+  from the *consumption* resume point, so on a caught-up install solar imported
+  only the trailing `REWINDOW_DAYS` and the older billing-period days were never
+  fetched — `_resolve_fetch_start` keys off the series' last row and never
+  revisits them, permanently stranding (for the reporter) 24–27 June (~27 kWh)
+  and making *Solar sold this period* undercount the AGL app. The coordinator
+  now detects a leading hole (earliest stored row well after the backfill floor)
+  and re-imports the full window in one contiguous batch via the existing hourly
+  endpoint, so the cumulative chain is recomputed from a correct baseline. The
+  heal is a one-time repair whose progress is recorded in the config entry
+  (`solar_heal` = `{state, floor, attempts}`): the backfill floor is **frozen**
+  when the heal starts so a rate-limited retry re-fetches the same window
+  instead of sliding forward and dropping its oldest day; it stays *pending* —
+  retrying — while any day was skipped (429 or a transient AGL error), up to a
+  few attempts, then *done* and never re-runs, so an interrupted heal finishes
+  and a permanently-erroring old day can't wedge it or re-sweep every poll.
+  Bill-period solar totals are suppressed for a heal cycle (avoiding a transient
+  over-read while the rewritten rows are still queued). Fresh installs and
+  flat/ToU/non-solar contracts are unaffected.
+
 ### Documentation
 
 - **Energy dashboard setup guide** (`docs/energy-dashboard.md`): which

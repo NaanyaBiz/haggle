@@ -135,6 +135,21 @@ CONF_ACCOUNT_NUMBER: Final = "account_number"
 # = no pin yet (older entries pre-PR4 / capture failed at install time).
 CONF_PINNED_SPKI_AUTH: Final = "pinned_spki_auth"  # secure.agl.com.au
 CONF_PINNED_SPKI_BFF: Final = "pinned_spki_bff"  # api.platform.agl.com.au
+# One-time solar generation leading-hole heal (#128). Stored as a record:
+#   {"state": "pending"|"done", "floor": "YYYY-MM-DD", "attempts": int}
+# Absent = never attempted. "pending" = a full-window re-import is in progress;
+# the `floor` is frozen when the heal starts so a 429-interrupted retry re-fetches
+# the SAME window instead of sliding forward and dropping its oldest day (Codex
+# P2 on #150). "done" = the heal has run and must never re-arm (so an unfetchable
+# permanent leading gap is not re-swept every poll). A sweep that leaves any day
+# skipped (429 or transient AGL 5xx) stays pending and retries, up to
+# MAX_SOLAR_HEAL_ATTEMPTS sweeps, then gives up to "done" so a permanently-erroring
+# old day can't wedge the heal forever (matches _fetch_day_solar's accepted
+# rare-hole tradeoff).
+CONF_SOLAR_HEAL: Final = "solar_heal"
+SOLAR_HEAL_PENDING: Final = "pending"
+SOLAR_HEAL_DONE: Final = "done"
+MAX_SOLAR_HEAL_ATTEMPTS: Final = 3
 
 # Coordinator data attribute names — must match HaggleData field names exactly.
 DATA_CONSUMPTION_KWH: Final = "latest_cumulative_kwh"  # TOTAL_INCREASING sensor

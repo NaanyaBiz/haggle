@@ -364,6 +364,31 @@ and each item carries **both** a `consumption` block and a shape-identical
   into solar support) backfills generation from the 30-day floor without
   re-fetching consumption days; the app-matching bill-period sensors stay
   `unknown` until the generation series reaches the trailing rewindow.
+- **Leading-hole heal** (beta.3, #128): beta.1 seeded the generation series
+  from the *consumption* resume point, so a caught-up beta.1 upgrader got only
+  the trailing `REWINDOW_DAYS` of solar — a permanent hole before that, which
+  the per-series resume (keyed off the *last* row) never revisits. `_plan_solar_fetch`
+  detects it (`_generation_needs_heal`: earliest stored row well past the floor)
+  and re-imports the FULL `floor..yesterday` window in one contiguous batch so
+  `_emit_series` rebuilds the whole cumulative chain from a correct baseline (a
+  partial fill would step the sum down — #114 class). Progress is **persisted**
+  in `entry.data[CONF_SOLAR_HEAL]` as a record `{state, floor, attempts}`, not
+  inferred. The `floor` is **frozen** when the heal starts — the pending record
+  is written BEFORE the multi-second fetch (in `_plan_solar_fetch`, via
+  `_write_solar_heal`) so an HA restart mid-heal resumes the same window rather
+  than recomputing the floor from a later `today` — and re-read from the pending
+  record each retry, so it can't slide forward and drop the oldest day (Codex
+  P2, passes 2 and 3). `_fetch_range` returns `False` if a 429
+  halted it **or any solar day was skipped** by a transient AGL error
+  (`_fetch_solar_day_into` → `"skip"`), so the heal stays `SOLAR_HEAL_PENDING`
+  and retries the frozen window rather than declaring done with a hole (Codex
+  P1). After `MAX_SOLAR_HEAL_ATTEMPTS` incomplete sweeps it gives up to
+  `SOLAR_HEAL_DONE` so a permanently-erroring old day can't wedge the heal or
+  re-sweep every poll (Codex P3; matches `_fetch_day_solar`'s accepted rare-hole
+  tradeoff). Once `SOLAR_HEAL_DONE` it **never re-arms**. Bill-period solar
+  totals are suppressed for a heal cycle (the rewritten pre-`bill_start` rows are
+  still queued, so a live baseline read would transiently over-count). Written
+  like the rotated refresh token — no reload listener fires.
 - The beta.1 "numbers don't match" report (#128) was a **window artifact** —
   a cumulative-since-backfill sensor compared against the app's
   billing-period tile — not a field bug. When validating against the app,
@@ -583,6 +608,28 @@ The HA Energy dashboard requires:
   Fixed v0.3.0 → confirmed against the live recorder: 8 phantom spikes at
   `T14:00Z` (AEST local midnight) of 10–27 kWh each, including in the ToU
   `consumption_normal` series.
+- **Don't track heal (or any multi-cycle repair) completion by inferring it
+  from the statistics themselves.** The solar leading-hole heal first shipped
+  "stateless" — re-detecting a leading hole / downward sum-step each cycle. Both
+  proxies leak: a 429 that halts a heal after its markers reach the floor but
+  before the real days complete leaves a monotonic-but-incomplete chain that
+  neither proxy flags (permanent undercount), and a *legitimately* unfetchable
+  leading gap (pre-solar days that HTTP-error rather than return empty) keeps the
+  leading-hole check true forever → a 30-day fetch burst every poll. Track
+  completion explicitly in `entry.data` and suppress bill-period totals during
+  the heal cycle (the rewritten pre-`bill_start` rows are still queued in the
+  recorder, so a live baseline read over-counts). Two more edge cases surfaced
+  on the second Codex pass, both from the completion signal being too coarse:
+  (a) recomputing the heal `floor` from `today` each retry slides it forward, so
+  a 429-interrupted heal drops its oldest day — **freeze the floor** in the
+  persisted record and re-read it on retry; (b) a day skipped by a transient
+  non-429 AGL error (`_fetch_day_solar` → `None`) still let the sweep report
+  "complete" — count **any** skipped solar day as incomplete so the heal
+  retries, but **bound the retries** (`MAX_SOLAR_HEAL_ATTEMPTS`) so a
+  permanently-erroring old date gives up gracefully instead of wedging pending
+  forever. The persisted heal is therefore a record `{state, floor, attempts}`,
+  not a bare state string. First pass: Codex P1/P2/P3; second pass: the
+  floor-slide and skipped-day P2s — all on PR #150.
 
 ---
 
