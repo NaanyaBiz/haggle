@@ -23,8 +23,11 @@ from custom_components.haggle.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
+    CONF_SOLAR_HEAL_STATE,
     DOMAIN,
     REWINDOW_DAYS,
+    SOLAR_HEAL_DONE,
+    SOLAR_HEAL_PENDING,
     STAT_CONSUMPTION,
 )
 from custom_components.haggle.coordinator import HaggleCoordinator
@@ -2039,3 +2042,127 @@ class TestGenerationHeal:
 
         solar_range = mock_range.call_args[0][1]
         assert solar_range == (today - timedelta(days=REWINDOW_DAYS), yesterday)
+
+
+class TestGenerationHealState:
+    """The persisted heal state machine (Codex P1/P2/P3 on #150).
+
+    Completion is tracked in entry.data, not inferred from the sum chain: an
+    interrupted heal resumes until it finishes; a completed one never re-arms.
+    """
+
+    @staticmethod
+    def _solar_client() -> AsyncMock:
+        client = AsyncMock()
+        client.async_get_usage_summary.return_value = _empty_summary()
+        client.async_get_plan.return_value = _empty_plan()
+        client.async_get_overview.return_value = [_solar_contract()]
+        return client
+
+    async def _run(
+        self,
+        hass: HomeAssistant,
+        *,
+        preset: str | None = None,
+        needs_heal: bool = True,
+        fetch_complete: bool = True,
+    ) -> tuple[HaggleCoordinator, MagicMock, MagicMock, object]:
+        coord = _make_coordinator(hass, client=self._solar_client())
+        if preset is not None:
+            hass.config_entries.async_update_entry(
+                coord.config_entry,
+                data={**coord.config_entry.data, CONF_SOLAR_HEAL_STATE: preset},
+            )
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)  # consumption caught up
+            return (12.3, today - timedelta(days=8))  # generation seeded recent
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=needs_heal,
+            ) as mock_needs,
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(4.0, 1.0),
+            ),
+            patch.object(
+                coord,
+                "_fetch_range",
+                new_callable=AsyncMock,
+                return_value=fetch_complete,
+            ) as mock_range,
+        ):
+            data = await coord._fetch_and_import()
+        return coord, mock_range, mock_needs, data
+
+    async def test_completed_heal_marks_done(self, hass: HomeAssistant) -> None:
+        today = datetime.now(UTC).date()
+        coord, mock_range, _, _ = await self._run(hass, fetch_complete=True)
+        assert mock_range.call_args[0][1] == (
+            today - timedelta(days=BACKFILL_DAYS),
+            today - timedelta(days=1),
+        )
+        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_DONE
+
+    async def test_interrupted_heal_stays_pending(self, hass: HomeAssistant) -> None:
+        """A 429 mid-heal (_fetch_range → False) keeps the heal pending (P1)."""
+        coord, _, _, _ = await self._run(hass, fetch_complete=False)
+        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_PENDING
+
+    async def test_pending_resumes_without_redetection(
+        self, hass: HomeAssistant
+    ) -> None:
+        """PENDING resumes the full-window heal regardless of the detector — the
+        P1 fix: completion is tracked, not re-inferred (a partial fill the
+        stateless sum-step check would have missed still gets finished)."""
+        today = datetime.now(UTC).date()
+        coord, mock_range, mock_needs, _ = await self._run(
+            hass, preset=SOLAR_HEAL_PENDING, needs_heal=False, fetch_complete=True
+        )
+        mock_needs.assert_not_awaited()  # short-circuits on the pending state
+        assert mock_range.call_args[0][1] == (
+            today - timedelta(days=BACKFILL_DAYS),
+            today - timedelta(days=1),
+        )
+        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_DONE
+
+    async def test_done_never_rearms(self, hass: HomeAssistant) -> None:
+        """Once DONE, a still-present leading gap (needs_heal True) is NOT
+        re-swept — the P3 fix against an unfetchable permanent leading gap
+        re-bursting a 30-day fetch every poll."""
+        today = datetime.now(UTC).date()
+        coord, mock_range, _, _ = await self._run(
+            hass, preset=SOLAR_HEAL_DONE, needs_heal=True
+        )
+        # Not the heal window: a normal trailing chunk, never starting at floor.
+        assert mock_range.call_args[0][1][0] != today - timedelta(days=BACKFILL_DAYS)
+        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_DONE
+
+    async def test_period_totals_suppressed_during_heal(
+        self, hass: HomeAssistant
+    ) -> None:
+        """The heal rewrites rows behind bill_start this cycle, so the period
+        totals are suppressed (→ sensor `unknown`) to avoid a one-cycle over-read
+        from a stale queued baseline (P2), even though the totals helper returns
+        numbers."""
+        _, _, _, data = await self._run(hass, needs_heal=True)
+        assert data.generation_period_kwh is None
+        assert data.generation_period_credit_aud is None
+
+    async def test_period_totals_reported_when_not_healing(
+        self, hass: HomeAssistant
+    ) -> None:
+        _, _, _, data = await self._run(hass, preset=SOLAR_HEAL_DONE, needs_heal=True)
+        assert data.generation_period_kwh == 4.0
+        assert data.generation_period_credit_aud == 1.0

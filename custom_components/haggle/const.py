@@ -135,6 +135,13 @@ CONF_ACCOUNT_NUMBER: Final = "account_number"
 # = no pin yet (older entries pre-PR4 / capture failed at install time).
 CONF_PINNED_SPKI_AUTH: Final = "pinned_spki_auth"  # secure.agl.com.au
 CONF_PINNED_SPKI_BFF: Final = "pinned_spki_bff"  # api.platform.agl.com.au
+# One-time solar generation leading-hole heal (#128). Absent = never attempted;
+# "pending" = a full-window re-import is in progress (retried until it completes
+# without a 429); "done" = the one-time heal has run and must never re-arm (so an
+# unfetchable permanent leading gap is not re-swept every poll).
+CONF_SOLAR_HEAL_STATE: Final = "solar_heal_state"
+SOLAR_HEAL_PENDING: Final = "pending"
+SOLAR_HEAL_DONE: Final = "done"
 
 # Coordinator data attribute names — must match HaggleData field names exactly.
 DATA_CONSUMPTION_KWH: Final = "latest_cumulative_kwh"  # TOTAL_INCREASING sensor
