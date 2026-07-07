@@ -371,15 +371,21 @@ and each item carries **both** a `consumption` block and a shape-identical
   detects it (`_generation_needs_heal`: earliest stored row well past the floor)
   and re-imports the FULL `floor..yesterday` window in one contiguous batch so
   `_emit_series` rebuilds the whole cumulative chain from a correct baseline (a
-  partial fill would step the sum down — #114 class). Completion is **persisted**
-  in `entry.data[CONF_SOLAR_HEAL_STATE]`, not inferred: it stays
-  `SOLAR_HEAL_PENDING` (`_fetch_range` returns `False` on a 429, so the heal
-  retries next cycle) until a sweep reaches yesterday cleanly, then
-  `SOLAR_HEAL_DONE` and **never re-arms** (so an unfetchable permanent leading
-  gap isn't re-swept every poll). Bill-period solar totals are suppressed for
-  the heal cycle (the rewritten pre-`bill_start` rows are still queued, so a
-  live baseline read would transiently over-count). Written like the rotated
-  refresh token — no reload listener fires.
+  partial fill would step the sum down — #114 class). Progress is **persisted**
+  in `entry.data[CONF_SOLAR_HEAL]` as a record `{state, floor, attempts}`, not
+  inferred. The `floor` is **frozen** when the heal starts and re-read from the
+  pending record each retry, so a `today`-recomputed floor can't slide forward
+  and drop the oldest day (Codex P2). `_fetch_range` returns `False` if a 429
+  halted it **or any solar day was skipped** by a transient AGL error
+  (`_fetch_solar_day_into` → `"skip"`), so the heal stays `SOLAR_HEAL_PENDING`
+  and retries the frozen window rather than declaring done with a hole (Codex
+  P1). After `MAX_SOLAR_HEAL_ATTEMPTS` incomplete sweeps it gives up to
+  `SOLAR_HEAL_DONE` so a permanently-erroring old day can't wedge the heal or
+  re-sweep every poll (Codex P3; matches `_fetch_day_solar`'s accepted rare-hole
+  tradeoff). Once `SOLAR_HEAL_DONE` it **never re-arms**. Bill-period solar
+  totals are suppressed for a heal cycle (the rewritten pre-`bill_start` rows are
+  still queued, so a live baseline read would transiently over-count). Written
+  like the rotated refresh token — no reload listener fires.
 - The beta.1 "numbers don't match" report (#128) was a **window artifact** —
   a cumulative-since-backfill sensor compared against the app's
   billing-period tile — not a field bug. When validating against the app,
@@ -607,11 +613,20 @@ The HA Energy dashboard requires:
   neither proxy flags (permanent undercount), and a *legitimately* unfetchable
   leading gap (pre-solar days that HTTP-error rather than return empty) keeps the
   leading-hole check true forever → a 30-day fetch burst every poll. Track
-  completion explicitly in `entry.data` (`SOLAR_HEAL_PENDING`→`SOLAR_HEAL_DONE`,
-  driven by whether `_fetch_range` reached the end without a 429) and suppress
-  bill-period totals during the heal cycle (the rewritten pre-`bill_start` rows
-  are still queued in the recorder, so a live baseline read over-counts). These
-  three were Codex P1/P3/P2 on PR #150.
+  completion explicitly in `entry.data` and suppress bill-period totals during
+  the heal cycle (the rewritten pre-`bill_start` rows are still queued in the
+  recorder, so a live baseline read over-counts). Two more edge cases surfaced
+  on the second Codex pass, both from the completion signal being too coarse:
+  (a) recomputing the heal `floor` from `today` each retry slides it forward, so
+  a 429-interrupted heal drops its oldest day — **freeze the floor** in the
+  persisted record and re-read it on retry; (b) a day skipped by a transient
+  non-429 AGL error (`_fetch_day_solar` → `None`) still let the sweep report
+  "complete" — count **any** skipped solar day as incomplete so the heal
+  retries, but **bound the retries** (`MAX_SOLAR_HEAL_ATTEMPTS`) so a
+  permanently-erroring old date gives up gracefully instead of wedging pending
+  forever. The persisted heal is therefore a record `{state, floor, attempts}`,
+  not a bare state string. First pass: Codex P1/P2/P3; second pass: the
+  floor-slide and skipped-day P2s — all on PR #150.
 
 ---
 

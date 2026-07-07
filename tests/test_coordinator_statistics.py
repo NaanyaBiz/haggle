@@ -23,8 +23,9 @@ from custom_components.haggle.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
-    CONF_SOLAR_HEAL_STATE,
+    CONF_SOLAR_HEAL,
     DOMAIN,
+    MAX_SOLAR_HEAL_ATTEMPTS,
     REWINDOW_DAYS,
     SOLAR_HEAL_DONE,
     SOLAR_HEAL_PENDING,
@@ -2063,7 +2064,7 @@ class TestGenerationHealState:
         self,
         hass: HomeAssistant,
         *,
-        preset: str | None = None,
+        preset: dict | None = None,
         needs_heal: bool = True,
         fetch_complete: bool = True,
     ) -> tuple[HaggleCoordinator, MagicMock, MagicMock, object]:
@@ -2071,7 +2072,7 @@ class TestGenerationHealState:
         if preset is not None:
             hass.config_entries.async_update_entry(
                 coord.config_entry,
-                data={**coord.config_entry.data, CONF_SOLAR_HEAL_STATE: preset},
+                data={**coord.config_entry.data, CONF_SOLAR_HEAL: preset},
             )
         today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
@@ -2106,6 +2107,10 @@ class TestGenerationHealState:
             data = await coord._fetch_and_import()
         return coord, mock_range, mock_needs, data
 
+    @staticmethod
+    def _heal(coord: HaggleCoordinator) -> dict:
+        return coord.config_entry.data.get(CONF_SOLAR_HEAL) or {}
+
     async def test_completed_heal_marks_done(self, hass: HomeAssistant) -> None:
         today = datetime.now(UTC).date()
         coord, mock_range, _, _ = await self._run(hass, fetch_complete=True)
@@ -2113,29 +2118,74 @@ class TestGenerationHealState:
             today - timedelta(days=BACKFILL_DAYS),
             today - timedelta(days=1),
         )
-        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_DONE
+        assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
 
     async def test_interrupted_heal_stays_pending(self, hass: HomeAssistant) -> None:
-        """A 429 mid-heal (_fetch_range → False) keeps the heal pending (P1)."""
-        coord, _, _, _ = await self._run(hass, fetch_complete=False)
-        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_PENDING
-
-    async def test_pending_resumes_without_redetection(
-        self, hass: HomeAssistant
-    ) -> None:
-        """PENDING resumes the full-window heal regardless of the detector — the
-        P1 fix: completion is tracked, not re-inferred (a partial fill the
-        stateless sum-step check would have missed still gets finished)."""
+        """A 429/skip mid-heal (_fetch_range → False) keeps the heal pending and
+        bumps the attempt count, freezing the floor for the retry (Codex P1/P2)."""
         today = datetime.now(UTC).date()
+        coord, _, _, _ = await self._run(hass, fetch_complete=False)
+        heal = self._heal(coord)
+        assert heal["state"] == SOLAR_HEAL_PENDING
+        assert heal["attempts"] == 1
+        assert heal["floor"] == (today - timedelta(days=BACKFILL_DAYS)).isoformat()
+
+    async def test_pending_resumes_from_frozen_floor(self, hass: HomeAssistant) -> None:
+        """PENDING resumes the full-window heal from the FROZEN floor regardless
+        of the detector (Codex P1/P2): the retry re-fetches the same window, not a
+        today-recomputed one that would slide off the oldest day."""
+        today = datetime.now(UTC).date()
+        frozen_floor = today - timedelta(days=25)  # deliberately != today-30
         coord, mock_range, mock_needs, _ = await self._run(
-            hass, preset=SOLAR_HEAL_PENDING, needs_heal=False, fetch_complete=True
+            hass,
+            preset={
+                "state": SOLAR_HEAL_PENDING,
+                "floor": frozen_floor.isoformat(),
+                "attempts": 1,
+            },
+            needs_heal=False,
+            fetch_complete=True,
         )
         mock_needs.assert_not_awaited()  # short-circuits on the pending state
-        assert mock_range.call_args[0][1] == (
-            today - timedelta(days=BACKFILL_DAYS),
-            today - timedelta(days=1),
+        assert mock_range.call_args[0][1] == (frozen_floor, today - timedelta(days=1))
+        assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
+
+    async def test_frozen_floor_preserved_across_retry(
+        self, hass: HomeAssistant
+    ) -> None:
+        """An interrupted retry keeps the same frozen floor (not today-recomputed)
+        and increments attempts."""
+        today = datetime.now(UTC).date()
+        frozen_floor = today - timedelta(days=25)
+        coord, _, _, _ = await self._run(
+            hass,
+            preset={
+                "state": SOLAR_HEAL_PENDING,
+                "floor": frozen_floor.isoformat(),
+                "attempts": 1,
+            },
+            fetch_complete=False,
         )
-        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_DONE
+        heal = self._heal(coord)
+        assert heal["state"] == SOLAR_HEAL_PENDING
+        assert heal["floor"] == frozen_floor.isoformat()  # unchanged
+        assert heal["attempts"] == 2
+
+    async def test_gives_up_after_max_attempts(self, hass: HomeAssistant) -> None:
+        """A permanently-erroring day can't wedge the heal: after
+        MAX_SOLAR_HEAL_ATTEMPTS incomplete sweeps it gives up to DONE (Codex P3)."""
+        today = datetime.now(UTC).date()
+        frozen_floor = today - timedelta(days=25)
+        coord, _, _, _ = await self._run(
+            hass,
+            preset={
+                "state": SOLAR_HEAL_PENDING,
+                "floor": frozen_floor.isoformat(),
+                "attempts": MAX_SOLAR_HEAL_ATTEMPTS - 1,
+            },
+            fetch_complete=False,
+        )
+        assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
 
     async def test_done_never_rearms(self, hass: HomeAssistant) -> None:
         """Once DONE, a still-present leading gap (needs_heal True) is NOT
@@ -2143,11 +2193,11 @@ class TestGenerationHealState:
         re-bursting a 30-day fetch every poll."""
         today = datetime.now(UTC).date()
         coord, mock_range, _, _ = await self._run(
-            hass, preset=SOLAR_HEAL_DONE, needs_heal=True
+            hass, preset={"state": SOLAR_HEAL_DONE}, needs_heal=True
         )
         # Not the heal window: a normal trailing chunk, never starting at floor.
         assert mock_range.call_args[0][1][0] != today - timedelta(days=BACKFILL_DAYS)
-        assert coord.config_entry.data.get(CONF_SOLAR_HEAL_STATE) == SOLAR_HEAL_DONE
+        assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
 
     async def test_period_totals_suppressed_during_heal(
         self, hass: HomeAssistant
@@ -2163,6 +2213,40 @@ class TestGenerationHealState:
     async def test_period_totals_reported_when_not_healing(
         self, hass: HomeAssistant
     ) -> None:
-        _, _, _, data = await self._run(hass, preset=SOLAR_HEAL_DONE, needs_heal=True)
+        _, _, _, data = await self._run(
+            hass, preset={"state": SOLAR_HEAL_DONE}, needs_heal=True
+        )
         assert data.generation_period_kwh == 4.0
         assert data.generation_period_credit_aud == 1.0
+
+    async def test_fetch_range_incomplete_when_solar_day_skipped(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A skipped solar day (transient AGL error → None) makes _fetch_range
+        report incomplete, so a heal retries it instead of declaring DONE with a
+        hole (Codex P1)."""
+        coord = _make_coordinator(hass)
+        day = datetime.now(UTC).date() - timedelta(days=10)
+        with (
+            patch.object(
+                coord, "_fetch_day_solar", new_callable=AsyncMock, return_value=None
+            ),
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+        ):
+            complete = await coord._fetch_range(None, (day, day), None)
+        assert complete is False
+
+    async def test_fetch_range_complete_when_solar_day_ok(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A cleanly-fetched (even empty) solar day reports complete."""
+        coord = _make_coordinator(hass)
+        day = datetime.now(UTC).date() - timedelta(days=10)
+        with (
+            patch.object(
+                coord, "_fetch_day_solar", new_callable=AsyncMock, return_value=[]
+            ),
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+        ):
+            complete = await coord._fetch_range(None, (day, day), None)
+        assert complete is True

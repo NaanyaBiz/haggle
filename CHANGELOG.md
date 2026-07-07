@@ -19,13 +19,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now detects a leading hole (earliest stored row well after the backfill floor)
   and re-imports the full window in one contiguous batch via the existing hourly
   endpoint, so the cumulative chain is recomputed from a correct baseline. The
-  heal is a one-time repair whose completion is recorded in the config entry
-  (`solar_heal_state`): it stays *pending* — retrying — until a sweep reaches
-  yesterday without a rate-limit, then *done* and never re-runs, so an
-  interrupted heal always finishes and an unfetchable permanent leading gap
-  isn't re-swept every poll. Bill-period solar totals are suppressed for the
-  one heal cycle (avoiding a transient over-read while the rewritten rows are
-  still queued). Fresh installs and flat/ToU/non-solar contracts are unaffected.
+  heal is a one-time repair whose progress is recorded in the config entry
+  (`solar_heal` = `{state, floor, attempts}`): the backfill floor is **frozen**
+  when the heal starts so a rate-limited retry re-fetches the same window
+  instead of sliding forward and dropping its oldest day; it stays *pending* —
+  retrying — while any day was skipped (429 or a transient AGL error), up to a
+  few attempts, then *done* and never re-runs, so an interrupted heal finishes
+  and a permanently-erroring old day can't wedge it or re-sweep every poll.
+  Bill-period solar totals are suppressed for a heal cycle (avoiding a transient
+  over-read while the rewritten rows are still queued). Fresh installs and
+  flat/ToU/non-solar contracts are unaffected.
 
 ### Documentation
 
