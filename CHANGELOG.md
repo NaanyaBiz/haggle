@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+---
+
+## [0.4.0-beta.3] — 2026-07-07
+
+> **Pre-release for community validation** (#128 round 3). Ships the solar
+> generation **leading-hole heal** for installs that upgraded through beta.1:
+> those seeded their generation series from only the trailing rewindow, so the
+> older billing-period days were never fetched and *Solar sold this period*
+> undercounted the AGL app. This build re-imports the full window once to
+> backfill them. If you upgraded from beta.1 on a solar contract, please
+> confirm *Solar sold this period* and the Energy dashboard "Return to grid"
+> bars line up with the app after a poll cycle or two.
+
 ### Fixed
 
 - Solar generation: heal a **leading hole** in the generation statistics for
@@ -42,15 +64,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard and Solar sections. `info.md` no longer tells users the
   cumulative Consumption sensor "fits the Grid consumption slot" — that
   instruction was the #137 footgun.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 
