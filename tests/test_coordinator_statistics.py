@@ -2111,6 +2111,49 @@ class TestGenerationHealState:
     def _heal(coord: HaggleCoordinator) -> dict:
         return coord.config_entry.data.get(CONF_SOLAR_HEAL) or {}
 
+    async def test_pending_persisted_before_fetch(self, hass: HomeAssistant) -> None:
+        """The frozen-floor pending record is written BEFORE the long fetch, so an
+        HA restart mid-heal resumes the same window (Codex P2, pass 3). Captured
+        by reading entry.data at the moment _fetch_range is entered."""
+        coord = _make_coordinator(hass, client=self._solar_client())
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+        seen: dict[str, object] = {}
+
+        async def _capture_fetch(*_a: object, **_k: object) -> bool:
+            seen["heal"] = coord.config_entry.data.get(CONF_SOLAR_HEAL)
+            return True
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, today - timedelta(days=8))
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", side_effect=_capture_fetch),
+        ):
+            await coord._fetch_and_import()
+
+        assert seen["heal"] == {
+            "state": SOLAR_HEAL_PENDING,
+            "floor": (today - timedelta(days=BACKFILL_DAYS)).isoformat(),
+            "attempts": 0,
+        }
+
     async def test_completed_heal_marks_done(self, hass: HomeAssistant) -> None:
         today = datetime.now(UTC).date()
         coord, mock_range, _, _ = await self._run(hass, fetch_complete=True)

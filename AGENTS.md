@@ -373,9 +373,12 @@ and each item carries **both** a `consumption` block and a shape-identical
   `_emit_series` rebuilds the whole cumulative chain from a correct baseline (a
   partial fill would step the sum down — #114 class). Progress is **persisted**
   in `entry.data[CONF_SOLAR_HEAL]` as a record `{state, floor, attempts}`, not
-  inferred. The `floor` is **frozen** when the heal starts and re-read from the
-  pending record each retry, so a `today`-recomputed floor can't slide forward
-  and drop the oldest day (Codex P2). `_fetch_range` returns `False` if a 429
+  inferred. The `floor` is **frozen** when the heal starts — the pending record
+  is written BEFORE the multi-second fetch (in `_plan_solar_fetch`, via
+  `_write_solar_heal`) so an HA restart mid-heal resumes the same window rather
+  than recomputing the floor from a later `today` — and re-read from the pending
+  record each retry, so it can't slide forward and drop the oldest day (Codex
+  P2, passes 2 and 3). `_fetch_range` returns `False` if a 429
   halted it **or any solar day was skipped** by a transient AGL error
   (`_fetch_solar_day_into` → `"skip"`), so the heal stays `SOLAR_HEAL_PENDING`
   and retries the frozen window rather than declaring done with a hole (Codex

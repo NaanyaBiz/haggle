@@ -542,11 +542,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         #114 class).
 
         Completion is tracked in entry.data, not inferred (Codex P1/P2/P3). The
-        `floor` is FROZEN when the heal starts and re-read from the pending record
-        on every retry, so a 429-interrupted heal re-fetches the same window
-        instead of sliding forward and dropping its oldest day. The heal stays
-        pending — retrying — until a sweep completes with no skipped day, then
-        goes done and never re-arms.
+        `floor` is FROZEN when the heal starts — persisted BEFORE the fetch (Codex
+        P2, pass 3) so an HA restart mid-heal resumes the same window instead of
+        recomputing it from a later `today` and dropping the oldest day — and
+        re-read from the pending record on every retry. The heal stays pending —
+        retrying — until a sweep completes with no skipped day, then goes done and
+        never re-arms.
         """
         heal = self.config_entry.data.get(CONF_SOLAR_HEAL) or {}
         state = heal.get("state")
@@ -556,6 +557,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 return (floor, yesterday), (floor, int(heal.get("attempts", 0)))
             floor = today - timedelta(days=BACKFILL_DAYS)
             if await self._generation_needs_heal(stat_id_gen, floor, today):
+                # Freeze the floor NOW, before the multi-second fetch, so a
+                # restart mid-heal survives with the window intact. A resume
+                # cycle already has this record, so this is a no-op then.
+                self._write_solar_heal(
+                    {
+                        "state": SOLAR_HEAL_PENDING,
+                        "floor": floor.isoformat(),
+                        "attempts": 0,
+                    }
+                )
                 return (floor, yesterday), (floor, 0)
         normal = self._chunked_range(
             self._resolve_fetch_start(today, last_gen_date), yesterday
@@ -590,10 +601,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 "floor": floor.isoformat(),
                 "attempts": attempts + 1,
             }
-        if self.config_entry.data.get(CONF_SOLAR_HEAL) != new:
+        self._write_solar_heal(new)
+
+    def _write_solar_heal(self, record: dict[str, object]) -> None:
+        """Persist the heal record to entry.data if changed (like the rotated
+        refresh token — no reload listener fires)."""
+        if self.config_entry.data.get(CONF_SOLAR_HEAL) != record:
             self.hass.config_entries.async_update_entry(
                 self.config_entry,
-                data={**self.config_entry.data, CONF_SOLAR_HEAL: new},
+                data={**self.config_entry.data, CONF_SOLAR_HEAL: record},
             )
 
     async def _generation_needs_heal(
