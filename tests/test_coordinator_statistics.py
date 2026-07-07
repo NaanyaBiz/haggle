@@ -1883,3 +1883,159 @@ class TestGenerationPeriodTotals:
             data = await coord._fetch_and_import()
 
         assert data.feed_in_rate_aud_per_kwh is None
+
+
+# ---------------------------------------------------------------------------
+# Leading-hole heal (#128 follow-up) — a generation series seeded only from the
+# trailing rewindow (beta.1 upgrade artifact) is re-imported from the floor.
+# ---------------------------------------------------------------------------
+
+
+def _ts(d: date) -> float:
+    """UTC-midnight unix timestamp for a date, matching the recorder's `start`."""
+    return datetime(d.year, d.month, d.day, tzinfo=UTC).timestamp()
+
+
+class TestGenerationHeal:
+    async def test_leading_hole_detected(self, hass: HomeAssistant) -> None:
+        """Earliest stored row well after the floor → heal needed."""
+        coord = _make_coordinator(hass)
+        stat_id_gen = coord._generation_stat_ids()[0]
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        # Rows only from the last 5 days: seeded from the trailing rewindow.
+        rows = {
+            stat_id_gen: [
+                {"start": _ts(today - timedelta(days=n)), "sum": float(10 - n)}
+                for n in range(5, 0, -1)
+            ]
+        }
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
+            assert await coord._generation_needs_heal(stat_id_gen, floor, today) is True
+
+    async def test_contiguous_from_floor_no_heal(self, hass: HomeAssistant) -> None:
+        """First row at the floor with a monotonic sum → no heal."""
+        coord = _make_coordinator(hass)
+        stat_id_gen = coord._generation_stat_ids()[0]
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        rows = {
+            stat_id_gen: [
+                {"start": _ts(floor + timedelta(days=n)), "sum": float(n)}
+                for n in range(BACKFILL_DAYS)
+            ]
+        }
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
+            assert (
+                await coord._generation_needs_heal(stat_id_gen, floor, today) is False
+            )
+
+    async def test_downward_sum_step_detected(self, hass: HomeAssistant) -> None:
+        """A downward step (interrupted heal) re-triggers even when rows reach
+        the floor — this is what makes the uncapped re-import 429-safe."""
+        coord = _make_coordinator(hass)
+        stat_id_gen = coord._generation_stat_ids()[0]
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        rows = {
+            stat_id_gen: [
+                {"start": _ts(floor), "sum": 5.0},
+                {"start": _ts(floor + timedelta(days=1)), "sum": 27.0},
+                {"start": _ts(floor + timedelta(days=2)), "sum": 3.0},  # step down
+            ]
+        }
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
+            assert await coord._generation_needs_heal(stat_id_gen, floor, today) is True
+
+    async def test_empty_series_no_heal(self, hass: HomeAssistant) -> None:
+        """No rows (fresh install) → normal backfill handles it, not a heal."""
+        coord = _make_coordinator(hass)
+        stat_id_gen = coord._generation_stat_ids()[0]
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance({})):
+            assert (
+                await coord._generation_needs_heal(stat_id_gen, floor, today) is False
+            )
+
+    async def test_leading_hole_triggers_full_window_reimport(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A needed heal makes solar_range span the FULL floor..yesterday window
+        (uncapped by the 7-day chunk) so the whole chain is rewritten in one
+        contiguous batch — a partial fill would step the sum down (#114 class)."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        mock_client.async_get_overview.return_value = [_solar_contract()]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        backfill_floor = today - timedelta(days=BACKFILL_DAYS)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)  # consumption caught up
+            return (12.3, today - timedelta(days=8))  # generation seeded recent
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        solar_range = mock_range.call_args[0][1]
+        assert solar_range == (backfill_floor, yesterday)
+
+    async def test_healthy_series_uses_normal_chunked_range(
+        self, hass: HomeAssistant
+    ) -> None:
+        """No heal needed → solar_range stays the normal trailing-rewindow chunk."""
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = _empty_summary()
+        mock_client.async_get_plan.return_value = _empty_plan()
+        mock_client.async_get_overview.return_value = [_solar_contract()]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(12.3, yesterday),
+            ),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        solar_range = mock_range.call_args[0][1]
+        assert solar_range == (today - timedelta(days=REWINDOW_DAYS), yesterday)

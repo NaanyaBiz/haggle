@@ -226,9 +226,28 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             last_credit_sum, _ = await self._get_last_stat(stat_id_credit)
             self._latest_generation_kwh = last_gen_sum or 0.0
             self._latest_generation_credit = last_credit_sum or 0.0
-            solar_range = self._chunked_range(
-                self._resolve_fetch_start(today, last_gen_date), yesterday
-            )
+            backfill_floor = today - timedelta(days=BACKFILL_DAYS)
+            if last_gen_date is not None and await self._generation_needs_heal(
+                stat_id_gen, backfill_floor, today
+            ):
+                # One-time leading-hole heal (#128). A generation series seeded
+                # only from the trailing rewindow — beta.1 shared the consumption
+                # resume point, so on a caught-up install solar got just the last
+                # REWINDOW_DAYS — has real rows from ~today-7 and nothing for the
+                # older billing-period days. _resolve_fetch_start keys off the
+                # LAST row, so those stranded days are never revisited. Re-import
+                # the FULL window in one contiguous batch (uncapped by
+                # _chunked_range on purpose) so _import_generation recomputes the
+                # whole cumulative chain from a correct baseline. A partial fill
+                # would leave the later rows on their old baseline and step the
+                # sum downward (#114 class); the 0.5s inter-request delay paces
+                # the burst and a 429 just halts, leaving a step the next cycle's
+                # heal check re-detects and finishes.
+                solar_range = (backfill_floor, yesterday)
+            else:
+                solar_range = self._chunked_range(
+                    self._resolve_fetch_start(today, last_gen_date), yesterday
+                )
 
         # Mark which ToU bands already have stored statistics so the per-tariff
         # series are emitted only for a contract that has been seen using ToU
@@ -507,6 +526,73 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         for stat_id in stat_ids:
             out.setdefault(stat_id, 0.0)
         return out
+
+    async def _generation_needs_heal(
+        self, stat_id_gen: str, floor: date, today: date
+    ) -> bool:
+        """True if the generation series must be re-imported from the floor.
+
+        Two stateless triggers, both re-derived from the recorder each cycle so
+        no heal-progress flag has to be persisted:
+
+        1. LEADING HOLE — the earliest stored generation hour sits well after
+           the backfill floor. A series backfilled from the floor carries a row
+           (a real read, or a zero-export marker) at every day since the floor,
+           so its first row is at/near the floor. A series seeded only from the
+           trailing rewindow (the beta.1 upgrade artifact, #128) starts ~today-7
+           with nothing before it; _resolve_fetch_start keys off the LAST row
+           and never revisits those older days, stranding them permanently.
+
+        2. BROKEN CHAIN — a downward step in the cumulative sum. A heal
+           interrupted mid-way (AGL 429) re-imports a contiguous prefix but
+           leaves the later rows on their old baseline, stepping the sum down at
+           the frontier. Re-detecting that step re-triggers the heal next cycle
+           so it completes — this is what makes the uncapped re-import 429-safe.
+
+        A series with no rows in the window (fresh install) never heals; normal
+        backfill from the floor handles it.
+        """
+        from homeassistant.components.recorder.statistics import (
+            statistics_during_period,
+        )
+        from homeassistant.helpers.recorder import get_instance
+
+        floor_dt = dt_util.as_utc(dt_util.start_of_local_day(floor))
+        now = datetime.now(UTC)
+        result = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            floor_dt,
+            now,
+            {stat_id_gen},
+            "hour",
+            None,
+            {"start", "sum"},
+        )
+        rows = result.get(stat_id_gen) or []
+        if not rows:
+            return False
+
+        # Leading hole: earliest stored hour is more than a day past the floor.
+        # One day of slack absorbs the local-midnight-vs-UTC offset (a local day
+        # begins on the previous UTC date in a positive-offset zone).
+        first_start = rows[0].get("start")
+        if first_start is not None:
+            first_date = datetime.fromtimestamp(float(first_start), tz=UTC).date()
+            if first_date > floor + timedelta(days=1):
+                return True
+
+        # Broken chain: any downward step in the cumulative sum.
+        prev: float | None = None
+        for row in rows:
+            raw = row.get("sum")
+            if raw is None:
+                continue
+            s = float(raw)
+            if prev is not None and s < prev - 1e-6:
+                return True
+            prev = s
+        return False
 
     async def _get_stored_tou_bands(self) -> set[str]:
         """Return the ToU bands (peak/offpeak/shoulder) that already have stats.

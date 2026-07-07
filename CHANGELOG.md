@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Solar generation: heal a **leading hole** in the generation statistics for
+  contracts upgraded from beta.1 (#128). Beta.1 seeded the generation series
+  from the *consumption* resume point, so on a caught-up install solar imported
+  only the trailing `REWINDOW_DAYS` and the older billing-period days were never
+  fetched — `_resolve_fetch_start` keys off the series' last row and never
+  revisits them, permanently stranding (for the reporter) 24–27 June (~27 kWh)
+  and making *Solar sold this period* undercount the AGL app. The coordinator
+  now detects a leading hole (earliest stored row well after the backfill floor)
+  or a downward cumulative-sum step (an interrupted heal) and re-imports the
+  full window in one contiguous batch via the existing hourly endpoint, so the
+  cumulative chain is recomputed from a correct baseline. Stateless and
+  429-safe: an interrupted heal leaves a sum step the next cycle re-detects and
+  finishes. Fresh installs and flat/ToU/non-solar contracts are unaffected.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
