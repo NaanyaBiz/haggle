@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+---
+
+## [0.4.0-beta.4] — 2026-07-09
+
+> **Pre-release for community validation** (#128 round 4 / resilience batch).
+> First release carrying the **diagnostics platform** — bug reports can now
+> attach an anonymized *Download diagnostics* file — plus five coordinator
+> resilience fixes hardened across two adversarial review rounds. If you
+> upgraded through beta.1 on a solar contract: the one-time history heal now
+> also shows *Solar sold this period* the same cycle it finishes, instead of
+> blanking it for a day or more.
+
 ### Added
 
 - **Diagnostics platform** (`diagnostics.py`): the integration card now has a
@@ -71,15 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dismissed with reasons, will clear when HA bumps PyJWT upstream.
 - `aiohttp` dev floor raised to `>=3.14.1` (HA 2026.7.0 relaxed its exact
   pin), superseding Dependabot #106.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 
