@@ -433,6 +433,73 @@ class TestUpdateDataAuthError:
         ):
             await coord._async_update_data()
 
+    async def test_failed_poll_shortens_retry_interval(
+        self, hass: HomeAssistant
+    ) -> None:
+        """#155: a transient AGL failure retries after RETRY_INTERVAL_ON_ERROR
+        instead of silently waiting a full 24 h (#126 'poll never ran')."""
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
+        from custom_components.haggle.agl.client import AGLError
+        from custom_components.haggle.const import (
+            RETRY_INTERVAL_ON_ERROR,
+            SCAN_INTERVAL_HOURLY,
+        )
+
+        coord = _make_coordinator(hass)
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+        with (
+            patch.object(
+                coord,
+                "_fetch_and_import",
+                new_callable=AsyncMock,
+                side_effect=AGLError("HTTP 500 fetching AGL data"),
+            ),
+            pytest.raises(UpdateFailed),
+        ):
+            await coord._async_update_data()
+        assert coord.update_interval == RETRY_INTERVAL_ON_ERROR
+
+    async def test_successful_poll_restores_cadence(self, hass: HomeAssistant) -> None:
+        from custom_components.haggle.const import (
+            RETRY_INTERVAL_ON_ERROR,
+            SCAN_INTERVAL_HOURLY,
+        )
+
+        coord = _make_coordinator(hass)
+        coord.update_interval = RETRY_INTERVAL_ON_ERROR  # as after a failure
+        with patch.object(
+            coord,
+            "_fetch_and_import",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ):
+            await coord._async_update_data()
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+
+    async def test_auth_failure_leaves_interval_untouched(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Auth failures hand over to the reauth flow — no fast retry that
+        would hammer a rejected token."""
+        from homeassistant.exceptions import ConfigEntryAuthFailed
+
+        from custom_components.haggle.agl.client import AGLAuthError
+        from custom_components.haggle.const import SCAN_INTERVAL_HOURLY
+
+        coord = _make_coordinator(hass)
+        with (
+            patch.object(
+                coord,
+                "_fetch_and_import",
+                new_callable=AsyncMock,
+                side_effect=AGLAuthError("token revoked"),
+            ),
+            pytest.raises(ConfigEntryAuthFailed),
+        ):
+            await coord._async_update_data()
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+
 
 # ---------------------------------------------------------------------------
 # _fetch_range — smart endpoint selection

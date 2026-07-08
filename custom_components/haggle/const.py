@@ -28,6 +28,11 @@ AGL_OAUTH_AUDIENCE: Final = "https://api.platform.agl.com.au/"
 # Polling cadence.
 # AGL interval data is delayed 24-48 h from the meter (AEMO feed lag).
 SCAN_INTERVAL_HOURLY: Final = timedelta(hours=24)  # 30-min intervals: fetch yesterday
+# Retry cadence after a FAILED poll (#155). A transient AGL error at poll time
+# previously cost a full 24 h of data — indistinguishable from "the poll never
+# ran" (#126). Restored to SCAN_INTERVAL_HOURLY on the next success; polling
+# faster than 24 h on success buys nothing (AGL data lags 24-48 h).
+RETRY_INTERVAL_ON_ERROR: Final = timedelta(minutes=30)
 
 # Number of days of history to backfill on first install.
 BACKFILL_DAYS: Final = 30

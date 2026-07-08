@@ -45,6 +45,7 @@ from .const import (
     DOMAIN,
     MAX_SOLAR_HEAL_ATTEMPTS,
     RECORDER_DRAIN_TIMEOUT,
+    RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
     SCAN_INTERVAL_HOURLY,
     SOLAR_HEAL_DONE,
@@ -179,13 +180,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """No-op: first-install backfill is handled incrementally in _fetch_and_import."""
 
     async def _async_update_data(self) -> HaggleData:
-        """Fetch yesterday's intervals, import statistics, return sensor data."""
+        """Fetch yesterday's intervals, import statistics, return sensor data.
+
+        Failure-aware cadence (#155): a failed poll retries after
+        RETRY_INTERVAL_ON_ERROR instead of silently waiting a full 24 h (a
+        transient AGL error at poll time previously looked exactly like "the
+        poll never ran" — #126). The 24 h cadence is restored on the next
+        success. ConfigEntryAuthFailed is left alone — the reauth flow owns
+        that path, and hammering a rejected token would not help.
+        """
         try:
-            return await self._fetch_and_import()
+            data = await self._fetch_and_import()
         except AGLAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except AGLError as err:
+            if self.update_interval != RETRY_INTERVAL_ON_ERROR:
+                _LOGGER.info(
+                    "Poll failed (%s); retrying in %s instead of %s",
+                    err,
+                    RETRY_INTERVAL_ON_ERROR,
+                    SCAN_INTERVAL_HOURLY,
+                )
+                self.update_interval = RETRY_INTERVAL_ON_ERROR
             raise UpdateFailed(str(err)) from err
+        if self.update_interval != SCAN_INTERVAL_HOURLY:
+            _LOGGER.info("Poll succeeded; restoring %s cadence", SCAN_INTERVAL_HOURLY)
+            self.update_interval = SCAN_INTERVAL_HOURLY
+        return data
 
     async def _fetch_and_import(self) -> HaggleData:
         """Core update: fetch missing intervals + trailing rewindow, return data."""
