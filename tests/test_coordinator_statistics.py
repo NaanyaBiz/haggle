@@ -2068,6 +2068,7 @@ class TestGenerationHealState:
         needs_heal: bool = True,
         fetch_complete: bool = True,
         drained: bool = False,
+        chain_broken: bool = False,
     ) -> tuple[HaggleCoordinator, MagicMock, MagicMock, object]:
         coord = _make_coordinator(hass, client=self._solar_client())
         if preset is not None:
@@ -2092,6 +2093,12 @@ class TestGenerationHealState:
                 new_callable=AsyncMock,
                 return_value=needs_heal,
             ) as mock_needs,
+            patch.object(
+                coord,
+                "_generation_heal_triggers",
+                new_callable=AsyncMock,
+                return_value=(False, chain_broken),
+            ),
             patch.object(
                 coord,
                 "_get_generation_period_totals",
@@ -2287,6 +2294,55 @@ class TestGenerationHealState:
         # Not the heal window: a normal trailing chunk, never starting at floor.
         assert mock_range.call_args[0][1][0] != today - timedelta(days=BACKFILL_DAYS)
         assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
+
+    async def test_chain_break_after_done_arms_bounded_repair(
+        self, hass: HomeAssistant
+    ) -> None:
+        """#153: a downward sum step frozen by a 429 on the give-up sweep
+        re-arms ONE repair generation — full window, fresh attempt budget,
+        marked `repair` so it can never re-arm again."""
+        today = datetime.now(UTC).date()
+        coord, mock_range, _, _ = await self._run(
+            hass,
+            preset={"state": SOLAR_HEAL_DONE},
+            chain_broken=True,
+            fetch_complete=True,
+        )
+        assert mock_range.call_args[0][1] == (
+            today - timedelta(days=BACKFILL_DAYS),
+            today - timedelta(days=1),
+        )
+        heal = self._heal(coord)
+        assert heal["state"] == SOLAR_HEAL_DONE  # repair completed this cycle
+        assert heal["repair"] is True  # mark survives → no second generation
+
+    async def test_repair_mark_blocks_second_rearm(self, hass: HomeAssistant) -> None:
+        """A record already marked `repair` never re-arms, even with the chain
+        still broken — lifetime sweeps hard-capped at 2x MAX (#153)."""
+        today = datetime.now(UTC).date()
+        coord, mock_range, _, _ = await self._run(
+            hass,
+            preset={"state": SOLAR_HEAL_DONE, "repair": True},
+            chain_broken=True,
+        )
+        assert mock_range.call_args[0][1][0] != today - timedelta(days=BACKFILL_DAYS)
+        assert self._heal(coord) == {"state": SOLAR_HEAL_DONE, "repair": True}
+
+    async def test_repair_giveup_keeps_mark(self, hass: HomeAssistant) -> None:
+        """A repair generation that exhausts its budget goes done WITH the
+        mark, permanently blocking further re-arms."""
+        today = datetime.now(UTC).date()
+        coord, _, _, _ = await self._run(
+            hass,
+            preset={
+                "state": SOLAR_HEAL_PENDING,
+                "floor": (today - timedelta(days=25)).isoformat(),
+                "attempts": MAX_SOLAR_HEAL_ATTEMPTS - 1,
+                "repair": True,
+            },
+            fetch_complete=False,
+        )
+        assert self._heal(coord) == {"state": SOLAR_HEAL_DONE, "repair": True}
 
     async def test_period_totals_published_after_complete_drained_heal(
         self, hass: HomeAssistant

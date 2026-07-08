@@ -548,28 +548,54 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         P2, pass 3) so an HA restart mid-heal resumes the same window instead of
         recomputing it from a later `today` and dropping the oldest day — and
         re-read from the pending record on every retry. The heal stays pending —
-        retrying — until a sweep completes with no skipped day, then goes done and
-        never re-arms.
+        retrying — until a sweep completes with no skipped day, then goes done.
+
+        After done, the LEADING-HOLE trigger never re-arms (a permanently
+        unfetchable gap must not re-sweep every poll), but a BROKEN CHAIN —
+        the downward step a 429 on the give-up sweep can freeze — re-arms ONE
+        bounded repair generation (#153): a fresh MAX_SOLAR_HEAL_ATTEMPTS
+        budget marked `repair: true` in the record. A record that already
+        carries the repair mark never re-arms again, so total lifetime sweeps
+        are hard-capped at 2x MAX_SOLAR_HEAL_ATTEMPTS.
         """
         heal = self.config_entry.data.get(CONF_SOLAR_HEAL) or {}
         state = heal.get("state")
-        if state != SOLAR_HEAL_DONE and last_gen_date is not None:
+        if last_gen_date is not None:
             if state == SOLAR_HEAL_PENDING:
                 floor = date.fromisoformat(heal["floor"])  # frozen at heal start
                 return (floor, yesterday), (floor, int(heal.get("attempts", 0)))
             floor = today - timedelta(days=BACKFILL_DAYS)
-            if await self._generation_needs_heal(stat_id_gen, floor, today):
-                # Freeze the floor NOW, before the multi-second fetch, so a
-                # restart mid-heal survives with the window intact. A resume
-                # cycle already has this record, so this is a no-op then.
-                self._write_solar_heal(
-                    {
-                        "state": SOLAR_HEAL_PENDING,
-                        "floor": floor.isoformat(),
-                        "attempts": 0,
-                    }
+            if state != SOLAR_HEAL_DONE:
+                if await self._generation_needs_heal(stat_id_gen, floor, today):
+                    # Freeze the floor NOW, before the multi-second fetch, so a
+                    # restart mid-heal survives with the window intact. A resume
+                    # cycle already has this record, so this is a no-op then.
+                    self._write_solar_heal(
+                        {
+                            "state": SOLAR_HEAL_PENDING,
+                            "floor": floor.isoformat(),
+                            "attempts": 0,
+                        }
+                    )
+                    return (floor, yesterday), (floor, 0)
+            elif not heal.get("repair"):
+                _, broken = await self._generation_heal_triggers(
+                    stat_id_gen, floor, today
                 )
-                return (floor, yesterday), (floor, 0)
+                if broken:
+                    _LOGGER.warning(
+                        "Generation sum chain broken after heal completion; "
+                        "arming one bounded repair generation (#153)"
+                    )
+                    self._write_solar_heal(
+                        {
+                            "state": SOLAR_HEAL_PENDING,
+                            "floor": floor.isoformat(),
+                            "attempts": 0,
+                            "repair": True,
+                        }
+                    )
+                    return (floor, yesterday), (floor, 0)
         normal = self._chunked_range(
             self._resolve_fetch_start(today, last_gen_date), yesterday
         )
@@ -643,15 +669,29 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         the rotated refresh token — no reload listener fires.
         """
         floor, attempts = heal_ctx
+        # The one-shot repair mark must survive every transition, or a broken
+        # chain could re-arm repair generations forever (#153).
+        repairing = bool(
+            (self.config_entry.data.get(CONF_SOLAR_HEAL) or {}).get("repair")
+        )
         new: dict[str, object]
         if complete:
             new = {"state": SOLAR_HEAL_DONE}
         elif attempts + 1 >= MAX_SOLAR_HEAL_ATTEMPTS:
-            _LOGGER.warning(
-                "Solar heal gave up after %d attempts; some pre-rewindow days may "
-                "remain unfetched (persistent AGL error on old solar dates)",
-                attempts + 1,
-            )
+            if repairing:
+                _LOGGER.error(
+                    "Solar chain repair gave up after %d attempts — a downward "
+                    "step may persist in the generation statistics; manual "
+                    "repair via Developer Tools → Statistics if it matters",
+                    attempts + 1,
+                )
+            else:
+                _LOGGER.warning(
+                    "Solar heal gave up after %d attempts; some pre-rewindow "
+                    "days may remain unfetched (persistent AGL error on old "
+                    "solar dates)",
+                    attempts + 1,
+                )
             new = {"state": SOLAR_HEAL_DONE}
         else:
             new = {
@@ -659,6 +699,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 "floor": floor.isoformat(),
                 "attempts": attempts + 1,
             }
+        if repairing:
+            new["repair"] = True
         self._write_solar_heal(new)
 
     def _write_solar_heal(self, record: dict[str, object]) -> None:
@@ -675,25 +717,40 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> bool:
         """True if the generation series must be re-imported from the floor.
 
-        Two stateless triggers, both re-derived from the recorder each cycle so
-        no heal-progress flag has to be persisted:
+        Starts the one-time heal only — retry, completion, and termination are
+        owned by the persisted `solar_heal` record, not this detector (Codex
+        docstring correction, 2026-07-08). Either trigger arms it; see
+        _generation_heal_triggers for the two failure geometries.
+        """
+        leading, broken = await self._generation_heal_triggers(
+            stat_id_gen, floor, today
+        )
+        return leading or broken
 
-        1. LEADING HOLE — the earliest stored generation hour sits well after
-           the backfill floor. A series backfilled from the floor carries a row
-           (a real read, or a zero-export marker) at every day since the floor,
-           so its first row is at/near the floor. A series seeded only from the
-           trailing rewindow (the beta.1 upgrade artifact, #128) starts ~today-7
-           with nothing before it; _resolve_fetch_start keys off the LAST row
-           and never revisits those older days, stranding them permanently.
+    async def _generation_heal_triggers(
+        self, stat_id_gen: str, floor: date, today: date
+    ) -> tuple[bool, bool]:
+        """Return (leading_hole, chain_broken) for the generation series.
 
-        2. BROKEN CHAIN — a downward step in the cumulative sum. A heal
-           interrupted mid-way (AGL 429) re-imports a contiguous prefix but
-           leaves the later rows on their old baseline, stepping the sum down at
-           the frontier. Re-detecting that step re-triggers the heal next cycle
-           so it completes — this is what makes the uncapped re-import 429-safe.
+        LEADING HOLE — the earliest stored generation hour sits well after the
+        backfill floor. A series backfilled from the floor carries a row (a
+        real read, or a zero-export marker) at every day since the floor, so
+        its first row is at/near the floor. A series seeded only from the
+        trailing rewindow (the beta.1 upgrade artifact, #128) starts ~today-7
+        with nothing before it; _resolve_fetch_start keys off the LAST row and
+        never revisits those older days, stranding them permanently. This
+        trigger is disarmed for good once the heal record is done — a
+        permanently unfetchable leading gap must not re-sweep every poll.
 
-        A series with no rows in the window (fresh install) never heals; normal
-        backfill from the floor handles it.
+        CHAIN BROKEN — a downward step in the cumulative sum, what a heal
+        sweep interrupted mid-import leaves behind (#114 class). Checked
+        separately because it must survive the done state (#153): a 429
+        landing on the give-up sweep can freeze a step that the leading-hole
+        logic never revisits. The repair it arms is bounded — see
+        _plan_solar_fetch.
+
+        A series with no rows in the window (fresh install) triggers neither;
+        normal backfill from the floor handles it.
         """
         from homeassistant.components.recorder.statistics import (
             statistics_during_period,
@@ -714,18 +771,19 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         rows = result.get(stat_id_gen) or []
         if not rows:
-            return False
+            return False, False
 
         # Leading hole: earliest stored hour is more than a day past the floor.
         # One day of slack absorbs the local-midnight-vs-UTC offset (a local day
         # begins on the previous UTC date in a positive-offset zone).
+        leading = False
         first_start = rows[0].get("start")
         if first_start is not None:
             first_date = datetime.fromtimestamp(float(first_start), tz=UTC).date()
-            if first_date > floor + timedelta(days=1):
-                return True
+            leading = first_date > floor + timedelta(days=1)
 
         # Broken chain: any downward step in the cumulative sum.
+        broken = False
         prev: float | None = None
         for row in rows:
             raw = row.get("sum")
@@ -733,9 +791,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 continue
             s = float(raw)
             if prev is not None and s < prev - 1e-6:
-                return True
+                broken = True
+                break
             prev = s
-        return False
+        return leading, broken
 
     async def _get_stored_tou_bands(self) -> set[str]:
         """Return the ToU bands (peak/offpeak/shoulder) that already have stats.
