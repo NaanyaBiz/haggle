@@ -1,6 +1,7 @@
 # haggle
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=NaanyaBiz&repository=haggle&category=integration)
+[![Latest release](https://img.shields.io/github/v/release/NaanyaBiz/haggle?include_prereleases&label=latest)](https://github.com/NaanyaBiz/haggle/releases)
 
 Home Assistant custom integration that pulls smart-meter usage from
 [AGL Australia](https://www.agl.com.au/) and feeds it into the HA Energy
@@ -14,11 +15,12 @@ dashboard.
 > **Australia only.** Requires an AGL Energy electricity account with a smart
 > meter (most Australian metropolitan installations).
 
-> **Status:** `v0.4.0-beta.2`. The flat-rate consumption/cost path is stable
-> and runs live in the maintainer's Home Assistant. **Time-of-Use** support is
-> in validation with real ToU customers
-> ([#126](https://github.com/NaanyaBiz/haggle/issues/126)), and **solar
-> feed-in** support is in beta validation
+> **Status** (current version: see the badge above or the
+> [releases page](https://github.com/NaanyaBiz/haggle/releases)): the
+> flat-rate consumption/cost path is stable and runs live in the maintainer's
+> Home Assistant. **Time-of-Use** support is in validation with real ToU
+> customers ([#126](https://github.com/NaanyaBiz/haggle/issues/126)), and
+> **solar feed-in** support is in beta validation
 > ([#128](https://github.com/NaanyaBiz/haggle/issues/128)) — enable
 > "Show beta versions" in HACS to try either. See
 > [`CHANGELOG.md`](./CHANGELOG.md) for milestone detail.
@@ -91,8 +93,8 @@ credit). Sensors cover the current billing period (matching the AGL app's
 
 > Solar is in beta validation
 > ([#128](https://github.com/NaanyaBiz/haggle/issues/128)) — the field
-> mapping is confirmed against a real capture and the AGL app; install
-> `v0.4.0-beta.2` via HACS "Show beta versions" to try it.
+> mapping is confirmed against a real capture and the AGL app; install the
+> latest pre-release via HACS "Show beta versions" to try it.
 
 ## Develop
 
