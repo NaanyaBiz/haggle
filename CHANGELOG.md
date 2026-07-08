@@ -15,9 +15,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everywhere (statistic IDs and unique_id included) by stable `anon-…`
   references; SPKI pins reduced to booleans. Payload carries integration
   version, timezone, coordinator state (plan type, ToU bands, solar flags,
-  period totals), and per-series statistics resume state, versioned by
-  `schema_version` (see `docs/diagnostics.md`). The bug-report form now asks
-  for the file, and the automated triage routine parses it when attached.
+  period totals, bill-period start, last update error), the one-time solar
+  heal record, and per-series statistics **coverage** (`first_date`,
+  `last_date`, `row_count`, `last_sum`) — the earliest-row field is what
+  makes a #128-class leading hole visible at a glance. Versioned by
+  `schema_version` (see `docs/diagnostics.md`); the bug-report form now asks
+  for the file.
+
+### Security
+
+- Dev lockfile refreshed, clearing 19 of 24 open Dependabot alerts (aiohttp
+  3.13.5 → 3.14.1, cryptography 47.0.0 → 48.0.1, homeassistant 2026.5.1 →
+  2026.7.0, zeroconf 0.148.0 → 0.150.0, uv 0.11.8 → 0.11.25). The committed
+  `uv.lock` had gone stale against the `homeassistant>=2026.7.0` floor.
+  **No user impact either way**: `manifest.json` ships zero Python
+  requirements — users get all of these libraries from their Home Assistant
+  core install, never from this integration. The remaining 5 alerts (PyJWT ≤
+  2.12.1) are pinned exactly by HA core and sit in code paths this repo never
+  imports (token-expiry decoding is a hand-rolled base64 of the JWT payload);
+  dismissed with reasons, will clear when HA bumps PyJWT upstream.
+- `aiohttp` dev floor raised to `>=3.14.1` (HA 2026.7.0 relaxed its exact
+  pin), superseding Dependabot #106.
+
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+---
+
+## [0.4.0-beta.3] — 2026-07-07
+
+> **Pre-release for community validation** (#128 round 3). Ships the solar
+> generation **leading-hole heal** for installs that upgraded through beta.1:
+> those seeded their generation series from only the trailing rewindow, so the
+> older billing-period days were never fetched and *Solar sold this period*
+> undercounted the AGL app. This build re-imports the full window once to
+> backfill them. If you upgraded from beta.1 on a solar contract, please
+> confirm *Solar sold this period* and the Energy dashboard "Return to grid"
+> bars line up with the app after a poll cycle or two.
+
+### Fixed
+
+- Solar generation: heal a **leading hole** in the generation statistics for
+  contracts upgraded from beta.1 (#128). Beta.1 seeded the generation series
+  from the *consumption* resume point, so on a caught-up install solar imported
+  only the trailing `REWINDOW_DAYS` and the older billing-period days were never
+  fetched — `_resolve_fetch_start` keys off the series' last row and never
+  revisits them, permanently stranding (for the reporter) 24–27 June (~27 kWh)
+  and making *Solar sold this period* undercount the AGL app. The coordinator
+  now detects a leading hole (earliest stored row well after the backfill floor)
+  and re-imports the full window in one contiguous batch via the existing hourly
+  endpoint, so the cumulative chain is recomputed from a correct baseline. The
+  heal is a one-time repair whose progress is recorded in the config entry
+  (`solar_heal` = `{state, floor, attempts}`): the backfill floor is **frozen**
+  when the heal starts so a rate-limited retry re-fetches the same window
+  instead of sliding forward and dropping its oldest day; it stays *pending* —
+  retrying — while any day was skipped (429 or a transient AGL error), up to a
+  few attempts, then *done* and never re-runs, so an interrupted heal finishes
+  and a permanently-erroring old day can't wedge it or re-sweep every poll.
+  Bill-period solar totals are suppressed for a heal cycle (avoiding a transient
+  over-read while the rewritten rows are still queued). Fresh installs and
+  flat/ToU/non-solar contracts are unaffected.
 
 ### Documentation
 
@@ -31,15 +94,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dashboard and Solar sections. `info.md` no longer tells users the
   cumulative Consumption sensor "fits the Grid consumption slot" — that
   instruction was the #137 footgun.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 

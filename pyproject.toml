@@ -27,10 +27,11 @@ dependencies = [
     # SCA-H02) via aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6;
     # 2026.5.0 keeps those at-or-above. HA 2026.4+ also requires Python 3.14.2.
     "homeassistant>=2026.7.0",
-    # HA pins aiohttp==3.13.5 exactly (still true on 2026.7.x), so this
-    # floor cannot move ahead of HA — the aiohttp>=3.14.1 bump (#106) is
-    # unsatisfiable until HA bumps it upstream.
-    "aiohttp>=3.13.5",
+    # HA 2026.7.0 relaxed its exact aiohttp pin, so the resolver now lands
+    # 3.14.1+ (closes the 2026-06/07 aiohttp advisory cluster; supersedes
+    # Dependabot #106). Users always get aiohttp from HA core, not from us —
+    # manifest.json ships no requirements; this floor is dev/editor tooling.
+    "aiohttp>=3.14.1",
 ]
 
 [project.optional-dependencies]
