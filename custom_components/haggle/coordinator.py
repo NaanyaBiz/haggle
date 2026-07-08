@@ -156,6 +156,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         self._prev_has_solar: bool = False
         self._latest_generation_kwh: float = 0.0
         self._latest_generation_credit: float = 0.0
+        # Last-seen bill period start — surfaced in diagnostics so period-vs-app
+        # mismatch reports can be reasoned about without asking the user.
+        self.last_bill_start: date | None = None
 
     def _tariff_stat_ids(self, tariff: str) -> tuple[str, str]:
         """Return (consumption_id, cost_id) for a per-tariff series."""
@@ -192,7 +195,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         plan = await self.client.async_get_plan(self.contract_number)
         await self._refresh_has_solar()
 
-        bill_start: date = summary.start
+        bill_start = self.last_bill_start = summary.start
 
         # Resume point comes from the consumption stat. The cost stat is written
         # in lockstep, and every cumulative-sum baseline is now looked up inside

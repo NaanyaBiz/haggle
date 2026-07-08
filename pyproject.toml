@@ -91,6 +91,7 @@ ignore = [
 "scripts/**/*.py" = ["S603", "S607"]   # subprocess usage in dev scripts
 "custom_components/haggle/const.py" = ["S105"]   # CONF_*_TOKEN strings are key names, not secrets
 "custom_components/haggle/coordinator.py" = ["PLC0415"]   # recorder imports must be local — optional HA component
+"custom_components/haggle/diagnostics.py" = ["PLC0415"]   # same recorder-import constraint as coordinator.py
 
 [tool.ruff.lint.isort]
 combine-as-imports = true

@@ -15,8 +15,9 @@ EVERY field must survive that assumption:
   identifiers (they hide inside statistic IDs, display names, and the entry
   unique_id), so a future field addition cannot leak them by accident.
 
-``schema_version`` is a parsing contract for the automated triage routine —
-bump it when the shape changes and update docs/diagnostics.md to match.
+``schema_version`` is a parsing contract for any tooling that reads these
+files — bump it when the shape changes and update docs/diagnostics.md to
+match.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import hmac
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.diagnostics import async_redact_data
@@ -36,6 +38,7 @@ from .const import (
     CONF_PINNED_SPKI_AUTH,
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
+    CONF_SOLAR_HEAL,
     DOMAIN,
     STAT_CONSUMPTION,
     STAT_COST,
@@ -91,6 +94,65 @@ def _scrub(obj: Any, replacements: dict[str, str]) -> Any:
     return obj
 
 
+async def _series_coverage(
+    hass: HomeAssistant, stat_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """First/last stored hour, row count, and last sum for each series.
+
+    One batched recorder query over the full history. ``first_date`` is the
+    field that makes a leading hole visible (#128: a healthy ``last_date``
+    while early billing-period days are missing entirely); ``row_count``
+    against the first→last span exposes interior gaps. Degrades to
+    all-``None`` entries if the recorder query fails — diagnostics must never
+    raise.
+    """
+    from homeassistant.components.recorder.statistics import (
+        statistics_during_period,
+    )
+    from homeassistant.helpers.recorder import get_instance
+
+    empty: dict[str, Any] = {
+        "first_date": None,
+        "last_date": None,
+        "row_count": 0,
+        "last_sum": None,
+    }
+    try:
+        result = await get_instance(hass).async_add_executor_job(
+            statistics_during_period,
+            hass,
+            datetime(2000, 1, 1, tzinfo=UTC),  # long before any AGL data
+            datetime.now(UTC),
+            set(stat_ids),
+            "hour",
+            None,
+            {"start", "sum"},
+        )
+    except Exception:
+        return {stat_id: dict(empty) for stat_id in stat_ids}
+
+    def _row_date(row: Any) -> str | None:
+        start = row.get("start")
+        if start is None:
+            return None
+        return datetime.fromtimestamp(float(start), tz=UTC).date().isoformat()
+
+    coverage: dict[str, dict[str, Any]] = {}
+    for stat_id in stat_ids:
+        rows = result.get(stat_id) or []
+        entry = dict(empty)
+        if rows:
+            last_sum = rows[-1].get("sum")
+            entry = {
+                "first_date": _row_date(rows[0]),
+                "last_date": _row_date(rows[-1]),
+                "row_count": len(rows),
+                "last_sum": round(last_sum, 3) if last_sum is not None else None,
+            }
+        coverage[stat_id] = entry
+    return coverage
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: HaggleConfigEntry
 ) -> dict[str, Any]:
@@ -114,6 +176,10 @@ async def async_get_config_entry_diagnostics(
     # capture history — presence booleans carry the diagnostic signal.
     pin_auth = bool(entry_data.pop(CONF_PINNED_SPKI_AUTH, ""))
     pin_bff = bool(entry_data.pop(CONF_PINNED_SPKI_BFF, ""))
+    # One-time solar heal record ({state, floor, attempts}) — first-class
+    # field: distinguishes "period sensors deliberately blank while a heal
+    # runs" from "gate failed" from "heal gave up" (#128 beta.3 round).
+    solar_heal = entry_data.pop(CONF_SOLAR_HEAL, None)
 
     runtime = getattr(entry, "runtime_data", None)
     coordinator = runtime.coordinator if runtime is not None else None
@@ -127,8 +193,8 @@ async def async_get_config_entry_diagnostics(
             # frozenset is not JSON-serializable.
             data_block["active_tariffs"] = sorted(data_block["active_tariffs"])
 
-        # Per-series resume state — lets triage spot stalled backfills,
-        # missing ToU bands, and never-started solar series without log
+        # Per-series coverage — spots stalled backfills, missing ToU bands,
+        # never-started solar series, AND leading holes (#128), without log
         # digging.
         stat_ids = [
             f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}",
@@ -138,22 +204,26 @@ async def async_get_config_entry_diagnostics(
             stat_ids.extend(coordinator._tariff_stat_ids(band))
         if coordinator._has_solar:
             stat_ids.extend(coordinator._generation_stat_ids())
-
-        for stat_id in stat_ids:
-            last_sum, last_date = await coordinator._get_last_stat(stat_id)
-            statistics[stat_id] = {
-                "last_date": last_date.isoformat() if last_date else None,
-                "last_sum": round(last_sum, 3) if last_sum is not None else None,
-            }
+        statistics = await _series_coverage(hass, stat_ids)
 
         update_interval = coordinator.update_interval
+        # str(last_exception) is safe to publish: exception messages are
+        # body-scrubbed at raise time (AGENTS.md — raw AGL/Auth0 bodies never
+        # reach exception text) and the identifier scrub below applies on top.
+        last_exception = coordinator.last_exception
         coordinator_block = {
             "last_update_success": coordinator.last_update_success,
+            "last_exception": str(last_exception) if last_exception else None,
             "update_interval_hours": (
                 update_interval.total_seconds() / 3600 if update_interval else None
             ),
             "has_solar": coordinator._has_solar,
             "active_tou_bands": sorted(coordinator._active_tou_bands),
+            "bill_period_start": (
+                coordinator.last_bill_start.isoformat()
+                if coordinator.last_bill_start
+                else None
+            ),
             "data": _round_floats(data_block),
         }
 
@@ -172,6 +242,7 @@ async def async_get_config_entry_diagnostics(
             "pin_present_auth": pin_auth,
             "pin_present_bff": pin_bff,
         },
+        "solar_heal": solar_heal,
         "coordinator": coordinator_block,
         "statistics": statistics,
     }
