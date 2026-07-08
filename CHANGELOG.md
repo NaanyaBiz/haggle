@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Diagnostics platform** (`diagnostics.py`): the integration card now has a
+  **Download diagnostics** button producing an anonymized JSON for bug
+  reports — refresh token redacted; account/contract numbers replaced
+  everywhere (statistic IDs and unique_id included) by stable `anon-…`
+  references; SPKI pins reduced to booleans. Payload carries integration
+  version, timezone, coordinator state (plan type, ToU bands, solar flags,
+  period totals, bill-period start, last update error), the one-time solar
+  heal record, and per-series statistics **coverage** (`first_date`,
+  `last_date`, `row_count`, `last_sum`) — the earliest-row field is what
+  makes a #128-class leading hole visible at a glance. Versioned by
+  `schema_version` (see `docs/diagnostics.md`); the bug-report form now asks
+  for the file.
+
 ### Security
 
 - Dev lockfile refreshed, clearing 19 of 24 open Dependabot alerts (aiohttp

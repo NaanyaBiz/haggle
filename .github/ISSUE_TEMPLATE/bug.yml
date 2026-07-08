@@ -25,6 +25,23 @@ body:
       required: true
 
   - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics file
+      description: |
+        Strongly recommended — it answers most triage questions in one go.
+        Settings → Devices & Services → Haggle → ⋮ (three-dot menu) →
+        **Download diagnostics**, then drag the downloaded `.json` file into
+        this box. The file is anonymized: it contains no tokens and no
+        account or contract numbers (identifiers are replaced by stable
+        `anon-…` references). See
+        [docs/diagnostics.md](https://github.com/NaanyaBiz/haggle/blob/main/docs/diagnostics.md)
+        for exactly what's in it.
+      placeholder: Drag and drop the diagnostics .json file here.
+    validations:
+      required: false
+
+  - type: textarea
     id: description
     attributes:
       label: What happened?
