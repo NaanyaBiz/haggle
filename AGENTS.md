@@ -282,6 +282,7 @@ trying to fold everything into the current PR.
 | Daily series | 6 h | Picks up newly available days |
 | Plan / overview | 7 days | Rarely changes |
 | Token refresh | Just-in-time (< 2 min to `exp`) | tokens expire at 15 min |
+| **After a FAILED poll** | 30 min (`RETRY_INTERVAL_ON_ERROR`) | #155: a transient error previously cost a full 24 h and looked like "the poll never ran" (#126). Restored to 24 h on the next success; auth failures go to reauth, not fast retry |
 
 **Do not poll for today's hourly data** — it will be empty. Fetch *yesterday*.
 
@@ -388,10 +389,25 @@ and each item carries **both** a `consumption` block and a shape-identical
   P1). After `MAX_SOLAR_HEAL_ATTEMPTS` incomplete sweeps it gives up to
   `SOLAR_HEAL_DONE` so a permanently-erroring old day can't wedge the heal or
   re-sweep every poll (Codex P3; matches `_fetch_day_solar`'s accepted rare-hole
-  tradeoff). Once `SOLAR_HEAL_DONE` it **never re-arms**. Bill-period solar
-  totals are suppressed for a heal cycle (the rewritten pre-`bill_start` rows are
-  still queued, so a live baseline read would transiently over-count). Written
-  like the rotated refresh token — no reload listener fires.
+  tradeoff). Once `SOLAR_HEAL_DONE` the **leading-hole trigger never re-arms**;
+  a **broken chain** (downward sum step frozen by a 429 on the give-up sweep)
+  detected after done arms ONE bounded repair generation — fresh attempt
+  budget, `repair: true` in the record, never re-arms once marked, lifetime
+  sweeps hard-capped at 2x `MAX_SOLAR_HEAL_ATTEMPTS` (#153). Bill-period solar
+  totals during a heal cycle: a COMPLETE sweep drains the recorder queue
+  (`_recorder_drained`, bounded by `RECORDER_DRAIN_TIMEOUT`) and publishes the
+  healed number the same cycle (#152); an incomplete sweep or drain timeout
+  stays suppressed — a wrong number is worse than a blank one. Attempt
+  accounting is exception-proof: `_fetch_with_heal_accounting` persists an
+  attempt on ANY sweep exit (#151), and `AglClient` wraps transport/parse
+  failures into `AGLError` so nothing escapes the family the catch sites
+  expect. Written like the rotated refresh token — no reload listener fires.
+- **Normal-path backfill give-up** (#154): a chunk where every attempted solar
+  day errors (no 429 involved) counts toward `_track_solar_stall`; after
+  `SOLAR_STALL_GIVE_UP_CYCLES` consecutive zero-progress cycles on the SAME
+  chunk, zero-delta markers advance the resume past the span (WARNING logged).
+  In-memory counter — restart resets it (conservative). Rate-limited sweeps
+  and heal sweeps are excluded by design.
 - The beta.1 "numbers don't match" report (#128) was a **window artifact** —
   a cumulative-since-backfill sensor compared against the app's
   billing-period tile — not a field bug. When validating against the app,
@@ -642,6 +658,20 @@ The HA Energy dashboard requires:
   forever. The persisted heal is therefore a record `{state, floor, attempts}`,
   not a bare state string. First pass: Codex P1/P2/P3; second pass: the
   floor-slide and skipped-day P2s — all on PR #150.
+- **Don't let non-`AGLError` exception types escape `AglClient`.** Every
+  coordinator catch site (`except AGLError`, the heal's attempt accounting,
+  the failure-retry interval) is designed around the AGLError family. An
+  unwrapped `aiohttp.ClientError`, `TimeoutError`, or `JSONDecodeError` from a
+  200 non-JSON body (Akamai challenge page) crashes the whole cycle *before*
+  any of that machinery runs — the red-team trace showed a deterministic one
+  on an old heal-window day wedging an unbounded 30-day sweep every cycle,
+  integration unavailable throughout (#151). `AglClient._get` and
+  `async_force_refresh` wrap transport/parse failures into `AGLError` (a
+  network blip during token refresh must be retryable `AGLError`, never
+  `AGLAuthError` — it is not an auth failure and must not trigger reauth).
+  When adding a new client method, route it through `_get` or replicate the
+  shield; `_fetch_with_heal_accounting` is the belt-and-braces layer that
+  counts an attempt on ANY sweep exit regardless.
 
 ---
 

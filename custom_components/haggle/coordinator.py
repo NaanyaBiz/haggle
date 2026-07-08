@@ -36,7 +36,12 @@ from homeassistant.helpers.update_coordinator import (
 )
 from homeassistant.util import dt as dt_util
 
-from .agl.client import AGLAuthError, AGLError, AGLRateLimitError
+from .agl.client import (
+    AGLAuthError,
+    AGLError,
+    AGLRateLimitError,
+    AGLTransportError,
+)
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -44,10 +49,13 @@ from .const import (
     CONF_SOLAR_HEAL,
     DOMAIN,
     MAX_SOLAR_HEAL_ATTEMPTS,
+    RECORDER_DRAIN_TIMEOUT,
+    RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
     SCAN_INTERVAL_HOURLY,
     SOLAR_HEAL_DONE,
     SOLAR_HEAL_PENDING,
+    SOLAR_STALL_GIVE_UP_CYCLES,
     STAT_CONSUMPTION,
     STAT_COST,
     STAT_GENERATION,
@@ -159,6 +167,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # Last-seen bill period start — surfaced in diagnostics so period-vs-app
         # mismatch reports can be reasoned about without asking the user.
         self.last_bill_start: date | None = None
+        # (chunk-start-iso, zero-progress cycle count) for the normal-path
+        # backfill give-up (#154). In-memory by design — see _track_solar_stall.
+        self._solar_stall: tuple[str, int] | None = None
+        # True when the last sweep was HALTED mid-chunk (429/transport) —
+        # _async_update_data schedules the #155 fast retry off this instead of
+        # waiting a full day for the halted chunk (Codex on #157).
+        self._sweep_halted: bool = False
 
     def _tariff_stat_ids(self, tariff: str) -> tuple[str, str]:
         """Return (consumption_id, cost_id) for a per-tariff series."""
@@ -178,13 +193,45 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """No-op: first-install backfill is handled incrementally in _fetch_and_import."""
 
     async def _async_update_data(self) -> HaggleData:
-        """Fetch yesterday's intervals, import statistics, return sensor data."""
+        """Fetch yesterday's intervals, import statistics, return sensor data.
+
+        Failure-aware cadence (#155): a failed poll retries after
+        RETRY_INTERVAL_ON_ERROR instead of silently waiting a full 24 h (a
+        transient AGL error at poll time previously looked exactly like "the
+        poll never ran" — #126). The 24 h cadence is restored on the next
+        clean success. ConfigEntryAuthFailed is left alone — the reauth flow
+        owns that path, and hammering a rejected token would not help.
+
+        A cycle whose backfill sweep was HALTED (429 or transport failure)
+        still returns data — the partial import is safe and the sensors keep
+        their values — but schedules the fast retry too, so the halted chunk
+        is re-fetched in 30 minutes rather than tomorrow (Codex on #157).
+        """
         try:
-            return await self._fetch_and_import()
+            data = await self._fetch_and_import()
         except AGLAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except AGLError as err:
+            if self.update_interval != RETRY_INTERVAL_ON_ERROR:
+                _LOGGER.info(
+                    "Poll failed (%s); retrying in %s instead of %s",
+                    err,
+                    RETRY_INTERVAL_ON_ERROR,
+                    SCAN_INTERVAL_HOURLY,
+                )
+                self.update_interval = RETRY_INTERVAL_ON_ERROR
             raise UpdateFailed(str(err)) from err
+        if self._sweep_halted:
+            if self.update_interval != RETRY_INTERVAL_ON_ERROR:
+                _LOGGER.info(
+                    "Backfill sweep halted mid-chunk; retrying in %s",
+                    RETRY_INTERVAL_ON_ERROR,
+                )
+                self.update_interval = RETRY_INTERVAL_ON_ERROR
+        elif self.update_interval != SCAN_INTERVAL_HOURLY:
+            _LOGGER.info("Poll succeeded; restoring %s cadence", SCAN_INTERVAL_HOURLY)
+            self.update_interval = SCAN_INTERVAL_HOURLY
+        return data
 
     async def _fetch_and_import(self) -> HaggleData:
         """Core update: fetch missing intervals + trailing rewindow, return data."""
@@ -244,17 +291,19 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # per-tariff baseline sums themselves are resolved in _import_intervals.
         self._active_tou_bands |= await self._get_stored_tou_bands()
 
-        fetch_complete = True
-        if cons_range or solar_range:
-            fetch_complete = await self._fetch_range(
-                cons_range,
-                solar_range,
-                bill_start,
-                known_bands=frozenset(self._active_tou_bands),
-            )
-
-        if heal_ctx is not None:
-            self._persist_solar_heal(heal_ctx, fetch_complete)
+        # Stall tracking (#154) only for chunks strictly BEYOND the last
+        # stored generation day: the trailing rewindow deliberately overlaps
+        # existing rows, and give-up markers written over real data would
+        # corrupt the cumulative chain (Codex on #157). Heal sweeps have
+        # their own attempt accounting.
+        track_stall = (
+            heal_ctx is None
+            and solar_range is not None
+            and (last_gen_date is None or solar_range[0] > last_gen_date)
+        )
+        fetch_complete = await self._fetch_with_heal_accounting(
+            cons_range, solar_range, bill_start, heal_ctx, track_stall=track_stall
+        )
 
         # Extract rates from plan.
         unit_rate_aud: float | None = None
@@ -278,14 +327,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         feed_in_rate_aud = feed_in_cents / 100.0 if feed_in_cents is not None else None
 
         # Bill-period solar totals — after the fetch so this cycle's rows are
-        # included in the in-memory latest sums. Suppressed (→ sensor `unknown`)
-        # during a heal cycle (Codex P2): the heal rewrites rows behind
-        # bill_start this cycle, so the baseline query could still read the old
-        # queued sum while _latest_generation_kwh already holds the rebuilt total
-        # — a one-cycle over-read. The next non-heal cycle reports correctly.
+        # included in the in-memory latest sums. On a heal cycle the rewritten
+        # pre-bill_start rows are still in the recorder's async write queue,
+        # so a live baseline read would over-count (Codex P2 on #150). Rather
+        # than blanking the sensors for the whole cycle, a COMPLETE sweep
+        # drains the queue first and then reads through the proven totals
+        # path (#152) — the sensors show the healed number the same cycle the
+        # heal finishes. Incomplete sweep or drain timeout → stay suppressed
+        # (`unknown`); a wrong number is worse than a blank one here.
         generation_period_kwh: float | None = None
         generation_period_credit: float | None = None
-        if self._has_solar and heal_ctx is None:
+        publish_period = heal_ctx is None or (
+            fetch_complete and await self._recorder_drained()
+        )
+        if self._has_solar and publish_period:
             (
                 generation_period_kwh,
                 generation_period_credit,
@@ -549,32 +604,123 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         P2, pass 3) so an HA restart mid-heal resumes the same window instead of
         recomputing it from a later `today` and dropping the oldest day — and
         re-read from the pending record on every retry. The heal stays pending —
-        retrying — until a sweep completes with no skipped day, then goes done and
-        never re-arms.
+        retrying — until a sweep completes with no skipped day, then goes done.
+
+        After done, the LEADING-HOLE trigger never re-arms (a permanently
+        unfetchable gap must not re-sweep every poll), but a BROKEN CHAIN —
+        the downward step a 429 on the give-up sweep can freeze — re-arms ONE
+        bounded repair generation (#153): a fresh MAX_SOLAR_HEAL_ATTEMPTS
+        budget marked `repair: true` in the record. A record that already
+        carries the repair mark never re-arms again, so total lifetime sweeps
+        are hard-capped at 2x MAX_SOLAR_HEAL_ATTEMPTS.
         """
         heal = self.config_entry.data.get(CONF_SOLAR_HEAL) or {}
         state = heal.get("state")
-        if state != SOLAR_HEAL_DONE and last_gen_date is not None:
+        if last_gen_date is not None:
             if state == SOLAR_HEAL_PENDING:
                 floor = date.fromisoformat(heal["floor"])  # frozen at heal start
                 return (floor, yesterday), (floor, int(heal.get("attempts", 0)))
             floor = today - timedelta(days=BACKFILL_DAYS)
-            if await self._generation_needs_heal(stat_id_gen, floor, today):
-                # Freeze the floor NOW, before the multi-second fetch, so a
-                # restart mid-heal survives with the window intact. A resume
-                # cycle already has this record, so this is a no-op then.
-                self._write_solar_heal(
-                    {
-                        "state": SOLAR_HEAL_PENDING,
-                        "floor": floor.isoformat(),
-                        "attempts": 0,
-                    }
+            if state != SOLAR_HEAL_DONE:
+                if await self._generation_needs_heal(stat_id_gen, floor, today):
+                    # Freeze the floor NOW, before the multi-second fetch, so a
+                    # restart mid-heal survives with the window intact. A resume
+                    # cycle already has this record, so this is a no-op then.
+                    self._write_solar_heal(
+                        {
+                            "state": SOLAR_HEAL_PENDING,
+                            "floor": floor.isoformat(),
+                            "attempts": 0,
+                        }
+                    )
+                    return (floor, yesterday), (floor, 0)
+            elif not heal.get("repair"):
+                _, broken = await self._generation_heal_triggers(
+                    stat_id_gen, floor, today
                 )
-                return (floor, yesterday), (floor, 0)
+                if broken:
+                    _LOGGER.warning(
+                        "Generation sum chain broken after heal completion; "
+                        "arming one bounded repair generation (#153)"
+                    )
+                    self._write_solar_heal(
+                        {
+                            "state": SOLAR_HEAL_PENDING,
+                            "floor": floor.isoformat(),
+                            "attempts": 0,
+                            "repair": True,
+                        }
+                    )
+                    return (floor, yesterday), (floor, 0)
         normal = self._chunked_range(
             self._resolve_fetch_start(today, last_gen_date), yesterday
         )
         return normal, None
+
+    async def _recorder_drained(self) -> bool:
+        """Await the recorder committing queued statistics, bounded (#152).
+
+        After a COMPLETE heal sweep the rewritten pre-bill_start rows are
+        still in the recorder's async write queue; reading the bill_start
+        baseline before they commit would over-read the period totals (the
+        Codex P2 race on #150). Draining lets the proven
+        _get_generation_period_totals path run against exact data on the same
+        cycle the heal finishes. Returns False on timeout or recorder error —
+        the caller keeps the suppression and the next normal cycle publishes.
+        """
+        from homeassistant.helpers.recorder import get_instance
+
+        try:
+            await asyncio.wait_for(
+                get_instance(self.hass).async_block_till_done(),
+                timeout=RECORDER_DRAIN_TIMEOUT,
+            )
+        except Exception:
+            return False
+        return True
+
+    async def _fetch_with_heal_accounting(
+        self,
+        cons_range: tuple[date, date] | None,
+        solar_range: tuple[date, date] | None,
+        bill_start: date | None,
+        heal_ctx: tuple[date, int] | None,
+        *,
+        track_stall: bool = False,
+    ) -> bool:
+        """Run the fetch, guaranteeing heal attempts are counted on ANY exit.
+
+        Belt-and-braces for #151: even an exception type the AGL client failed
+        to wrap must count a heal attempt — otherwise a deterministic raise on
+        an old heal-window day (a day only heal sweeps ever fetch) would
+        re-fire an unbounded, uncounted 30-day sweep every cycle forever, with
+        the whole integration unavailable throughout.
+        """
+        if not (cons_range or solar_range):
+            if heal_ctx is not None:
+                self._persist_solar_heal(heal_ctx, complete=True)
+            return True
+        try:
+            complete = await self._fetch_range(
+                cons_range,
+                solar_range,
+                bill_start,
+                known_bands=frozenset(self._active_tou_bands),
+                track_stall=track_stall,
+            )
+        except asyncio.CancelledError:
+            # HA unload/restart mid-sweep is not an AGL failure — the frozen
+            # floor is already persisted, so the heal simply resumes on the
+            # next start. Counting it would let a few quick restarts exhaust
+            # the attempt budget with zero fetch failures (Codex on #157).
+            raise
+        except BaseException:
+            if heal_ctx is not None:
+                self._persist_solar_heal(heal_ctx, complete=False)
+            raise
+        if heal_ctx is not None:
+            self._persist_solar_heal(heal_ctx, complete=complete)
+        return complete
 
     def _persist_solar_heal(self, heal_ctx: tuple[date, int], complete: bool) -> None:
         """Record heal progress in entry.data (Codex P1/P2/P3 on #150).
@@ -588,15 +734,29 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         the rotated refresh token — no reload listener fires.
         """
         floor, attempts = heal_ctx
+        # The one-shot repair mark must survive every transition, or a broken
+        # chain could re-arm repair generations forever (#153).
+        repairing = bool(
+            (self.config_entry.data.get(CONF_SOLAR_HEAL) or {}).get("repair")
+        )
         new: dict[str, object]
         if complete:
             new = {"state": SOLAR_HEAL_DONE}
         elif attempts + 1 >= MAX_SOLAR_HEAL_ATTEMPTS:
-            _LOGGER.warning(
-                "Solar heal gave up after %d attempts; some pre-rewindow days may "
-                "remain unfetched (persistent AGL error on old solar dates)",
-                attempts + 1,
-            )
+            if repairing:
+                _LOGGER.error(
+                    "Solar chain repair gave up after %d attempts — a downward "
+                    "step may persist in the generation statistics; manual "
+                    "repair via Developer Tools → Statistics if it matters",
+                    attempts + 1,
+                )
+            else:
+                _LOGGER.warning(
+                    "Solar heal gave up after %d attempts; some pre-rewindow "
+                    "days may remain unfetched (persistent AGL error on old "
+                    "solar dates)",
+                    attempts + 1,
+                )
             new = {"state": SOLAR_HEAL_DONE}
         else:
             new = {
@@ -604,6 +764,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 "floor": floor.isoformat(),
                 "attempts": attempts + 1,
             }
+        if repairing:
+            new["repair"] = True
         self._write_solar_heal(new)
 
     def _write_solar_heal(self, record: dict[str, object]) -> None:
@@ -620,31 +782,50 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> bool:
         """True if the generation series must be re-imported from the floor.
 
-        Two stateless triggers, both re-derived from the recorder each cycle so
-        no heal-progress flag has to be persisted:
+        Starts the one-time heal only — retry, completion, and termination are
+        owned by the persisted `solar_heal` record, not this detector (Codex
+        docstring correction, 2026-07-08). Either trigger arms it; see
+        _generation_heal_triggers for the two failure geometries.
+        """
+        leading, broken = await self._generation_heal_triggers(
+            stat_id_gen, floor, today
+        )
+        return leading or broken
 
-        1. LEADING HOLE — the earliest stored generation hour sits well after
-           the backfill floor. A series backfilled from the floor carries a row
-           (a real read, or a zero-export marker) at every day since the floor,
-           so its first row is at/near the floor. A series seeded only from the
-           trailing rewindow (the beta.1 upgrade artifact, #128) starts ~today-7
-           with nothing before it; _resolve_fetch_start keys off the LAST row
-           and never revisits those older days, stranding them permanently.
+    async def _generation_heal_triggers(
+        self, stat_id_gen: str, floor: date, today: date
+    ) -> tuple[bool, bool]:
+        """Return (leading_hole, chain_broken) for the generation series.
 
-        2. BROKEN CHAIN — a downward step in the cumulative sum. A heal
-           interrupted mid-way (AGL 429) re-imports a contiguous prefix but
-           leaves the later rows on their old baseline, stepping the sum down at
-           the frontier. Re-detecting that step re-triggers the heal next cycle
-           so it completes — this is what makes the uncapped re-import 429-safe.
+        LEADING HOLE — the earliest stored generation hour sits well after the
+        backfill floor. A series backfilled from the floor carries a row (a
+        real read, or a zero-export marker) at every day since the floor, so
+        its first row is at/near the floor. A series seeded only from the
+        trailing rewindow (the beta.1 upgrade artifact, #128) starts ~today-7
+        with nothing before it; _resolve_fetch_start keys off the LAST row and
+        never revisits those older days, stranding them permanently. This
+        trigger is disarmed for good once the heal record is done — a
+        permanently unfetchable leading gap must not re-sweep every poll.
 
-        A series with no rows in the window (fresh install) never heals; normal
-        backfill from the floor handles it.
+        CHAIN BROKEN — a downward step in the cumulative sum of EITHER solar
+        series, what a heal sweep interrupted mid-import leaves behind (#114
+        class). The AUD credit chain is checked alongside kWh (Codex on #157):
+        the two accumulate independently, so differing feed-in rates across a
+        partial re-import can step credit down while kWh stays monotonic.
+        Checked separately from the leading hole because it must survive the
+        done state (#153): a 429 landing on the give-up sweep can freeze a
+        step that the leading-hole logic never revisits. The repair it arms
+        is bounded — see _plan_solar_fetch.
+
+        A series with no rows in the window (fresh install) triggers neither;
+        normal backfill from the floor handles it.
         """
         from homeassistant.components.recorder.statistics import (
             statistics_during_period,
         )
         from homeassistant.helpers.recorder import get_instance
 
+        _, stat_id_credit = self._generation_stat_ids()
         floor_dt = dt_util.as_utc(dt_util.start_of_local_day(floor))
         now = datetime.now(UTC)
         result = await get_instance(self.hass).async_add_executor_job(
@@ -652,35 +833,40 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             self.hass,
             floor_dt,
             now,
-            {stat_id_gen},
+            {stat_id_gen, stat_id_credit},
             "hour",
             None,
             {"start", "sum"},
         )
         rows = result.get(stat_id_gen) or []
         if not rows:
-            return False
+            return False, False
 
         # Leading hole: earliest stored hour is more than a day past the floor.
         # One day of slack absorbs the local-midnight-vs-UTC offset (a local day
-        # begins on the previous UTC date in a positive-offset zone).
+        # begins on the previous UTC date in a positive-offset zone). Keyed off
+        # the kWh series only — credit rides along in the same import batches.
+        leading = False
         first_start = rows[0].get("start")
         if first_start is not None:
             first_date = datetime.fromtimestamp(float(first_start), tz=UTC).date()
-            if first_date > floor + timedelta(days=1):
-                return True
+            leading = first_date > floor + timedelta(days=1)
 
-        # Broken chain: any downward step in the cumulative sum.
-        prev: float | None = None
-        for row in rows:
-            raw = row.get("sum")
-            if raw is None:
-                continue
-            s = float(raw)
-            if prev is not None and s < prev - 1e-6:
-                return True
-            prev = s
-        return False
+        # Broken chain: any downward step in EITHER cumulative sum.
+        def _has_step(series_rows: list[Any]) -> bool:
+            prev: float | None = None
+            for row in series_rows:
+                raw = row.get("sum")
+                if raw is None:
+                    continue
+                s = float(raw)
+                if prev is not None and s < prev - 1e-6:
+                    return True
+                prev = s
+            return False
+
+        broken = _has_step(rows) or _has_step(result.get(stat_id_credit) or [])
+        return leading, broken
 
     async def _get_stored_tou_bands(self) -> set[str]:
         """Return the ToU bands (peak/offpeak/shoulder) that already have stats.
@@ -761,6 +947,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         bill_start: date | None,
         *,
         known_bands: frozenset[str] = frozenset(),
+        track_stall: bool = False,
     ) -> bool:
         """Fetch per-series day ranges with smart endpoint selection, then import.
 
@@ -788,6 +975,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         reconciled against a real bill.
         """
         ranges = [r for r in (cons_range, solar_range) if r is not None]
+        self._sweep_halted = False
         if not ranges:
             return True
         all_intervals: list[IntervalReading] = []
@@ -822,13 +1010,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 status = await self._fetch_solar_day_into(
                     current, previous, solar_intervals, fetched_solar_days
                 )
-                if status == "ratelimit":
+                if status == "halt":
+                    # 429 or transport failure — endpoint-wide, not per-day;
+                    # halt and retry the whole chunk next cycle.
                     rate_limited = True
                 elif status == "skip":
-                    # Transient AGL error on this solar day: unmarked, and the
-                    # sweep is flagged incomplete so a heal retries it rather than
-                    # declaring done with a hole. On normal cycles the return is
-                    # ignored and the trailing rewindow re-fetches it next cycle.
+                    # Per-day AGL HTTP error on this solar day: unmarked, and
+                    # the sweep is flagged incomplete so a heal retries it
+                    # rather than declaring done with a hole. On normal cycles
+                    # the return is ignored and the trailing rewindow
+                    # re-fetches it next cycle.
                     solar_skipped = True
             current += timedelta(days=1)
 
@@ -842,18 +1033,80 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             await self._import_generation(
                 solar_intervals, fetched_days=fetched_solar_days
             )
+        # Normal-path give-up (#154): only non-heal, non-rate-limited sweeps
+        # count toward the stall detector — a 429 halts before days are even
+        # attempted, and heal sweeps have their own attempt accounting.
+        if track_stall and solar_range is not None and not rate_limited:
+            await self._track_solar_stall(
+                solar_range, bool(fetched_solar_days), solar_skipped
+            )
         # If no intervals were fetched (e.g. AGL had no data for the whole
         # range), leave the cumulative seeds as the caller set them — the
         # most recent stored cumulative remains the sensor value.
+        # Halted (429/transport) → _async_update_data schedules the #155 fast
+        # retry so the chunk is re-fetched in minutes, not tomorrow. Skips are
+        # NOT halts: per-day AGL HTTP errors are server-side and won't clear
+        # in 30 minutes — the rewindow/heal machinery owns those.
+        self._sweep_halted = rate_limited
         return not rate_limited and not solar_skipped
+
+    async def _track_solar_stall(
+        self, solar_range: tuple[date, date], progressed: bool, skipped: bool
+    ) -> None:
+        """Give-up counter for a solar chunk stuck on permanently-erroring days.
+
+        Only a *successful* fetch marks a day as covered, so a contiguous span
+        of ≥ BACKFILL_CHUNK_DAYS permanently-erroring days at `resume+1..`
+        would refetch the identical chunk forever — the resume point never
+        moves and the bill-period sensors stay gated for good (#154; realistic
+        after HA has been offline past AGL's retention edge).
+
+        After SOLAR_STALL_GIVE_UP_CYCLES consecutive cycles of zero progress
+        on the SAME chunk, write zero-delta marker rows past the span (the
+        beta.2 marker mechanism) with a WARNING — the accepted rare-hole
+        tradeoff, now bounded. In-memory: a restart resets the count
+        (conservative — more retries, never fewer).
+        """
+        if progressed or not skipped:
+            self._solar_stall = None  # progress or clean sweep → reset
+            return
+        key = solar_range[0].isoformat()
+        count = (
+            self._solar_stall[1] + 1
+            if self._solar_stall and self._solar_stall[0] == key
+            else 1
+        )
+        if count < SOLAR_STALL_GIVE_UP_CYCLES:
+            self._solar_stall = (key, count)
+            return
+        span = [
+            solar_range[0] + timedelta(days=n)
+            for n in range((solar_range[1] - solar_range[0]).days + 1)
+        ]
+        _LOGGER.warning(
+            "Solar backfill made no progress on %s..%s for %d consecutive "
+            "cycles (persistent AGL errors); marking the span as covered so "
+            "the backfill can move on — those days remain a permanent hole",
+            span[0],
+            span[-1],
+            count,
+        )
+        await self._import_generation([], fetched_days=span)
+        self._solar_stall = None
 
     async def _fetch_day_consumption(
         self, day: date, previous: bool
     ) -> list[IntervalReading] | None:
         """Fetch one day of consumption intervals.
 
-        Returns [] on a skippable AGLError (logged, the loop continues) and
-        None on AGLRateLimitError so the caller halts the chunk.
+        Returns [] on a skippable AGL HTTP error (logged, the loop continues)
+        and None on AGLRateLimitError OR AGLTransportError so the caller halts
+        the chunk. Transport failures (network blip, timeout, challenge page)
+        are endpoint-wide and transient — skipping the day would advance the
+        resume point past it and leave a permanent hole (Codex on #157);
+        halting retries the whole chunk next cycle instead. The skip tradeoff
+        stays for genuine per-day HTTP errors (AGL permanently 500s very old
+        dates — #34).
         """
         try:
             if previous:
@@ -864,6 +1117,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         except AGLRateLimitError as err:
             _LOGGER.warning(
                 "AGL rate-limited at %s; halting backfill chunk: %s", day, err
+            )
+            return None
+        except AGLTransportError as err:
+            _LOGGER.warning(
+                "Transport failure at %s; halting backfill chunk: %s", day, err
             )
             return None
         except AGLError as err:
@@ -884,13 +1142,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         errored day would let a permanently-500ing old day (AGL does this on
         very old dates) stall the backfill and the period sensors forever,
         which is worse than a rare one-day historical hole.
-        AGLRateLimitError propagates so the caller halts the whole chunk.
+        AGLRateLimitError and AGLTransportError propagate so the caller halts
+        the whole chunk — transport failures are endpoint-wide/transient, and
+        skipping the day would trade a retry for a permanent hole (Codex on
+        #157).
         """
         try:
             return await self.client.async_get_solar_hourly(
                 self.contract_number, day, previous=previous
             )
-        except AGLRateLimitError:
+        except (AGLRateLimitError, AGLTransportError):
             raise
         except AGLError as err:
             _LOGGER.debug("Solar fetch skip %s: %s", day, err)
@@ -905,20 +1166,24 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> str:
         """Fetch one solar day into the accumulators; classify the outcome.
 
-        Returns "ok" (day fetched, marked covered), "skip" (transient AGL error
-        — unmarked, sweep is incomplete), or "ratelimit" (429 — caller halts the
-        chunk). Only a *successful* fetch appends to `fetched_solar_days`, so a
+        Returns "ok" (day fetched, marked covered), "skip" (per-day AGL HTTP
+        error — unmarked, sweep is incomplete), or "halt" (429 or transport
+        failure — caller halts the chunk; the whole thing retries next cycle).
+        Only a *successful* fetch appends to `fetched_solar_days`, so a
         skipped day is retried while a heal is pending.
         """
         try:
             readings = await self._fetch_day_solar(day, previous)
-        except AGLRateLimitError as err:
+        except (AGLRateLimitError, AGLTransportError) as err:
             _LOGGER.warning(
-                "AGL rate-limited at %s (solar); halting backfill chunk: %s",
+                "AGL %s at %s (solar); halting backfill chunk: %s",
+                "rate limit"
+                if isinstance(err, AGLRateLimitError)
+                else "transport failure",
                 day,
                 err,
             )
-            return "ratelimit"
+            return "halt"
         if readings is None:
             return "skip"
         solar_intervals.extend(readings)

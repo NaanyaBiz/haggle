@@ -25,6 +25,8 @@ import logging
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+
 from ..const import (
     AGL_ACCEPT_FEATURES,
     AGL_AUTH0_CLIENT,
@@ -53,9 +55,14 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from datetime import date
 
-    import aiohttp
-
 _LOGGER = logging.getLogger(__name__)
+
+# Failures below the HTTP-status layer. Every coordinator catch site is
+# designed around the AGLError family; letting these escape raw crashes the
+# whole update cycle BEFORE the solar heal's attempt accounting runs, which
+# can wedge a pending heal in an unbounded uncounted retry loop (#151).
+# TimeoutError covers asyncio.TimeoutError (alias since Python 3.11).
+_TRANSPORT_ERRORS = (TimeoutError, aiohttp.ClientError)
 
 # Refresh when this many seconds remain before expiry.
 _REFRESH_MARGIN_SECONDS = 120
@@ -65,6 +72,17 @@ TOKEN_ENDPOINT = f"{AGL_AUTH_HOST}/oauth/token"
 
 class AGLError(Exception):
     """Base class for AGL API errors."""
+
+
+class AGLTransportError(AGLError):
+    """Below-HTTP failure: network error, timeout, or non-JSON body.
+
+    Distinct from a plain AGLError so per-day backfill fetchers can HALT the
+    chunk (transport failures are endpoint-wide and transient — retrying the
+    whole chunk next cycle is right) instead of SKIPPING the day, which would
+    advance the resume point past it and leave a permanent hole (Codex on
+    #157). Still an AGLError, so every existing catch site behaves.
+    """
 
 
 class AGLAuthError(AGLError):
@@ -149,18 +167,29 @@ class AglAuth:
             "refresh_token": self._refresh_token,
         }
 
-        async with session.post(TOKEN_ENDPOINT, json=body, headers=headers) as resp:
-            if resp.status == 401:
-                raise AGLAuthError("Token refresh rejected (401) — reauth required")
-            if resp.status != 200:
-                # Auth0 error bodies can include diagnostic fields (mfa_token,
-                # error_description, internal trace IDs); keep them out of the
-                # exception that propagates to ConfigEntryAuthFailed → HA
-                # Persistent Notifications. Body lives in DEBUG only.
-                text = await resp.text()
-                _LOGGER.debug("Token refresh non-200 body: %s", text[:200])
-                raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
-            data: dict[str, Any] = await resp.json(content_type=None)
+        try:
+            async with session.post(TOKEN_ENDPOINT, json=body, headers=headers) as resp:
+                if resp.status == 401:
+                    raise AGLAuthError("Token refresh rejected (401) — reauth required")
+                if resp.status != 200:
+                    # Auth0 error bodies can include diagnostic fields
+                    # (mfa_token, error_description, internal trace IDs); keep
+                    # them out of the exception that propagates to
+                    # ConfigEntryAuthFailed → HA Persistent Notifications.
+                    # Body lives in DEBUG only.
+                    text = await resp.text()
+                    _LOGGER.debug("Token refresh non-200 body: %s", text[:200])
+                    raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
+                data: dict[str, Any] = await resp.json(content_type=None)
+        except _TRANSPORT_ERRORS as err:
+            # A network blip is NOT an auth failure — wrap as retryable
+            # AGLError, never AGLAuthError (which triggers the reauth flow)
+            # and never a raw escape (which crashes the cycle, #151).
+            raise AGLTransportError(
+                f"transport error during token refresh: {type(err).__name__}"
+            ) from err
+        except json.JSONDecodeError as err:
+            raise AGLTransportError("non-JSON response from token endpoint") from err
 
         error = data.get("error")
         if error:
@@ -221,7 +250,23 @@ class AglClient:
         }
 
     async def _get(self, url: str) -> Any:
-        """GET a URL with auth, retrying once on 401."""
+        """GET a URL with auth, retrying once on 401.
+
+        Transport- and parse-level failures (network errors, timeouts, a 200
+        with a non-JSON body such as an Akamai challenge page) are wrapped
+        into AGLError so callers see the one exception family every catch
+        site was designed around (#151). Typed AGL errors pass through
+        unchanged.
+        """
+        try:
+            return await self._get_raw(url)
+        except _TRANSPORT_ERRORS as err:
+            raise AGLTransportError(f"transport error: {type(err).__name__}") from err
+        except json.JSONDecodeError as err:
+            # Body may be an Akamai/HTML page; never surface it (#151).
+            raise AGLTransportError("non-JSON response from AGL endpoint") from err
+
+    async def _get_raw(self, url: str) -> Any:
         token = await self._auth.async_ensure_valid_token(self._session)
         headers = {**self._default_headers, "Authorization": f"Bearer {token}"}
 

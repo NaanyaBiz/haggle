@@ -28,6 +28,18 @@ AGL_OAUTH_AUDIENCE: Final = "https://api.platform.agl.com.au/"
 # Polling cadence.
 # AGL interval data is delayed 24-48 h from the meter (AEMO feed lag).
 SCAN_INTERVAL_HOURLY: Final = timedelta(hours=24)  # 30-min intervals: fetch yesterday
+# Retry cadence after a FAILED poll (#155). A transient AGL error at poll time
+# previously cost a full 24 h of data — indistinguishable from "the poll never
+# ran" (#126). Restored to SCAN_INTERVAL_HOURLY on the next success; polling
+# faster than 24 h on success buys nothing (AGL data lags 24-48 h).
+RETRY_INTERVAL_ON_ERROR: Final = timedelta(minutes=30)
+# Normal-path backfill give-up (#154): after this many consecutive cycles in
+# which the SAME solar chunk made zero progress (every attempted day errored,
+# no 429 involved), write zero-delta marker rows past the span so the resume
+# point advances — mirroring the accepted rare-hole tradeoff for single days.
+# In-memory counter; an HA restart resets it (conservative: more retries,
+# never fewer).
+SOLAR_STALL_GIVE_UP_CYCLES: Final = 3
 
 # Number of days of history to backfill on first install.
 BACKFILL_DAYS: Final = 30
@@ -42,6 +54,10 @@ BACKFILL_INTER_REQUEST_DELAY: Final = 0.5
 # async_add_external_statistics is idempotent on (statistic_id, start), so
 # this is a safe overwrite.
 REWINDOW_DAYS: Final = 7
+# Max seconds to wait for the recorder to commit queued statistics after a
+# COMPLETE heal sweep before reading the bill-period baseline (#152). On
+# timeout the period sensors stay `unknown` for the cycle (safe fallback).
+RECORDER_DRAIN_TIMEOUT: Final = 30.0
 
 # AGL BFF requires these headers on Hourly/Daily usage endpoints (HTTP 500 without them).
 # Documented from AGL mobile app 8.38.0-531 — 2026-05-01.
