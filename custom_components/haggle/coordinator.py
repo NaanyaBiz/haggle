@@ -50,6 +50,7 @@ from .const import (
     SCAN_INTERVAL_HOURLY,
     SOLAR_HEAL_DONE,
     SOLAR_HEAL_PENDING,
+    SOLAR_STALL_GIVE_UP_CYCLES,
     STAT_CONSUMPTION,
     STAT_COST,
     STAT_GENERATION,
@@ -161,6 +162,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # Last-seen bill period start — surfaced in diagnostics so period-vs-app
         # mismatch reports can be reasoned about without asking the user.
         self.last_bill_start: date | None = None
+        # (chunk-start-iso, zero-progress cycle count) for the normal-path
+        # backfill give-up (#154). In-memory by design — see _track_solar_stall.
+        self._solar_stall: tuple[str, int] | None = None
 
     def _tariff_stat_ids(self, tariff: str) -> tuple[str, str]:
         """Return (consumption_id, cost_id) for a per-tariff series."""
@@ -669,6 +673,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 solar_range,
                 bill_start,
                 known_bands=frozenset(self._active_tou_bands),
+                track_stall=heal_ctx is None,
             )
         except BaseException:
             if heal_ctx is not None:
@@ -896,6 +901,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         bill_start: date | None,
         *,
         known_bands: frozenset[str] = frozenset(),
+        track_stall: bool = False,
     ) -> bool:
         """Fetch per-series day ranges with smart endpoint selection, then import.
 
@@ -977,10 +983,61 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             await self._import_generation(
                 solar_intervals, fetched_days=fetched_solar_days
             )
+        # Normal-path give-up (#154): only non-heal, non-rate-limited sweeps
+        # count toward the stall detector — a 429 halts before days are even
+        # attempted, and heal sweeps have their own attempt accounting.
+        if track_stall and solar_range is not None and not rate_limited:
+            await self._track_solar_stall(
+                solar_range, bool(fetched_solar_days), solar_skipped
+            )
         # If no intervals were fetched (e.g. AGL had no data for the whole
         # range), leave the cumulative seeds as the caller set them — the
         # most recent stored cumulative remains the sensor value.
         return not rate_limited and not solar_skipped
+
+    async def _track_solar_stall(
+        self, solar_range: tuple[date, date], progressed: bool, skipped: bool
+    ) -> None:
+        """Give-up counter for a solar chunk stuck on permanently-erroring days.
+
+        Only a *successful* fetch marks a day as covered, so a contiguous span
+        of ≥ BACKFILL_CHUNK_DAYS permanently-erroring days at `resume+1..`
+        would refetch the identical chunk forever — the resume point never
+        moves and the bill-period sensors stay gated for good (#154; realistic
+        after HA has been offline past AGL's retention edge).
+
+        After SOLAR_STALL_GIVE_UP_CYCLES consecutive cycles of zero progress
+        on the SAME chunk, write zero-delta marker rows past the span (the
+        beta.2 marker mechanism) with a WARNING — the accepted rare-hole
+        tradeoff, now bounded. In-memory: a restart resets the count
+        (conservative — more retries, never fewer).
+        """
+        if progressed or not skipped:
+            self._solar_stall = None  # progress or clean sweep → reset
+            return
+        key = solar_range[0].isoformat()
+        count = (
+            self._solar_stall[1] + 1
+            if self._solar_stall and self._solar_stall[0] == key
+            else 1
+        )
+        if count < SOLAR_STALL_GIVE_UP_CYCLES:
+            self._solar_stall = (key, count)
+            return
+        span = [
+            solar_range[0] + timedelta(days=n)
+            for n in range((solar_range[1] - solar_range[0]).days + 1)
+        ]
+        _LOGGER.warning(
+            "Solar backfill made no progress on %s..%s for %d consecutive "
+            "cycles (persistent AGL errors); marking the span as covered so "
+            "the backfill can move on — those days remain a permanent hole",
+            span[0],
+            span[-1],
+            count,
+        )
+        await self._import_generation([], fetched_days=span)
+        self._solar_stall = None
 
     async def _fetch_day_consumption(
         self, day: date, previous: bool

@@ -33,6 +33,13 @@ SCAN_INTERVAL_HOURLY: Final = timedelta(hours=24)  # 30-min intervals: fetch yes
 # ran" (#126). Restored to SCAN_INTERVAL_HOURLY on the next success; polling
 # faster than 24 h on success buys nothing (AGL data lags 24-48 h).
 RETRY_INTERVAL_ON_ERROR: Final = timedelta(minutes=30)
+# Normal-path backfill give-up (#154): after this many consecutive cycles in
+# which the SAME solar chunk made zero progress (every attempted day errored,
+# no 429 involved), write zero-delta marker rows past the span so the resume
+# point advances — mirroring the accepted rare-hole tradeoff for single days.
+# In-memory counter; an HA restart resets it (conservative: more retries,
+# never fewer).
+SOLAR_STALL_GIVE_UP_CYCLES: Final = 3
 
 # Number of days of history to backfill on first install.
 BACKFILL_DAYS: Final = 30
