@@ -479,6 +479,35 @@ class TestUpdateDataAuthError:
             await coord._async_update_data()
         assert coord.update_interval == SCAN_INTERVAL_HOURLY
 
+    async def test_halted_sweep_schedules_fast_retry(self, hass: HomeAssistant) -> None:
+        """Codex on #157: a chunk halted by 429/transport returns data (cycle
+        succeeds, sensors keep values) but must still schedule the 30-min
+        retry — otherwise the halted chunk waits a full day."""
+        from custom_components.haggle.const import (
+            RETRY_INTERVAL_ON_ERROR,
+            SCAN_INTERVAL_HOURLY,
+        )
+
+        coord = _make_coordinator(hass)
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+
+        async def _fetch_and_mark_halt() -> MagicMock:
+            coord._sweep_halted = True  # as _fetch_range sets on a halt
+            return MagicMock()
+
+        with patch.object(coord, "_fetch_and_import", side_effect=_fetch_and_mark_halt):
+            await coord._async_update_data()
+        assert coord.update_interval == RETRY_INTERVAL_ON_ERROR
+
+        # Next clean cycle restores the daily cadence.
+        async def _fetch_clean() -> MagicMock:
+            coord._sweep_halted = False
+            return MagicMock()
+
+        with patch.object(coord, "_fetch_and_import", side_effect=_fetch_clean):
+            await coord._async_update_data()
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+
     async def test_auth_failure_leaves_interval_untouched(
         self, hass: HomeAssistant
     ) -> None:
@@ -2019,6 +2048,30 @@ class TestGenerationHeal:
         }
         with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
             assert await coord._generation_needs_heal(stat_id_gen, floor, today) is True
+
+    async def test_credit_only_step_also_triggers(self, hass: HomeAssistant) -> None:
+        """Codex on #157: the AUD credit chain accumulates independently — a
+        step in credit alone (kWh monotonic) must still arm the repair."""
+        coord = _make_coordinator(hass)
+        stat_id_gen, stat_id_credit = coord._generation_stat_ids()
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        rows = {
+            stat_id_gen: [
+                {"start": _ts(floor), "sum": 5.0},
+                {"start": _ts(floor + timedelta(days=1)), "sum": 6.0},  # monotonic
+            ],
+            stat_id_credit: [
+                {"start": _ts(floor), "sum": 2.0},
+                {"start": _ts(floor + timedelta(days=1)), "sum": 0.5},  # step down
+            ],
+        }
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
+            leading, broken = await coord._generation_heal_triggers(
+                stat_id_gen, floor, today
+            )
+        assert broken is True
+        assert leading is False
 
     async def test_empty_series_no_heal(self, hass: HomeAssistant) -> None:
         """No rows (fresh install) → normal backfill handles it, not a heal."""

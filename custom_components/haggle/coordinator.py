@@ -170,6 +170,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # (chunk-start-iso, zero-progress cycle count) for the normal-path
         # backfill give-up (#154). In-memory by design — see _track_solar_stall.
         self._solar_stall: tuple[str, int] | None = None
+        # True when the last sweep was HALTED mid-chunk (429/transport) —
+        # _async_update_data schedules the #155 fast retry off this instead of
+        # waiting a full day for the halted chunk (Codex on #157).
+        self._sweep_halted: bool = False
 
     def _tariff_stat_ids(self, tariff: str) -> tuple[str, str]:
         """Return (consumption_id, cost_id) for a per-tariff series."""
@@ -195,8 +199,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         RETRY_INTERVAL_ON_ERROR instead of silently waiting a full 24 h (a
         transient AGL error at poll time previously looked exactly like "the
         poll never ran" — #126). The 24 h cadence is restored on the next
-        success. ConfigEntryAuthFailed is left alone — the reauth flow owns
-        that path, and hammering a rejected token would not help.
+        clean success. ConfigEntryAuthFailed is left alone — the reauth flow
+        owns that path, and hammering a rejected token would not help.
+
+        A cycle whose backfill sweep was HALTED (429 or transport failure)
+        still returns data — the partial import is safe and the sensors keep
+        their values — but schedules the fast retry too, so the halted chunk
+        is re-fetched in 30 minutes rather than tomorrow (Codex on #157).
         """
         try:
             data = await self._fetch_and_import()
@@ -212,7 +221,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 )
                 self.update_interval = RETRY_INTERVAL_ON_ERROR
             raise UpdateFailed(str(err)) from err
-        if self.update_interval != SCAN_INTERVAL_HOURLY:
+        if self._sweep_halted:
+            if self.update_interval != RETRY_INTERVAL_ON_ERROR:
+                _LOGGER.info(
+                    "Backfill sweep halted mid-chunk; retrying in %s",
+                    RETRY_INTERVAL_ON_ERROR,
+                )
+                self.update_interval = RETRY_INTERVAL_ON_ERROR
+        elif self.update_interval != SCAN_INTERVAL_HOURLY:
             _LOGGER.info("Poll succeeded; restoring %s cadence", SCAN_INTERVAL_HOURLY)
             self.update_interval = SCAN_INTERVAL_HOURLY
         return data
@@ -791,12 +807,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         trigger is disarmed for good once the heal record is done — a
         permanently unfetchable leading gap must not re-sweep every poll.
 
-        CHAIN BROKEN — a downward step in the cumulative sum, what a heal
-        sweep interrupted mid-import leaves behind (#114 class). Checked
-        separately because it must survive the done state (#153): a 429
-        landing on the give-up sweep can freeze a step that the leading-hole
-        logic never revisits. The repair it arms is bounded — see
-        _plan_solar_fetch.
+        CHAIN BROKEN — a downward step in the cumulative sum of EITHER solar
+        series, what a heal sweep interrupted mid-import leaves behind (#114
+        class). The AUD credit chain is checked alongside kWh (Codex on #157):
+        the two accumulate independently, so differing feed-in rates across a
+        partial re-import can step credit down while kWh stays monotonic.
+        Checked separately from the leading hole because it must survive the
+        done state (#153): a 429 landing on the give-up sweep can freeze a
+        step that the leading-hole logic never revisits. The repair it arms
+        is bounded — see _plan_solar_fetch.
 
         A series with no rows in the window (fresh install) triggers neither;
         normal backfill from the floor handles it.
@@ -806,6 +825,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         from homeassistant.helpers.recorder import get_instance
 
+        _, stat_id_credit = self._generation_stat_ids()
         floor_dt = dt_util.as_utc(dt_util.start_of_local_day(floor))
         now = datetime.now(UTC)
         result = await get_instance(self.hass).async_add_executor_job(
@@ -813,7 +833,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             self.hass,
             floor_dt,
             now,
-            {stat_id_gen},
+            {stat_id_gen, stat_id_credit},
             "hour",
             None,
             {"start", "sum"},
@@ -824,25 +844,28 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Leading hole: earliest stored hour is more than a day past the floor.
         # One day of slack absorbs the local-midnight-vs-UTC offset (a local day
-        # begins on the previous UTC date in a positive-offset zone).
+        # begins on the previous UTC date in a positive-offset zone). Keyed off
+        # the kWh series only — credit rides along in the same import batches.
         leading = False
         first_start = rows[0].get("start")
         if first_start is not None:
             first_date = datetime.fromtimestamp(float(first_start), tz=UTC).date()
             leading = first_date > floor + timedelta(days=1)
 
-        # Broken chain: any downward step in the cumulative sum.
-        broken = False
-        prev: float | None = None
-        for row in rows:
-            raw = row.get("sum")
-            if raw is None:
-                continue
-            s = float(raw)
-            if prev is not None and s < prev - 1e-6:
-                broken = True
-                break
-            prev = s
+        # Broken chain: any downward step in EITHER cumulative sum.
+        def _has_step(series_rows: list[Any]) -> bool:
+            prev: float | None = None
+            for row in series_rows:
+                raw = row.get("sum")
+                if raw is None:
+                    continue
+                s = float(raw)
+                if prev is not None and s < prev - 1e-6:
+                    return True
+                prev = s
+            return False
+
+        broken = _has_step(rows) or _has_step(result.get(stat_id_credit) or [])
         return leading, broken
 
     async def _get_stored_tou_bands(self) -> set[str]:
@@ -952,6 +975,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         reconciled against a real bill.
         """
         ranges = [r for r in (cons_range, solar_range) if r is not None]
+        self._sweep_halted = False
         if not ranges:
             return True
         all_intervals: list[IntervalReading] = []
@@ -1019,6 +1043,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # If no intervals were fetched (e.g. AGL had no data for the whole
         # range), leave the cumulative seeds as the caller set them — the
         # most recent stored cumulative remains the sensor value.
+        # Halted (429/transport) → _async_update_data schedules the #155 fast
+        # retry so the chunk is re-fetched in minutes, not tomorrow. Skips are
+        # NOT halts: per-day AGL HTTP errors are server-side and won't clear
+        # in 30 minutes — the rewindow/heal machinery owns those.
+        self._sweep_halted = rate_limited
         return not rate_limited and not solar_skipped
 
     async def _track_solar_stall(
