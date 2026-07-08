@@ -44,6 +44,7 @@ from .const import (
     CONF_SOLAR_HEAL,
     DOMAIN,
     MAX_SOLAR_HEAL_ATTEMPTS,
+    RECORDER_DRAIN_TIMEOUT,
     REWINDOW_DAYS,
     SCAN_INTERVAL_HOURLY,
     SOLAR_HEAL_DONE,
@@ -244,17 +245,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # per-tariff baseline sums themselves are resolved in _import_intervals.
         self._active_tou_bands |= await self._get_stored_tou_bands()
 
-        fetch_complete = True
-        if cons_range or solar_range:
-            fetch_complete = await self._fetch_range(
-                cons_range,
-                solar_range,
-                bill_start,
-                known_bands=frozenset(self._active_tou_bands),
-            )
-
-        if heal_ctx is not None:
-            self._persist_solar_heal(heal_ctx, fetch_complete)
+        fetch_complete = await self._fetch_with_heal_accounting(
+            cons_range, solar_range, bill_start, heal_ctx
+        )
 
         # Extract rates from plan.
         unit_rate_aud: float | None = None
@@ -278,14 +271,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         feed_in_rate_aud = feed_in_cents / 100.0 if feed_in_cents is not None else None
 
         # Bill-period solar totals — after the fetch so this cycle's rows are
-        # included in the in-memory latest sums. Suppressed (→ sensor `unknown`)
-        # during a heal cycle (Codex P2): the heal rewrites rows behind
-        # bill_start this cycle, so the baseline query could still read the old
-        # queued sum while _latest_generation_kwh already holds the rebuilt total
-        # — a one-cycle over-read. The next non-heal cycle reports correctly.
+        # included in the in-memory latest sums. On a heal cycle the rewritten
+        # pre-bill_start rows are still in the recorder's async write queue,
+        # so a live baseline read would over-count (Codex P2 on #150). Rather
+        # than blanking the sensors for the whole cycle, a COMPLETE sweep
+        # drains the queue first and then reads through the proven totals
+        # path (#152) — the sensors show the healed number the same cycle the
+        # heal finishes. Incomplete sweep or drain timeout → stay suppressed
+        # (`unknown`); a wrong number is worse than a blank one here.
         generation_period_kwh: float | None = None
         generation_period_credit: float | None = None
-        if self._has_solar and heal_ctx is None:
+        publish_period = heal_ctx is None or (
+            fetch_complete and await self._recorder_drained()
+        )
+        if self._has_solar and publish_period:
             (
                 generation_period_kwh,
                 generation_period_credit,
@@ -575,6 +574,62 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             self._resolve_fetch_start(today, last_gen_date), yesterday
         )
         return normal, None
+
+    async def _recorder_drained(self) -> bool:
+        """Await the recorder committing queued statistics, bounded (#152).
+
+        After a COMPLETE heal sweep the rewritten pre-bill_start rows are
+        still in the recorder's async write queue; reading the bill_start
+        baseline before they commit would over-read the period totals (the
+        Codex P2 race on #150). Draining lets the proven
+        _get_generation_period_totals path run against exact data on the same
+        cycle the heal finishes. Returns False on timeout or recorder error —
+        the caller keeps the suppression and the next normal cycle publishes.
+        """
+        from homeassistant.helpers.recorder import get_instance
+
+        try:
+            await asyncio.wait_for(
+                get_instance(self.hass).async_block_till_done(),
+                timeout=RECORDER_DRAIN_TIMEOUT,
+            )
+        except Exception:
+            return False
+        return True
+
+    async def _fetch_with_heal_accounting(
+        self,
+        cons_range: tuple[date, date] | None,
+        solar_range: tuple[date, date] | None,
+        bill_start: date | None,
+        heal_ctx: tuple[date, int] | None,
+    ) -> bool:
+        """Run the fetch, guaranteeing heal attempts are counted on ANY exit.
+
+        Belt-and-braces for #151: even an exception type the AGL client failed
+        to wrap must count a heal attempt — otherwise a deterministic raise on
+        an old heal-window day (a day only heal sweeps ever fetch) would
+        re-fire an unbounded, uncounted 30-day sweep every cycle forever, with
+        the whole integration unavailable throughout.
+        """
+        if not (cons_range or solar_range):
+            if heal_ctx is not None:
+                self._persist_solar_heal(heal_ctx, complete=True)
+            return True
+        try:
+            complete = await self._fetch_range(
+                cons_range,
+                solar_range,
+                bill_start,
+                known_bands=frozenset(self._active_tou_bands),
+            )
+        except BaseException:
+            if heal_ctx is not None:
+                self._persist_solar_heal(heal_ctx, complete=False)
+            raise
+        if heal_ctx is not None:
+            self._persist_solar_heal(heal_ctx, complete=complete)
+        return complete
 
     def _persist_solar_heal(self, heal_ctx: tuple[date, int], complete: bool) -> None:
         """Record heal progress in entry.data (Codex P1/P2/P3 on #150).

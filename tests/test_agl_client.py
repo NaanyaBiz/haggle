@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from custom_components.haggle.agl.client import (
@@ -357,6 +359,67 @@ class TestAglClient:
             pytest.raises(AGLError),
         ):
             await client.async_get_overview()
+
+    async def test_non_json_200_body_raises_agl_error(self) -> None:
+        """A 200 with a non-JSON body (e.g. an Akamai challenge page) must
+        become AGLError, not a raw JSONDecodeError that crashes the update
+        cycle and bypasses the solar heal's attempt accounting (#151)."""
+        client, session = self._make_client({}, status=200)
+        session.get.return_value.json = AsyncMock(
+            side_effect=json.JSONDecodeError("Expecting value", "<html>", 0)
+        )
+        with (
+            patch.object(
+                client._auth,
+                "async_ensure_valid_token",
+                new_callable=AsyncMock,
+                return_value="tok",
+            ),
+            pytest.raises(AGLError, match="non-JSON"),
+        ):
+            await client.async_get_overview()
+
+    async def test_transport_error_raises_agl_error(self) -> None:
+        """aiohttp transport failures wrap into AGLError (#151)."""
+        client, session = self._make_client({}, status=200)
+        session.get = MagicMock(side_effect=aiohttp.ClientError("conn reset"))
+        with (
+            patch.object(
+                client._auth,
+                "async_ensure_valid_token",
+                new_callable=AsyncMock,
+                return_value="tok",
+            ),
+            pytest.raises(AGLError, match="transport error"),
+        ):
+            await client.async_get_overview()
+
+    async def test_timeout_raises_agl_error(self) -> None:
+        """TimeoutError (alias of asyncio.TimeoutError) wraps into AGLError
+        (#151)."""
+        client, session = self._make_client({}, status=200)
+        session.get = MagicMock(side_effect=TimeoutError())
+        with (
+            patch.object(
+                client._auth,
+                "async_ensure_valid_token",
+                new_callable=AsyncMock,
+                return_value="tok",
+            ),
+            pytest.raises(AGLError, match="transport error"),
+        ):
+            await client.async_get_overview()
+
+    async def test_force_refresh_transport_error_is_not_auth_error(self) -> None:
+        """A network blip during token refresh must be retryable AGLError,
+        never AGLAuthError (which triggers the reauth flow) and never a raw
+        escape (#151)."""
+        session = MagicMock()
+        session.post = MagicMock(side_effect=aiohttp.ClientError("dns fail"))
+        auth = AglAuth("v1.tok", AsyncMock())
+        with pytest.raises(AGLError, match="transport error") as exc_info:
+            await auth.async_force_refresh(session)
+        assert not isinstance(exc_info.value, AGLAuthError)
 
     async def test_http_error_keeps_url_and_body_out_of_exception(
         self, caplog: pytest.LogCaptureFixture

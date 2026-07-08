@@ -2067,6 +2067,7 @@ class TestGenerationHealState:
         preset: dict | None = None,
         needs_heal: bool = True,
         fetch_complete: bool = True,
+        drained: bool = False,
     ) -> tuple[HaggleCoordinator, MagicMock, MagicMock, object]:
         coord = _make_coordinator(hass, client=self._solar_client())
         if preset is not None:
@@ -2099,6 +2100,12 @@ class TestGenerationHealState:
             ),
             patch.object(
                 coord,
+                "_recorder_drained",
+                new_callable=AsyncMock,
+                return_value=drained,
+            ),
+            patch.object(
+                coord,
                 "_fetch_range",
                 new_callable=AsyncMock,
                 return_value=fetch_complete,
@@ -2110,6 +2117,45 @@ class TestGenerationHealState:
     @staticmethod
     def _heal(coord: HaggleCoordinator) -> dict:
         return coord.config_entry.data.get(CONF_SOLAR_HEAL) or {}
+
+    async def test_unexpected_raise_mid_heal_still_bumps_attempts(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Belt-and-braces (#151): even a non-AGLError escaping _fetch_range
+        must count a heal attempt — otherwise a deterministic raise on an old
+        heal-window day re-fires an unbounded, uncounted 30-day sweep every
+        cycle with the whole integration unavailable."""
+        coord = _make_coordinator(hass, client=self._solar_client())
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, today - timedelta(days=8))
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=True,
+            ),
+            patch.object(
+                coord,
+                "_fetch_range",
+                new_callable=AsyncMock,
+                side_effect=RuntimeError("unwrapped transport bug"),
+            ),
+            pytest.raises(RuntimeError),
+        ):
+            await coord._fetch_and_import()
+
+        heal = self._heal(coord)
+        assert heal["state"] == SOLAR_HEAL_PENDING
+        assert heal["attempts"] == 1  # the crashed sweep still counted
 
     async def test_pending_persisted_before_fetch(self, hass: HomeAssistant) -> None:
         """The frozen-floor pending record is written BEFORE the long fetch, so an
@@ -2242,14 +2288,38 @@ class TestGenerationHealState:
         assert mock_range.call_args[0][1][0] != today - timedelta(days=BACKFILL_DAYS)
         assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
 
-    async def test_period_totals_suppressed_during_heal(
+    async def test_period_totals_published_after_complete_drained_heal(
         self, hass: HomeAssistant
     ) -> None:
-        """The heal rewrites rows behind bill_start this cycle, so the period
-        totals are suppressed (→ sensor `unknown`) to avoid a one-cycle over-read
-        from a stale queued baseline (P2), even though the totals helper returns
-        numbers."""
-        _, _, _, data = await self._run(hass, needs_heal=True)
+        """#152: a COMPLETE heal sweep drains the recorder queue and then
+        publishes through the proven totals path — the sensors show the healed
+        number the same cycle the heal finishes, no blank day."""
+        _, _, _, data = await self._run(
+            hass, needs_heal=True, fetch_complete=True, drained=True
+        )
+        assert data.generation_period_kwh == 4.0
+        assert data.generation_period_credit_aud == 1.0
+
+    async def test_period_totals_suppressed_on_drain_timeout(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Drain timeout → keep the suppression (a wrong number is worse than
+        a blank one); the next normal cycle publishes."""
+        _, _, _, data = await self._run(
+            hass, needs_heal=True, fetch_complete=True, drained=False
+        )
+        assert data.generation_period_kwh is None
+        assert data.generation_period_credit_aud is None
+
+    async def test_period_totals_suppressed_on_incomplete_heal_sweep(
+        self, hass: HomeAssistant
+    ) -> None:
+        """An incomplete sweep (429/skipped day) must NOT publish even if the
+        recorder would drain — the partial chain undercounts (Codex P2/RT4
+        condition on #152)."""
+        _, _, _, data = await self._run(
+            hass, needs_heal=True, fetch_complete=False, drained=True
+        )
         assert data.generation_period_kwh is None
         assert data.generation_period_credit_aud is None
 

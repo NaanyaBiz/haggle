@@ -42,6 +42,10 @@ BACKFILL_INTER_REQUEST_DELAY: Final = 0.5
 # async_add_external_statistics is idempotent on (statistic_id, start), so
 # this is a safe overwrite.
 REWINDOW_DAYS: Final = 7
+# Max seconds to wait for the recorder to commit queued statistics after a
+# COMPLETE heal sweep before reading the bill-period baseline (#152). On
+# timeout the period sensors stay `unknown` for the cycle (safe fallback).
+RECORDER_DRAIN_TIMEOUT: Final = 30.0
 
 # AGL BFF requires these headers on Hourly/Daily usage endpoints (HTTP 500 without them).
 # Documented from AGL mobile app 8.38.0-531 — 2026-05-01.
