@@ -672,6 +672,12 @@ The HA Energy dashboard requires:
   When adding a new client method, route it through `_get` or replicate the
   shield; `_fetch_with_heal_accounting` is the belt-and-braces layer that
   counts an attempt on ANY sweep exit regardless.
+- **Don't hardcode release version strings in README/info.md/docs.** The
+  release flow bumps `manifest.json` + `CHANGELOG.md` only, so a pinned
+  `vX.Y.Z` anywhere else rots on the next release (the README advertised
+  `beta.2` while `beta.4` was live). Use the shields.io release badge or
+  "latest pre-release via HACS" phrasing; version numbers belong in the
+  CHANGELOG and the releases page.
 
 ---
 
