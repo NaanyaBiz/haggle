@@ -36,7 +36,12 @@ from homeassistant.helpers.update_coordinator import (
 )
 from homeassistant.util import dt as dt_util
 
-from .agl.client import AGLAuthError, AGLError, AGLRateLimitError
+from .agl.client import (
+    AGLAuthError,
+    AGLError,
+    AGLRateLimitError,
+    AGLTransportError,
+)
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -270,8 +275,18 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # per-tariff baseline sums themselves are resolved in _import_intervals.
         self._active_tou_bands |= await self._get_stored_tou_bands()
 
+        # Stall tracking (#154) only for chunks strictly BEYOND the last
+        # stored generation day: the trailing rewindow deliberately overlaps
+        # existing rows, and give-up markers written over real data would
+        # corrupt the cumulative chain (Codex on #157). Heal sweeps have
+        # their own attempt accounting.
+        track_stall = (
+            heal_ctx is None
+            and solar_range is not None
+            and (last_gen_date is None or solar_range[0] > last_gen_date)
+        )
         fetch_complete = await self._fetch_with_heal_accounting(
-            cons_range, solar_range, bill_start, heal_ctx
+            cons_range, solar_range, bill_start, heal_ctx, track_stall=track_stall
         )
 
         # Extract rates from plan.
@@ -654,6 +669,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         solar_range: tuple[date, date] | None,
         bill_start: date | None,
         heal_ctx: tuple[date, int] | None,
+        *,
+        track_stall: bool = False,
     ) -> bool:
         """Run the fetch, guaranteeing heal attempts are counted on ANY exit.
 
@@ -673,8 +690,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 solar_range,
                 bill_start,
                 known_bands=frozenset(self._active_tou_bands),
-                track_stall=heal_ctx is None,
+                track_stall=track_stall,
             )
+        except asyncio.CancelledError:
+            # HA unload/restart mid-sweep is not an AGL failure — the frozen
+            # floor is already persisted, so the heal simply resumes on the
+            # next start. Counting it would let a few quick restarts exhaust
+            # the attempt budget with zero fetch failures (Codex on #157).
+            raise
         except BaseException:
             if heal_ctx is not None:
                 self._persist_solar_heal(heal_ctx, complete=False)
@@ -963,13 +986,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 status = await self._fetch_solar_day_into(
                     current, previous, solar_intervals, fetched_solar_days
                 )
-                if status == "ratelimit":
+                if status == "halt":
+                    # 429 or transport failure — endpoint-wide, not per-day;
+                    # halt and retry the whole chunk next cycle.
                     rate_limited = True
                 elif status == "skip":
-                    # Transient AGL error on this solar day: unmarked, and the
-                    # sweep is flagged incomplete so a heal retries it rather than
-                    # declaring done with a hole. On normal cycles the return is
-                    # ignored and the trailing rewindow re-fetches it next cycle.
+                    # Per-day AGL HTTP error on this solar day: unmarked, and
+                    # the sweep is flagged incomplete so a heal retries it
+                    # rather than declaring done with a hole. On normal cycles
+                    # the return is ignored and the trailing rewindow
+                    # re-fetches it next cycle.
                     solar_skipped = True
             current += timedelta(days=1)
 
@@ -1044,8 +1070,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> list[IntervalReading] | None:
         """Fetch one day of consumption intervals.
 
-        Returns [] on a skippable AGLError (logged, the loop continues) and
-        None on AGLRateLimitError so the caller halts the chunk.
+        Returns [] on a skippable AGL HTTP error (logged, the loop continues)
+        and None on AGLRateLimitError OR AGLTransportError so the caller halts
+        the chunk. Transport failures (network blip, timeout, challenge page)
+        are endpoint-wide and transient — skipping the day would advance the
+        resume point past it and leave a permanent hole (Codex on #157);
+        halting retries the whole chunk next cycle instead. The skip tradeoff
+        stays for genuine per-day HTTP errors (AGL permanently 500s very old
+        dates — #34).
         """
         try:
             if previous:
@@ -1056,6 +1088,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         except AGLRateLimitError as err:
             _LOGGER.warning(
                 "AGL rate-limited at %s; halting backfill chunk: %s", day, err
+            )
+            return None
+        except AGLTransportError as err:
+            _LOGGER.warning(
+                "Transport failure at %s; halting backfill chunk: %s", day, err
             )
             return None
         except AGLError as err:
@@ -1076,13 +1113,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         errored day would let a permanently-500ing old day (AGL does this on
         very old dates) stall the backfill and the period sensors forever,
         which is worse than a rare one-day historical hole.
-        AGLRateLimitError propagates so the caller halts the whole chunk.
+        AGLRateLimitError and AGLTransportError propagate so the caller halts
+        the whole chunk — transport failures are endpoint-wide/transient, and
+        skipping the day would trade a retry for a permanent hole (Codex on
+        #157).
         """
         try:
             return await self.client.async_get_solar_hourly(
                 self.contract_number, day, previous=previous
             )
-        except AGLRateLimitError:
+        except (AGLRateLimitError, AGLTransportError):
             raise
         except AGLError as err:
             _LOGGER.debug("Solar fetch skip %s: %s", day, err)
@@ -1097,20 +1137,24 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     ) -> str:
         """Fetch one solar day into the accumulators; classify the outcome.
 
-        Returns "ok" (day fetched, marked covered), "skip" (transient AGL error
-        — unmarked, sweep is incomplete), or "ratelimit" (429 — caller halts the
-        chunk). Only a *successful* fetch appends to `fetched_solar_days`, so a
+        Returns "ok" (day fetched, marked covered), "skip" (per-day AGL HTTP
+        error — unmarked, sweep is incomplete), or "halt" (429 or transport
+        failure — caller halts the chunk; the whole thing retries next cycle).
+        Only a *successful* fetch appends to `fetched_solar_days`, so a
         skipped day is retried while a heal is pending.
         """
         try:
             readings = await self._fetch_day_solar(day, previous)
-        except AGLRateLimitError as err:
+        except (AGLRateLimitError, AGLTransportError) as err:
             _LOGGER.warning(
-                "AGL rate-limited at %s (solar); halting backfill chunk: %s",
+                "AGL %s at %s (solar); halting backfill chunk: %s",
+                "rate limit"
+                if isinstance(err, AGLRateLimitError)
+                else "transport failure",
                 day,
                 err,
             )
-            return "ratelimit"
+            return "halt"
         if readings is None:
             return "skip"
         solar_intervals.extend(readings)

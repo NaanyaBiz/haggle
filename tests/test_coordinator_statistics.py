@@ -9,6 +9,7 @@ and get_last_statistics — so no real SQLite DB is needed.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2400,13 +2401,99 @@ class TestGenerationHealState:
         self, hass: HomeAssistant
     ) -> None:
         """#154 wiring: _fetch_range gets track_stall=True only on non-heal
-        cycles — heal sweeps have their own attempt accounting."""
+        cycles — heal sweeps have their own attempt accounting. The _run
+        harness leaves the generation series 8 days behind, so the normal
+        chunk starts strictly beyond the last stored day."""
         _, mock_range, _, _ = await self._run(hass, needs_heal=True)
         assert mock_range.call_args.kwargs["track_stall"] is False
         _, mock_range, _, _ = await self._run(
             hass, preset={"state": SOLAR_HEAL_DONE}, needs_heal=False
         )
         assert mock_range.call_args.kwargs["track_stall"] is True
+
+    async def test_rewindow_overlap_never_tracks_stall(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Codex on #157: a caught-up series' chunk IS the trailing rewindow,
+        overlapping real rows — give-up markers there would corrupt the
+        cumulative chain, so tracking must stay off."""
+        coord = _make_coordinator(hass, client=self._solar_client())
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(500.0, yesterday),  # both series caught up
+            ),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(
+                coord,
+                "_generation_heal_triggers",
+                new_callable=AsyncMock,
+                return_value=(False, False),
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(
+                coord, "_fetch_range", new_callable=AsyncMock, return_value=True
+            ) as mock_range,
+        ):
+            await coord._fetch_and_import()
+
+        # Chunk starts inside the rewindow (start <= last stored day).
+        assert mock_range.call_args.kwargs["track_stall"] is False
+
+    async def test_cancelled_mid_heal_does_not_bump_attempts(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Codex on #157: HA unload/restart cancels the update task — that is
+        not an AGL failure and must not consume heal budget; the frozen floor
+        already makes restarts resume-safe."""
+        coord = _make_coordinator(hass, client=self._solar_client())
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+        preset = {
+            "state": SOLAR_HEAL_PENDING,
+            "floor": (today - timedelta(days=25)).isoformat(),
+            "attempts": 1,
+        }
+        hass.config_entries.async_update_entry(
+            coord.config_entry,
+            data={**coord.config_entry.data, CONF_SOLAR_HEAL: preset},
+        )
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, today - timedelta(days=8))
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_fetch_range",
+                new_callable=AsyncMock,
+                side_effect=asyncio.CancelledError(),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await coord._fetch_and_import()
+
+        # Record untouched: same attempts, still pending, same frozen floor.
+        assert self._heal(coord) == preset
 
     async def test_repair_giveup_keeps_mark(self, hass: HomeAssistant) -> None:
         """A repair generation that exhausts its budget goes done WITH the
@@ -2596,3 +2683,58 @@ class TestSolarStallGiveUp:
             assert coord._solar_stall is not None
             await coord._track_solar_stall(chunk, progressed=False, skipped=False)
         assert coord._solar_stall is None
+
+
+class TestTransportHaltSemantics:
+    """Codex on #157: transport failures HALT the chunk (retry next cycle);
+    only per-day AGL HTTP errors keep the documented skip tradeoff. A skip on
+    a transient network blip would advance the resume past the day forever.
+    """
+
+    async def test_consumption_transport_error_halts_chunk(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.agl.client import AGLTransportError
+
+        coord = _make_coordinator(hass)
+        coord.client.async_get_usage_hourly = AsyncMock(
+            side_effect=AGLTransportError("transport error: ClientError")
+        )
+        day = datetime.now(UTC).date() - timedelta(days=2)
+        assert await coord._fetch_day_consumption(day, previous=False) is None
+
+    async def test_consumption_http_error_still_skips(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.agl.client import AGLError
+
+        coord = _make_coordinator(hass)
+        coord.client.async_get_usage_hourly = AsyncMock(
+            side_effect=AGLError("HTTP 500 fetching AGL data")
+        )
+        day = datetime.now(UTC).date() - timedelta(days=2)
+        assert await coord._fetch_day_consumption(day, previous=False) == []
+
+    async def test_solar_transport_error_halts_not_skips(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Transport failure mid-solar-sweep halts the whole chunk (like a
+        429) and leaves the day unmarked — no resume advance past it."""
+        from custom_components.haggle.agl.client import AGLTransportError
+
+        coord = _make_coordinator(hass)
+        day = datetime.now(UTC).date() - timedelta(days=10)
+        with (
+            patch.object(
+                coord,
+                "_fetch_day_solar",
+                new_callable=AsyncMock,
+                side_effect=AGLTransportError("transport error: TimeoutError"),
+            ),
+            patch.object(
+                coord, "_import_generation", new_callable=AsyncMock
+            ) as mock_import,
+        ):
+            complete = await coord._fetch_range(None, (day, day), None)
+        assert complete is False
+        mock_import.assert_not_awaited()  # nothing marked, nothing advanced

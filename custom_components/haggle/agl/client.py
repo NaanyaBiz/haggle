@@ -74,6 +74,17 @@ class AGLError(Exception):
     """Base class for AGL API errors."""
 
 
+class AGLTransportError(AGLError):
+    """Below-HTTP failure: network error, timeout, or non-JSON body.
+
+    Distinct from a plain AGLError so per-day backfill fetchers can HALT the
+    chunk (transport failures are endpoint-wide and transient — retrying the
+    whole chunk next cycle is right) instead of SKIPPING the day, which would
+    advance the resume point past it and leave a permanent hole (Codex on
+    #157). Still an AGLError, so every existing catch site behaves.
+    """
+
+
 class AGLAuthError(AGLError):
     """Auth failure — refresh token invalid / revoked; reauth required."""
 
@@ -174,11 +185,11 @@ class AglAuth:
             # A network blip is NOT an auth failure — wrap as retryable
             # AGLError, never AGLAuthError (which triggers the reauth flow)
             # and never a raw escape (which crashes the cycle, #151).
-            raise AGLError(
+            raise AGLTransportError(
                 f"transport error during token refresh: {type(err).__name__}"
             ) from err
         except json.JSONDecodeError as err:
-            raise AGLError("non-JSON response from token endpoint") from err
+            raise AGLTransportError("non-JSON response from token endpoint") from err
 
         error = data.get("error")
         if error:
@@ -250,10 +261,10 @@ class AglClient:
         try:
             return await self._get_raw(url)
         except _TRANSPORT_ERRORS as err:
-            raise AGLError(f"transport error: {type(err).__name__}") from err
+            raise AGLTransportError(f"transport error: {type(err).__name__}") from err
         except json.JSONDecodeError as err:
             # Body may be an Akamai/HTML page; never surface it (#151).
-            raise AGLError("non-JSON response from AGL endpoint") from err
+            raise AGLTransportError("non-JSON response from AGL endpoint") from err
 
     async def _get_raw(self, url: str) -> Any:
         token = await self._auth.async_ensure_valid_token(self._session)
