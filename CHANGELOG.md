@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- Dev lockfile refreshed, clearing 19 of 24 open Dependabot alerts (aiohttp
+  3.13.5 → 3.14.1, cryptography 47.0.0 → 48.0.1, homeassistant 2026.5.1 →
+  2026.7.0, zeroconf 0.148.0 → 0.150.0, uv 0.11.8 → 0.11.25). The committed
+  `uv.lock` had gone stale against the `homeassistant>=2026.7.0` floor.
+  **No user impact either way**: `manifest.json` ships zero Python
+  requirements — users get all of these libraries from their Home Assistant
+  core install, never from this integration. The remaining 5 alerts (PyJWT ≤
+  2.12.1) are pinned exactly by HA core and sit in code paths this repo never
+  imports (token-expiry decoding is a hand-rolled base64 of the JWT payload);
+  dismissed with reasons, will clear when HA bumps PyJWT upstream.
+- `aiohttp` dev floor raised to `>=3.14.1` (HA 2026.7.0 relaxed its exact
+  pin), superseding Dependabot #106.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
