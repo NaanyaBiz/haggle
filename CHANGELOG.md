@@ -21,6 +21,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   makes a #128-class leading hole visible at a glance. Versioned by
   `schema_version` (see `docs/diagnostics.md`); the bug-report form now asks
   for the file.
+- **Faster recovery from failed polls** (#155): a poll that fails with a
+  transient AGL error now retries after 30 minutes instead of silently
+  waiting a full 24 h (which looked exactly like "the poll never ran",
+  #126). The 24 h cadence restores on the next success; auth failures still
+  hand over to the reauth flow untouched.
+- **Bounded give-up for stalled backfill chunks** (#154): a contiguous span
+  of permanently-erroring solar days no longer refetches the identical
+  chunk forever — after 3 consecutive zero-progress cycles the span is
+  marked as covered (with a WARNING) so the backfill moves on. Rate-limited
+  sweeps never count toward the give-up.
+
+### Fixed
+
+- **AGL client transport shield** (#151): network errors, timeouts, and a
+  200 response with a non-JSON body (e.g. a bot-protection challenge page)
+  now surface as retryable `AGLError` instead of crashing the whole update
+  cycle. Previously a deterministic transport failure on an old
+  heal-window day could re-fire an unbounded 30-day sweep every cycle with
+  the integration unavailable throughout — the heal's give-up cap never
+  engaged because the crash bypassed its attempt accounting. Belt-and-
+  braces: a heal attempt is now counted on *any* sweep exit, even for
+  exception types the client fails to wrap. A network blip during token
+  refresh is likewise retryable and no longer masquerades as an auth
+  failure.
+- **Period solar sensors no longer go blank during the one-time heal**
+  (#152): a heal sweep that completes cleanly now waits for the recorder to
+  commit the rewritten rows and then publishes *Solar sold this period* /
+  *feed-in credit this period* the same cycle — no more 1–3 days of
+  `unknown` after upgrading. Incomplete sweeps (rate-limited or skipped
+  days) stay suppressed: a wrong number is worse than a blank one.
+- **Broken-chain repair survives heal give-up** (#153): a downward
+  cumulative-sum step frozen by a rate limit on the heal's final attempt is
+  now detected after the heal is done and repaired by one bounded repair
+  generation (fresh attempt budget, marked `repair` so it can never loop).
+  Lifetime sweeps are hard-capped either way.
 
 ### Security
 
