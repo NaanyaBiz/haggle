@@ -43,7 +43,7 @@ dev = [
     # floor above so transitive resolution stays consistent.
     "pytest-homeassistant-custom-component>=0.13.344,<0.13.345",
     "ruff>=0.15.20",
-    "mypy>=2.1.0",
+    "mypy>=2.2.0",
     "pre-commit>=4.6.0",
 ]
 
