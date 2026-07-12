@@ -5,6 +5,11 @@ on:
     tags:
       - "v*.*.*"
 
+# Deny-by-default at the top level; the release job below grants its own
+# scoped writes (Scorecard Token-Permissions flags a workflow with no
+# top-level permissions block).
+permissions: {}
+
 jobs:
   release:
     name: Create GitHub Release
@@ -12,7 +17,7 @@ jobs:
     permissions:
       contents: write
       # Required for actions/attest-build-provenance to mint Sigstore-rooted
-      # attestations against the integration's source tree.
+      # attestations against the release artifact.
       id-token: write
       attestations: write
 
@@ -31,28 +36,41 @@ jobs:
           # Extract the section between ## [VERSION] and the next ## [
           awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md > release_notes.txt
 
+      # Real release artifact (HACS still installs from the source tarball —
+      # hacs.json zip_release stays false — but the zip gives Scorecard's
+      # Signed-Releases check a signed asset to score, and users a direct,
+      # verifiable download).
+      - name: Build release artifact
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          (cd custom_components && zip -r "../haggle-${VERSION}.zip" haggle)
+
       - name: Generate build provenance attestation
+        id: attest
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          # Attest the published source tree under custom_components/haggle/.
-          # HACS installs from GitHub Release tarballs; the attestation lets
-          # downstream consumers verify the tag's content via `gh attestation`.
-          subject-path: |
-            custom_components/haggle/**/*
+          # Attest the actual artifact users can download. Verify with:
+          #   gh attestation verify haggle-<ver>.zip --repo NaanyaBiz/haggle
+          subject-path: haggle-${{ steps.version.outputs.version }}.zip
 
       # First-party gh CLI (preinstalled on the runner) instead of a
       # third-party action: this is the only workflow with contents:write +
       # id-token:write, so no third-party code runs in it (2026-07
-      # dependency review).
+      # dependency review). The Sigstore bundle is uploaded next to the zip
+      # so the release carries its own offline-verifiable signature.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          cp "${{ steps.attest.outputs.bundle-path }}" "haggle-${VERSION}.zip.sigstore"
           args=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             args+=(--prerelease)
           fi
           gh release create "$GITHUB_REF_NAME" \
-            --title "v${{ steps.version.outputs.version }}" \
+            --title "v${VERSION}" \
             --notes-file release_notes.txt \
-            "${args[@]}"
+            "${args[@]}" \
+            "haggle-${VERSION}.zip" \
+            "haggle-${VERSION}.zip.sigstore"
