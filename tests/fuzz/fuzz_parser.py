@@ -28,10 +28,9 @@ from typing import Any
 
 import atheris
 
-# Pre-load the integration package (and its homeassistant import chain)
-# outside any instrumentation, then instrument only the functions under
-# test — instrumenting the whole HA tree would be prohibitively slow.
-import custom_components.haggle  # noqa: F401
+# Instrument only the functions under test (instrument_func below):
+# atheris.instrument_imports()/instrument_all() would sweep in the whole
+# homeassistant import chain and make startup prohibitively slow.
 from custom_components.haggle.agl import parser
 
 for _fn_name in (

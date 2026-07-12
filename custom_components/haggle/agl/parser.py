@@ -84,7 +84,7 @@ def _as_dict(raw: Any) -> dict[str, Any]:
 def _as_list(raw: Any) -> list[Any]:
     """Return raw if it is a list, else []."""
     if isinstance(raw, list):
-        return cast("list[Any]", raw)
+        return raw
     return []
 
 
