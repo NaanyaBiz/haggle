@@ -7,6 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+Supply-chain surface reduction from the 2026-07 dependency review (no
+user-facing impact — the integration still ships zero pip requirements):
+
+- **Codecov upload removed from CI.** The upload was write-only (no badge,
+  no consumer) while running third-party vendor code on every push/PR.
+  Coverage still prints inline via `--cov-report=term-missing`.
+- **Release workflow now uses the first-party `gh` CLI** instead of
+  `softprops/action-gh-release` — no third-party code runs in the only
+  workflow holding `contents: write` + `id-token: write`.
+- **Single lint/type toolchain.** The pre-commit ruff/mypy hooks now run
+  `uv run ruff` / `uv run mypy` (`language: system`), so the versions come
+  from `uv.lock` — the tag-pinned mirror hooks had drifted to ruff v0.7.4 /
+  mypy v1.13.0 against locked 0.15.20 / 2.2.0, a standing local-vs-CI
+  disagreement. Removes the orphaned `types-beautifulsoup4` stub (zero bs4
+  call sites since v0.1.x) and fixes the stale `py313`/`python3.13`
+  remnants (`ruff target-version = "py314"`).
+- **Pre-commit hook revs frozen to commit SHAs** (were mutable tags — the
+  last unpinned code-fetch path in the repo). Refresh with
+  `pre-commit autoupdate --freeze`.
+- **OpenSSF Scorecard workflow + README badge** (`scorecard.yml`,
+  SHA-pinned, `publish_results: true`). At review time the repo's direct
+  dependencies measured 5.4–7.4; the repo itself attests releases — a check
+  none of its dependencies pass.
+- **Threat model updated**: `SECURITY.md` "Supply chain" now records the
+  full posture — zero shipped requirements and the dev-only bump risk
+  calculus, the 167-package lockfile attribution (~90% HA-ecosystem tax,
+  hash-pinned), no-third-party-actions-in-privileged-workflows rule, the
+  accepted branch-SHA pins (`hacs/action`, `home-assistant/actions`), and
+  the diminishing-returns line (what is deliberately kept).
+
+### Changed
+
+- **Dependabot PRs are now grouped** (one weekly PR per ecosystem instead
+  of ~8 individual ones — the previous flow hand-batched them anyway; 8 of
+  the repo's 50 commits were dependency-maintenance churn).
+- **`pytest-homeassistant-custom-component` widened to a range**
+  (`>=0.13.344,<0.14`, was an exact patch pin). Upstream releases
+  near-daily, so the exact pin manufactured a guaranteed weekly bump PR
+  and caused two resolver deadlocks (#106, #120). `uv.lock` remains the
+  reproducibility authority.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
