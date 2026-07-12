@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Scorecard remediation batch verified** (#179): aggregate **7.0 → 7.3**
+  on the post-release run — Fuzzing 0→10 (atheris harness credited),
+  Token-Permissions 9→10, Signed-Releases −1→8 (v0.4.0-beta.5 is the first
+  release with an attested zip asset; attestation verified end-to-end),
+  Branch-Protection −1→3 (`protect-main` ruleset readable; the higher
+  tiers require human approvers — accepted for a solo-maintained repo).
+  All nine regression-watch checks held at 10. SECURITY.md "Own Scorecard
+  posture" rewritten to the new state. Remaining movers: bestpractices.dev
+  badge (#172) and the `Maintained` repo-age gate (~Aug 2026).
+- **Release tags are now SSH-signed**, and local commits are signed by
+  default (`gpg.format ssh`). Server-side signed-commit enforcement is
+  deliberately NOT enabled — squash merges to `main` are already
+  GitHub-signed, and remote agent sessions cannot hold the key.
+
+### Changed
+
+- **Release flow updated for the `protect-main` ruleset** (`/release` +
+  `release-manager`): the version bump now goes via a short-lived PR;
+  the signed tag is created on the squash-merge commit and pushed
+  separately. The old direct-commit-to-main flow bounces off the ruleset.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
