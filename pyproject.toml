@@ -26,7 +26,7 @@ dependencies = [
     # HA 2026.4 closed the 13 CVEs v0.1.0 inherited (SCA-M01..M05, SCA-L01..L08,
     # SCA-H02) via aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6;
     # 2026.5.0 keeps those at-or-above. HA 2026.4+ also requires Python 3.14.2.
-    "homeassistant>=2026.7.0",
+    "homeassistant>=2026.7.2",
     # HA 2026.7.0 relaxed its exact aiohttp pin, so the resolver now lands
     # 3.14.1+ (closes the 2026-06/07 aiohttp advisory cluster; supersedes
     # Dependabot #106). Users always get aiohttp from HA core, not from us —
@@ -36,8 +36,8 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.24",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     # Tracks a homeassistant patch series — keep aligned with the runtime
     # floor above so transitive resolution stays consistent. Deliberately a
@@ -45,9 +45,9 @@ dev = [
     # exact pin manufactured a guaranteed weekly Dependabot PR and caused
     # two resolver deadlocks (#106, #120). uv.lock is the reproducibility
     # authority; this range just has to keep resolution satisfiable.
-    "pytest-homeassistant-custom-component>=0.13.344,<0.14",
-    "ruff>=0.15.20",
-    "mypy>=2.1.0",
+    "pytest-homeassistant-custom-component>=0.13.346,<0.14",
+    "ruff>=0.15.21",
+    "mypy>=2.2.0",
     "pre-commit>=4.6.0",
 ]
 
