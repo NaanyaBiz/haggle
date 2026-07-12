@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+---
+
+## [0.4.0-beta.5] — 2026-07-12
+
+> **Pre-release, security/supply-chain batch** (2026-07 dependency review +
+> OpenSSF Scorecard remediation). No runtime feature changes — parser
+> hardening, continuous fuzzing, and the first release shipping an attested
+> zip asset with Sigstore provenance.
+
 ### Security
 
 - **AGL response parsers are now total over arbitrary JSON** (#173): a
@@ -80,15 +98,6 @@ user-facing impact — the integration still ships zero pip requirements):
   near-daily, so the exact pin manufactured a guaranteed weekly bump PR
   and caused two resolver deadlocks (#106, #120). `uv.lock` remains the
   reproducibility authority.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 
