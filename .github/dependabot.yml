@@ -1,5 +1,11 @@
 version: 2
 
+# Grouped weekly batches (2026-07 dependency review): the ungrouped config
+# produced ~8 PRs/week that were hand-batched anyway (see the
+# `chore(deps): roll Dependabot batch` commits). One PR per ecosystem per
+# week is the same signal at an eighth of the toil. Runtime risk context:
+# manifest.json ships zero Python requirements, so every pip bump here is
+# dev-only and never reaches a user's HA install.
 updates:
   - package-ecosystem: pip
     directory: /
@@ -8,6 +14,10 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    groups:
+      dev-dependencies:
+        patterns:
+          - "*"
 
   - package-ecosystem: github-actions
     directory: /
@@ -16,3 +26,7 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - dependencies
+    groups:
+      actions:
+        patterns:
+          - "*"
