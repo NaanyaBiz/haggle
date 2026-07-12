@@ -152,12 +152,14 @@ decoded with hand-rolled base64, not PyJWT).
 **Own Scorecard posture.** Baseline self-assessment (Scorecard v5.3.0,
 2026-07-12) was 7.0/10. After the same-day remediation batch — `protect-main`
 ruleset (#171), atheris fuzzing (#173/#177), attested release `v0.4.0-beta.5`
-(#174/#178) — the post-release run scores **7.3/10**, with 10s on
-Pinned-Dependencies, SAST, CI-Tests, Dangerous-Workflow,
-Dependency-Update-Tool, Security-Policy, License, Binary-Artifacts,
-Vulnerabilities, **Fuzzing** (0→10, `PythonAtherisFuzzer integration found`)
-and **Token-Permissions** (9→10, top-level `permissions: {}` on
-`release.yml`). Remaining state, triaged (verification sweep in #179):
+(#174/#178), plus the OpenSSF Best Practices passing badge (#172,
+[project 13582](https://www.bestpractices.dev/projects/13582)) — the
+current run scores **7.5/10**, with 10s on Pinned-Dependencies, SAST,
+CI-Tests, Dangerous-Workflow, Dependency-Update-Tool, Security-Policy,
+License, Binary-Artifacts, Vulnerabilities, **Fuzzing** (0→10,
+`PythonAtherisFuzzer integration found`) and **Token-Permissions** (9→10,
+top-level `permissions: {}` on `release.yml`). Remaining state, triaged
+(verification sweep in #179):
 
 - `Signed-Releases: 8` (was -1) — every release now ships
   `haggle-<ver>.zip` plus its Sigstore bundle (`.zip.sigstore`); verified
@@ -181,13 +183,15 @@ and **Token-Permissions** (9→10, top-level `permissions: {}` on
 - `Packaging: -1` — means "no PyPI/registry publish workflow"; not
   applicable to a HACS-distributed integration. Inconclusive checks are
   excluded from the aggregate. Accepted.
-- `CII-Best-Practices: 0` — bestpractices.dev registration tracked in
-  #172 (passing level only; silver+ requires two-person review).
+- `CII-Best-Practices: 5` (was 0) — passing badge earned 2026-07-12 at
+  100% of criteria (all 66 answered with evidence). **Accepted at 5**:
+  silver requires further process docs and gold requires ≥2 maintainers —
+  the same team-structure wall.
 
-Realistic ceiling ≈ 8.5–9 once the Maintained age gate expires (~2026-08)
-and the #172 badge lands: the residual gap is the team-structure checks
-above (Code-Review, Contributors, Branch-Protection's review tiers), which
-a single-maintainer project cannot honestly score on.
+Realistic ceiling ≈ 8.5–9 once the Maintained age gate expires (~2026-08):
+the residual gap is the team-structure checks above (Code-Review,
+Contributors, Branch-Protection's review tiers), which a single-maintainer
+project cannot honestly score on.
 
 **Accepted risks (diminishing-returns line).**
 `pytest-homeassistant-custom-component` is a single-maintainer package
