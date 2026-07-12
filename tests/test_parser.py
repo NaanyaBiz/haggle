@@ -758,3 +758,106 @@ class TestParseOverviewSolar:
         assert len(contracts) == 1
         assert contracts[0].has_solar is True
         assert contracts[0].contract_number == "9999999999"
+
+
+# ---------------------------------------------------------------------------
+# Totality (fuzz-enforced) — parsers must never raise on arbitrary JSON
+# ---------------------------------------------------------------------------
+
+
+class TestParserTotality:
+    """Malformed/tampered JSON degrades to empty/default results, never raises.
+
+    Response bodies are attacker-influenceable (TLS pinning is warn-only), so
+    parser totality is a security invariant. The live enforcement is
+    tests/fuzz/fuzz_parser.py; each case below is a crash class in the
+    pre-hardened parser and pins the fix deterministically.
+    """
+
+    def test_bill_period_whitespace_quantity(self) -> None:
+        # Was IndexError: "   ".split()[0] on an empty split result.
+        data = {"billPeriod": {"current": {"usage": {"quantity": "   "}}}}
+        assert parse_bill_period(data).consumption_kwh == 0.0
+
+    def test_bill_period_numeric_quantity(self) -> None:
+        # Was AttributeError: float has no .replace.
+        data = {"billPeriod": {"current": {"usage": {"quantity": 42.5}}}}
+        assert parse_bill_period(data).consumption_kwh == 42.5
+
+    def test_bill_period_non_dict_nodes(self) -> None:
+        # Was AttributeError: .get on list/str/int at every envelope level.
+        for weird in (["x"], "str", 3, {"current": 7}, {"current": {"usage": []}}):
+            bill = parse_bill_period({"billPeriod": weird})
+            assert bill.consumption_kwh == 0.0
+            assert bill.cost_label == "$0.00"
+
+    def test_intervals_non_dict_sections_items_and_blocks(self) -> None:
+        assert parse_interval_readings({"sections": 5}) == []
+        assert parse_interval_readings({"sections": ["x", {"items": "y"}]}) == []
+        data = {"sections": [{"items": ["x", {"consumption": "oops"}]}]}
+        assert parse_interval_readings(data) == []
+
+    def test_intervals_unhashable_type_skipped(self) -> None:
+        # Was TypeError: unhashable dict in `rate_type in _skip_types`.
+        data = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-07-01T00:00:00Z",
+                            "consumption": {"type": {}, "quantity": 1, "amount": 1},
+                        }
+                    ]
+                }
+            ]
+        }
+        assert parse_interval_readings(data) == []
+
+    def test_daily_unhashable_type_keeps_original_keep_path(self) -> None:
+        # Daily has no default type; absent/odd types were (and stay) kept —
+        # only the unhashable-crash is fixed, not the keep semantics.
+        data = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-07-01T00:00:00Z",
+                            "consumption": {"type": [], "quantity": 2, "amount": 3},
+                        }
+                    ]
+                }
+            ]
+        }
+        readings = parse_daily_readings(data)
+        assert len(readings) == 1
+        assert readings[0].kwh == 2.0
+
+    def test_overview_malformed_contract_skipped_and_int_id_coerced(self) -> None:
+        # Was KeyError on {} (missing contractNumber); junk entries crash-free.
+        data = {
+            "accounts": [
+                "junk",
+                {
+                    "accountNumber": 12345,
+                    "contracts": [{}, "junk", {"contractNumber": 999}],
+                },
+            ]
+        }
+        contracts = parse_overview(data)
+        assert len(contracts) == 1
+        assert contracts[0].contract_number == "999"
+        assert contracts[0].account_number == "12345"
+
+    def test_plan_non_dict_and_non_str_rows(self) -> None:
+        # Was AttributeError: int .lower() via _classify_tariff on int titles,
+        # and .get on non-dict rate rows.
+        data = {
+            "productName": 5,
+            "gstInclusiveRates": ["x", {"kind": "header", "title": 7}, 3],
+            "gstExclusiveRates": "nope",
+        }
+        plan = parse_plan(data)
+        assert plan.product_name == ""
+        assert plan.unit_rates == []
+        assert plan.tou_unit_rates == {}
+        assert plan.feed_in_rate_cents_per_kwh is None

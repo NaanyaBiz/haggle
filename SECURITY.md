@@ -167,8 +167,12 @@ Binary-Artifacts and Vulnerabilities. Remaining deductions, triaged:
   secret in CI.
 - `CII-Best-Practices: 0` — bestpractices.dev registration tracked in
   #172 (passing level only; silver+ requires two-person review).
-- `Fuzzing: 0` — tracked in #173; genuine target (`agl/parser.py` parses
-  MITM-influenceable JSON), not badge-chasing.
+- `Fuzzing: 0` — **implemented 2026-07-12** (#173): atheris harness
+  (`tests/fuzz/fuzz_parser.py`) enforcing parser totality and the
+  finite/non-negative numeric guarantee, weekly + per-parser-change CI
+  (`fuzz.yml`, hash-pinned install). If the next weekly Scorecard run
+  does not credit the atheris integration, ClusterFuzzLite is the
+  recognized fallback.
 - `Signed-Releases: -1` — releases carried no assets; from the next tag,
   `release.yml` uploads `haggle-<ver>.zip` plus its Sigstore bundle
   (`.zip.sigstore`), verifiable offline or via
