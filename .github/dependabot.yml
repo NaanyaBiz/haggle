@@ -18,6 +18,14 @@ updates:
       dev-dependencies:
         patterns:
           - "*"
+    ignore:
+      # pytest's effective version is dictated by the exact pin inside
+      # pytest-homeassistant-custom-component (e.g. 0.13.346 pins
+      # pytest==9.0.3). An independent pytest floor bump is meaningless at
+      # best and deadlocks the resolver at worst — proven twice (#120,
+      # #170). pytest upgrades arrive automatically when phcc bumps its
+      # internal pin.
+      - dependency-name: "pytest"
 
   - package-ecosystem: github-actions
     directory: /
