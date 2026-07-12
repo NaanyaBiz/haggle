@@ -9,15 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Scorecard remediation batch verified** (#179): aggregate **7.0 → 7.3**
-  on the post-release run — Fuzzing 0→10 (atheris harness credited),
+- **Scorecard remediation batch verified** (#179): aggregate **7.0 → 7.5**
+  across the same-day runs — Fuzzing 0→10 (atheris harness credited),
   Token-Permissions 9→10, Signed-Releases −1→8 (v0.4.0-beta.5 is the first
   release with an attested zip asset; attestation verified end-to-end),
   Branch-Protection −1→3 (`protect-main` ruleset readable; the higher
-  tiers require human approvers — accepted for a solo-maintained repo).
-  All nine regression-watch checks held at 10. SECURITY.md "Own Scorecard
-  posture" rewritten to the new state. Remaining movers: bestpractices.dev
-  badge (#172) and the `Maintained` repo-age gate (~Aug 2026).
+  tiers require human approvers — accepted for a solo-maintained repo),
+  CII-Best-Practices 0→5 (badge detected: Passing). All nine
+  regression-watch checks held at 10. SECURITY.md "Own Scorecard posture"
+  rewritten to the new state. Last mover: the `Maintained` repo-age gate
+  (~Aug 2026).
 - **Release tags are now SSH-signed**, and local commits are signed by
   default (`gpg.format ssh`). Server-side signed-commit enforcement is
   deliberately NOT enabled — squash merges to `main` are already
@@ -25,8 +26,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OpenSSF Best Practices badge earned at passing level** (#172):
   registered as [bestpractices.dev project 13582](https://www.bestpractices.dev/projects/13582)
   with all 66 passing criteria answered and evidenced (100%); badge added
-  to the README. Feeds the Scorecard `CII-Best-Practices` check (0 → 5 on
-  its next run).
+  to the README. Confirmed scored by the Scorecard `CII-Best-Practices`
+  check ("badge detected: Passing", 0 → 5).
 
 ### Changed
 
