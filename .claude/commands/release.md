@@ -26,8 +26,12 @@ If any pre-condition fails, report the failure and stop.
 The `release-manager` subagent, providing it:
 - The target version string
 - The current CHANGELOG.md `## [Unreleased]` section as context
-- Instructions to update `manifest.json`, `CHANGELOG.md`, commit, tag, and push
+- Instructions to update `manifest.json` + `CHANGELOG.md`, route the bump
+  through a short-lived PR (the `protect-main` ruleset blocks direct
+  commits to main), then create a **signed tag on the squash-merge commit**
+  and push it
 
 ## After completion
 
-Print the GitHub Release URL and remind about flipping the repo to public when submitting to HACS.
+Print the GitHub Release URL and confirm the attested assets exist
+(`haggle-<ver>.zip` + `.zip.sigstore`; verify with `gh attestation verify`).

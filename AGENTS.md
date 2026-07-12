@@ -683,6 +683,18 @@ The HA Energy dashboard requires:
   `beta.2` while `beta.4` was live). Use the shields.io release badge or
   "latest pre-release via HACS" phrasing; version numbers belong in the
   CHANGELOG and the releases page.
+- **Don't commit the release version bump directly to `main`.** The
+  `protect-main` ruleset (2026-07-12, #171) requires a PR + green status
+  checks even for the repo owner, so the pre-ruleset release flow
+  (`git commit` on main + `git push origin main --tags`) bounces. The
+  ruleset-era flow: bump via a short-lived PR, then create a **signed** tag
+  on the squash-merge commit (`git tag -s vX.Y.Z origin/main`) and push
+  just the tag with the `HAGGLE_ALLOW_MAIN_PUSH=1` hook override — tag
+  pushes are not blocked by the branch ruleset. See
+  `.claude/agents/release-manager.md` for the full sequence. Also don't
+  enable "require signed commits" in the ruleset: remote agent sessions
+  can't hold the signing key, and squash merges to `main` are
+  GitHub-signed already.
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had

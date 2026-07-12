@@ -149,11 +149,30 @@ dependencies measured 5.4–7.4 on OpenSSF Scorecard (transitives up to
 sits in code paths this integration never imports — JWT expiry is
 decoded with hand-rolled base64, not PyJWT).
 
-**Own Scorecard posture.** First self-assessment (Scorecard v5.3.0,
-2026-07-12): **7.0/10**, with 10s on Pinned-Dependencies, SAST, CI-Tests,
-Dangerous-Workflow, Dependency-Update-Tool, Security-Policy, License,
-Binary-Artifacts and Vulnerabilities. Remaining deductions, triaged:
+**Own Scorecard posture.** Baseline self-assessment (Scorecard v5.3.0,
+2026-07-12) was 7.0/10. After the same-day remediation batch — `protect-main`
+ruleset (#171), atheris fuzzing (#173/#177), attested release `v0.4.0-beta.5`
+(#174/#178) — the post-release run scores **7.3/10**, with 10s on
+Pinned-Dependencies, SAST, CI-Tests, Dangerous-Workflow,
+Dependency-Update-Tool, Security-Policy, License, Binary-Artifacts,
+Vulnerabilities, **Fuzzing** (0→10, `PythonAtherisFuzzer integration found`)
+and **Token-Permissions** (9→10, top-level `permissions: {}` on
+`release.yml`). Remaining state, triaged (verification sweep in #179):
 
+- `Signed-Releases: 8` (was -1) — every release now ships
+  `haggle-<ver>.zip` plus its Sigstore bundle (`.zip.sigstore`); verified
+  end-to-end with `gh attestation verify haggle-<ver>.zip --repo
+  NaanyaBiz/haggle` (SLSA provenance v1, digest match, built from the
+  release tag). Scorecard reserves 9–10 for provenance it recognizes by
+  the `*.intoto.jsonl` filename convention; the `.zip.sigstore` bundle
+  *is* SLSA provenance, so the residual 2 points are a naming artifact.
+  **Accepted at 8.**
+- `Branch-Protection: 3` (was -1 internal error) — the `protect-main`
+  ruleset (#171) is readable by the default workflow token (the
+  fine-grained-PAT alternative stays rejected). Scoring above 3 requires
+  required human approvers / codeowner review / stale-review dismissal —
+  the same team-structure wall as Code-Review. **Accepted at 3** for a
+  solo-maintained repo.
 - `Maintained: 0` — pure repo-age gate (<90 days); self-resolves ~2026-08.
 - `Code-Review: 0`, `Contributors: 0` — measure team structure (a second
   human reviewer; multi-organization contributors). **Accepted at 0** for
@@ -162,24 +181,13 @@ Binary-Artifacts and Vulnerabilities. Remaining deductions, triaged:
 - `Packaging: -1` — means "no PyPI/registry publish workflow"; not
   applicable to a HACS-distributed integration. Inconclusive checks are
   excluded from the aggregate. Accepted.
-- `Branch-Protection: -1` — default workflow token cannot read classic
-  protection rules; remediation is a ruleset on `main` (#171), not a PAT
-  secret in CI.
 - `CII-Best-Practices: 0` — bestpractices.dev registration tracked in
   #172 (passing level only; silver+ requires two-person review).
-- `Fuzzing: 0` — **implemented 2026-07-12** (#173): atheris harness
-  (`tests/fuzz/fuzz_parser.py`) enforcing parser totality and the
-  finite/non-negative numeric guarantee, weekly + per-parser-change CI
-  (`fuzz.yml`, hash-pinned install). If the next weekly Scorecard run
-  does not credit the atheris integration, ClusterFuzzLite is the
-  recognized fallback.
-- `Signed-Releases: -1` — releases carried no assets; from the next tag,
-  `release.yml` uploads `haggle-<ver>.zip` plus its Sigstore bundle
-  (`.zip.sigstore`), verifiable offline or via
-  `gh attestation verify haggle-<ver>.zip --repo NaanyaBiz/haggle`.
 
-Realistic ceiling ≈ 8.5–9: the residual gap is the team-structure checks
-above, which a single-maintainer project cannot honestly score on.
+Realistic ceiling ≈ 8.5–9 once the Maintained age gate expires (~2026-08)
+and the #172 badge lands: the residual gap is the team-structure checks
+above (Code-Review, Contributors, Branch-Protection's review tiers), which
+a single-maintainer project cannot honestly score on.
 
 **Accepted risks (diminishing-returns line).**
 `pytest-homeassistant-custom-component` is a single-maintainer package
