@@ -1,10 +1,19 @@
+# Supply-chain rules for this file (2026-07 dependency review):
+# - Remote hook revs are FROZEN commit SHAs, never mutable tags. Refresh
+#   with `pre-commit autoupdate --freeze`.
+# - ruff and mypy run via `uv run` (language: system) so their versions come
+#   from uv.lock — one toolchain copy, Dependabot-maintained. Never re-add
+#   the ruff-pre-commit / mirrors-mypy remote hooks: the two copies drift
+#   (they had reached ruff v0.7.4 / mypy v1.13.0 against locked 0.15.20 /
+#   2.2.0) and every remote hook repo is code executed on the dev machine.
+
 default_language_version:
-  python: python3.13
+  python: python3.14
 
 repos:
   # Whitespace + EOL hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v5.0.0
+    rev: cef0300fd0fc4d2a87a85fa2093c6b283ea36f4b # frozen: v5.0.0
     hooks:
       - id: end-of-file-fixer
       - id: trailing-whitespace
@@ -18,34 +27,37 @@ repos:
       - id: mixed-line-ending
         args: ["--fix=lf"]
 
-  # Ruff: lint + format
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.7.4
+  # Ruff + mypy from uv.lock — same binaries CI runs, no drift.
+  - repo: local
     hooks:
       - id: ruff
-        args: ["--fix"]
+        name: ruff check (uv.lock version)
+        language: system
+        entry: uv run ruff check --fix --force-exclude
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
-
-  # mypy (strict)
-  - repo: https://github.com/pre-commit/mirrors-mypy
-    rev: v1.13.0
-    hooks:
+        name: ruff format (uv.lock version)
+        language: system
+        entry: uv run ruff format --force-exclude
+        types_or: [python, pyi]
+        require_serial: true
       - id: mypy
-        files: ^custom_components/haggle/
-        additional_dependencies:
-          - homeassistant
-          - aiohttp
-          - types-beautifulsoup4
+        name: mypy strict (uv.lock version)
+        language: system
+        entry: uv run mypy custom_components/haggle
+        files: ^custom_components/haggle/.*\.py$
+        pass_filenames: false
 
   # Secret scanning
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.21.2
+    rev: 43fae355e6fe4d99d2a7b240a224b85e2903aeb4 # frozen: v8.21.2
     hooks:
       - id: gitleaks
 
   # Conventional Commits
   - repo: https://github.com/compilerla/conventional-pre-commit
-    rev: v3.6.0
+    rev: fab6a95091c567b872099a98cad586c122f55dc8 # frozen: v3.6.0
     hooks:
       - id: conventional-pre-commit
         stages: [commit-msg]

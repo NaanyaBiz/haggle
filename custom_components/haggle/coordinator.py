@@ -90,7 +90,7 @@ def _safe_float(raw: Any) -> float:
     """Coerce raw API value to a non-negative finite float, defaulting to 0.0."""
     try:
         value = float(raw)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     if not math.isfinite(value) or value < 0:
         _LOGGER.warning("Rejecting non-finite/negative coordinator value: %r", raw)
@@ -1151,7 +1151,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             return await self.client.async_get_solar_hourly(
                 self.contract_number, day, previous=previous
             )
-        except (AGLRateLimitError, AGLTransportError):
+        except AGLRateLimitError, AGLTransportError:
             raise
         except AGLError as err:
             _LOGGER.debug("Solar fetch skip %s: %s", day, err)

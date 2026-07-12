@@ -2,6 +2,7 @@
 
 [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=NaanyaBiz&repository=haggle&category=integration)
 [![Latest release](https://img.shields.io/github/v/release/NaanyaBiz/haggle?include_prereleases&label=latest)](https://github.com/NaanyaBiz/haggle/releases)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/NaanyaBiz/haggle/badge)](https://scorecard.dev/viewer/?uri=github.com/NaanyaBiz/haggle)
 
 Home Assistant custom integration that pulls smart-meter usage from
 [AGL Australia](https://www.agl.com.au/) and feeds it into the HA Energy

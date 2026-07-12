@@ -84,13 +84,78 @@ both the browser and the HA host simultaneously.
 
 ### Supply chain
 
+Posture last reviewed in the 2026-07 dependency review (branch
+`claude/haggle-dependency-review-x2lupw`); the decisions below are
+deliberate and should not be "tidied" without revisiting that review.
+
+**Shipped runtime surface: zero packages.** `manifest.json` declares
+`"requirements": []`. Everything the integration imports at runtime
+(`aiohttp`, `voluptuous`, `cryptography`) is vendored and version-pinned
+by Home Assistant core. Consequences:
+
+- No pip package reaches a user's machine because of this repo; the
+  user-facing attack surface is the integration code plus the two
+  TOFU-pinned AGL endpoints.
+- Dependency alerts and bumps are **dev-only** and are triaged on that
+  basis — a green-CI dev bump is zero-user-risk, and a CVE in the
+  lockfile is a developer-workstation/CI concern, not a user one.
+
+**Dev lockfile.** `uv.lock` is hash-pinned (sha256 per artifact). It
+resolves ~167 packages, ~90% of which are the Home Assistant ecosystem's
+transitive tree (via `homeassistant` +
+`pytest-homeassistant-custom-component`) — the unavoidable cost of
+testing against real HA, and not trimmable from this side. The
+heavyweights in it (`boto3`, `numpy`, `pillow`, `sqlalchemy`, `grpcio`,
+the Bluetooth stack, `pyjwt`) are never imported by haggle code.
+
+**CI / workflows.**
+
 - All GitHub Actions are pinned to 40-character commit SHAs with
-  `# vX.Y` comments (Dependabot keeps them current).
+  `# vX.Y` comments (Dependabot keeps them current, grouped weekly).
 - Workflow-level `permissions: read-all` on `ci.yml`, `hacs.yml`,
-  `hassfest.yml`. `release.yml` declares only `contents: write`.
+  `hassfest.yml`, `scorecard.yml`. `release.yml` scopes
+  `contents: write` + `id-token: write` + `attestations: write` to its
+  single job.
+- **No third-party actions in privileged workflows**: the GitHub Release
+  is created with the first-party `gh` CLI, not a third-party action.
+- **No external coverage vendor**: the Codecov upload was removed
+  (write-only output, third-party code on every PR).
+- `hacs/action` and `home-assistant/actions` are SHA-of-branch pins —
+  upstream cuts no tagged releases. Accepted: they are the ecosystem's
+  own validation gates, and the SHA still freezes the code.
+- `ossf/scorecard-action`'s SHA pin freezes only the action *wrapper*;
+  its `action.yml` executes `docker://ghcr.io/ossf/scorecard-action:<tag>`,
+  a mutable container tag (Codex review on #168). Accepted: digest-pinning
+  the image would bypass the supported wrapper and desync from Dependabot's
+  SHA bumps; OSSF cosign-signs the image, and the job's write scopes are
+  limited to SARIF upload + Scorecard's own OIDC result publishing.
 - The HACS validation step runs without `continue-on-error`.
 - Release tags trigger an attested GitHub Release via
-  `actions/attest-build-provenance`.
+  `actions/attest-build-provenance` (Sigstore-rooted; verifiable with
+  `gh attestation`).
+
+**Dev-machine hooks.** `.pre-commit-config.yaml` pins every remote hook
+to a **frozen commit SHA** (refresh with `pre-commit autoupdate
+--freeze`). `ruff` and `mypy` run via `uv run` (`language: system`) so
+exactly one toolchain copy exists, versioned by `uv.lock` — the
+tag-pinned mirror hooks previously drifted years behind the locked
+versions. `gitleaks` stays as pre-commit secret scanning.
+
+**Monitoring.** CodeQL (weekly + per-PR), OpenSSF Scorecard
+(`scorecard.yml`, published results + README badge), Dependabot on both
+ecosystems with grouped weekly PRs. At the 2026-07 review, direct
+dependencies measured 5.4–7.4 on OpenSSF Scorecard (transitives up to
+8.5); the weakest triaged link is `pyjwt` (exactly pinned by HA core,
+sits in code paths this integration never imports — JWT expiry is
+decoded with hand-rolled base64, not PyJWT).
+
+**Accepted risks (diminishing-returns line).**
+`pytest-homeassistant-custom-component` is a single-maintainer package
+tracked as a range (`<0.14`) — vendoring it would mean self-maintaining
+a fork of HA's test harness forever. The HA transitive tree is accepted
+as-is. Detection tooling (CodeQL, gitleaks, Scorecard) is kept even
+though each adds a component: it is detection surface, not attack
+surface.
 
 ## Coordinated Disclosure
 

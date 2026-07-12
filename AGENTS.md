@@ -98,13 +98,14 @@ scripts/
 
 .github/
 ├── workflows/
-│   ├── ci.yml           # ruff + mypy + pytest matrix (Python 3.13)
+│   ├── ci.yml           # ruff + mypy + pytest matrix (Python 3.14); coverage inline, no external vendor
 │   ├── hacs.yml         # HACS validation
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
-│   ├── release.yml      # tag-triggered GitHub Release + build-provenance attestation
-│   └── codeql.yml       # weekly + per-PR CodeQL Python scan
+│   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + build-provenance attestation
+│   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
+│   └── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
 ├── CODEOWNERS           # @naanyabiz owns everything
-└── dependabot.yml       # weekly pip + github-actions updates
+└── dependabot.yml       # weekly pip + github-actions updates, grouped into one PR per ecosystem
 
 # Repo-root posture files
 SECURITY.md              # disclosure path + threat-model summary
@@ -678,6 +679,30 @@ The HA Energy dashboard requires:
   `beta.2` while `beta.4` was live). Use the shields.io release badge or
   "latest pre-release via HACS" phrasing; version numbers belong in the
   CHANGELOG and the releases page.
+- **Don't re-add the remote ruff/mypy pre-commit hooks**
+  (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
+  a SECOND copy of the toolchain that drifts from `uv.lock` (they had
+  reached ruff v0.7.4 / mypy v1.13.0 against locked 0.15.20 / 2.2.0 —
+  local commits and CI were linting with different tools). Ruff and mypy
+  run via `uv run` (`language: system`) so `uv.lock` is the single version
+  source and Dependabot maintains it (2026-07 dependency review).
+- **Don't pin pre-commit hook revs to mutable tags.** `rev:` must be a
+  frozen 40-char commit SHA with a `# frozen: vX.Y.Z` comment — same
+  branch-poisoning logic as the GitHub Actions SHA-pin rule; hook repos are
+  code executed on every dev machine. Refresh with
+  `pre-commit autoupdate --freeze`.
+- **Don't add third-party actions to privileged workflows.** `release.yml`
+  is the only workflow with `contents: write` + `id-token: write`; it uses
+  first-party actions and the runner's `gh` CLI only (the third-party
+  release action was removed in the 2026-07 dependency review). Same
+  review removed the write-only Codecov upload from `ci.yml` — don't
+  re-add external telemetry vendors to CI without a consumer for their
+  output.
+- **Don't exact-pin `pytest-homeassistant-custom-component` to a single
+  patch.** Upstream releases near-daily, so an exact pin manufactures a
+  guaranteed weekly Dependabot PR and has caused resolver deadlocks
+  (#106, #120). Keep it a range (`<0.14`); `uv.lock` is the
+  reproducibility authority.
 
 ---
 
