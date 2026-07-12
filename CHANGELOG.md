@@ -51,6 +51,12 @@ user-facing impact — the integration still ships zero pip requirements):
 
 ### Changed
 
+- **Dependabot now ignores `pytest`** (`dependabot.yml`): its effective
+  version is exact-pinned inside `pytest-homeassistant-custom-component`
+  (0.13.346 → `pytest==9.0.3`), so independent floor bumps install
+  nothing different and a floor above phcc's pin deadlocks the whole
+  grouped update (#120 replayed on #170). pytest upgrades arrive via
+  phcc's own bumps.
 - **Dependabot PRs are now grouped** (one weekly PR per ecosystem instead
   of ~8 individual ones — the previous flow hand-batched them anyway; 8 of
   the repo's 50 commits were dependency-maintenance churn).

@@ -702,7 +702,12 @@ The HA Energy dashboard requires:
   patch.** Upstream releases near-daily, so an exact pin manufactures a
   guaranteed weekly Dependabot PR and has caused resolver deadlocks
   (#106, #120). Keep it a range (`<0.14`); `uv.lock` is the
-  reproducibility authority.
+  reproducibility authority. The same logic is why Dependabot **ignores
+  `pytest`** (`dependabot.yml`): phcc exact-pins pytest internally
+  (0.13.346 → `pytest==9.0.3`), so an independent pytest floor bump can
+  never install anything different and a floor above phcc's pin deadlocks
+  the whole grouped PR (#170). Don't remove that ignore rule, and don't
+  bump the pytest floor by hand past phcc's internal pin.
 
 ---
 
