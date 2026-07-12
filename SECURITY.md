@@ -123,6 +123,12 @@ the Bluetooth stack, `pyjwt`) are never imported by haggle code.
 - `hacs/action` and `home-assistant/actions` are SHA-of-branch pins —
   upstream cuts no tagged releases. Accepted: they are the ecosystem's
   own validation gates, and the SHA still freezes the code.
+- `ossf/scorecard-action`'s SHA pin freezes only the action *wrapper*;
+  its `action.yml` executes `docker://ghcr.io/ossf/scorecard-action:<tag>`,
+  a mutable container tag (Codex review on #168). Accepted: digest-pinning
+  the image would bypass the supported wrapper and desync from Dependabot's
+  SHA bumps; OSSF cosign-signs the image, and the job's write scopes are
+  limited to SARIF upload + Scorecard's own OIDC result publishing.
 - The HACS validation step runs without `continue-on-error`.
 - Release tags trigger an attested GitHub Release via
   `actions/attest-build-provenance` (Sigstore-rooted; verifiable with

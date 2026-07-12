@@ -24,12 +24,23 @@ jobs:
       security-events: write
       # Required by scorecard-action to publish signed results.
       id-token: write
+      # This job-level block REPLACES the workflow-level read-all, so grant
+      # checkout/repo_token read explicitly (also keeps the job working if
+      # the repo ever goes private). Codex review on #168.
+      contents: read
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
+      # ACCEPTED EXCEPTION (Codex review on #168, documented in SECURITY.md):
+      # the SHA below pins only the action *wrapper*; its action.yml runs
+      # docker://ghcr.io/ossf/scorecard-action:v2.4.3 — a mutable container
+      # tag. Digest-pinning the image would bypass the supported wrapper and
+      # desync from Dependabot's SHA bumps. Mitigations: OSSF cosign-signs
+      # the image, and the job's only write scopes are SARIF upload +
+      # Scorecard's own OIDC publish.
       - name: Run Scorecard analysis
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
