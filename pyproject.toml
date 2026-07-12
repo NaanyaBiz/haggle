@@ -125,7 +125,6 @@ addopts = [
     "--strict-config",
     "--cov=custom_components/haggle",
     "--cov-report=term-missing",
-    "--cov-report=xml",
 ]
 asyncio_mode = "auto"
 filterwarnings = [
