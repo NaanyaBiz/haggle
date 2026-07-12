@@ -58,7 +58,7 @@ def _safe_float(raw: Any) -> float:
     """
     try:
         value = float(raw or 0.0)
-    except (TypeError, ValueError):
+    except TypeError, ValueError:
         return 0.0
     if not math.isfinite(value) or value < 0:
         _LOGGER.warning("Rejecting non-finite/negative AGL value: %r", raw)
@@ -121,7 +121,7 @@ def parse_interval_readings(
                 dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=UTC)
-            except (ValueError, AttributeError):
+            except ValueError, AttributeError:
                 continue
             kwh = _safe_float(block.get("quantity"))
             cost_aud = _safe_float(block.get("amount"))
@@ -155,7 +155,7 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
             try:
                 dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
                 day: date = dt.date()
-            except (ValueError, AttributeError):
+            except ValueError, AttributeError:
                 continue
             kwh = _safe_float(consumption.get("quantity"))
             cost_aud = _safe_float(consumption.get("amount"))
@@ -177,11 +177,11 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
     today_utc = datetime.now(UTC).date()
     try:
         start = date.fromisoformat(start_str)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         start = today_utc
     try:
         end = date.fromisoformat(end_str)
-    except (ValueError, TypeError):
+    except ValueError, TypeError:
         end = today_utc
 
     usage = current.get("usage") or {}

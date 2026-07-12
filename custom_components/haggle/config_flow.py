@@ -271,7 +271,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 description_placeholders={"authorize_url": authorize_url},
                 errors={"base": "invalid_auth"},
             )
-        except (AGLError, aiohttp.ClientError, TimeoutError):
+        except AGLError, aiohttp.ClientError, TimeoutError:
             return self.async_show_form(
                 step_id="user",
                 data_schema=schema,
