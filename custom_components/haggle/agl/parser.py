@@ -21,7 +21,7 @@ from __future__ import annotations
 import logging
 import math
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, cast
 
 from ..const import TARIFF_OFFPEAK, TARIFF_PEAK, TARIFF_SHOULDER
 from .models import BillPeriod, Contract, DailyReading, IntervalReading, PlanRates
@@ -66,22 +66,67 @@ def _safe_float(raw: Any) -> float:
     return value
 
 
+# --- totality guards -------------------------------------------------------
+# AGL envelopes are dicts/lists/strings at known positions, but response
+# bodies are attacker-influenceable (TLS pinning is warn-only by design), so
+# every parser must be TOTAL over arbitrary JSON: malformed shapes degrade to
+# empty/default results, never raise. Enforced by tests/fuzz/fuzz_parser.py
+# and TestParserTotality in tests/test_parser.py.
+
+
+def _as_dict(raw: Any) -> dict[str, Any]:
+    """Return raw if it is a dict, else {}."""
+    if isinstance(raw, dict):
+        return cast("dict[str, Any]", raw)
+    return {}
+
+
+def _as_list(raw: Any) -> list[Any]:
+    """Return raw if it is a list, else []."""
+    if isinstance(raw, list):
+        return cast("list[Any]", raw)
+    return []
+
+
+def _as_str(raw: Any, default: str = "") -> str:
+    """Return raw if it is a str, else default."""
+    return raw if isinstance(raw, str) else default
+
+
+def _as_id(raw: Any) -> str:
+    """Account/contract identifiers: accept str (or int, coerced), else ''."""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, int) and not isinstance(raw, bool):
+        return str(raw)
+    return ""
+
+
 def parse_overview(data: dict[str, Any]) -> list[Contract]:
-    """Parse /api/v3/overview response."""
+    """Parse /api/v3/overview response.
+
+    A contract entry without a usable contractNumber is skipped — a
+    malformed (or tampered) entry must drop out, not crash discovery.
+    """
     contracts: list[Contract] = []
-    for account in data.get("accounts") or []:
-        account_number: str = account.get("accountNumber", "")
-        address: str = account.get("address", "")
-        for c in account.get("contracts") or []:
+    for account_raw in _as_list(_as_dict(data).get("accounts")):
+        account = _as_dict(account_raw)
+        account_number = _as_id(account.get("accountNumber"))
+        address = _as_str(account.get("address"))
+        for c_raw in _as_list(account.get("contracts")):
+            c = _as_dict(c_raw)
+            contract_number = _as_id(c.get("contractNumber"))
+            if not contract_number:
+                continue
             contracts.append(
                 Contract(
-                    contract_number=c["contractNumber"],
+                    contract_number=contract_number,
                     account_number=account_number,
                     address=address,
-                    fuel_type=c.get("type", ""),
-                    status=c.get("status", ""),
+                    fuel_type=_as_str(c.get("type")),
+                    status=_as_str(c.get("status")),
                     has_solar=bool(c.get("hasSolar", False)),
-                    meter_type=c.get("meterType", "smart"),
+                    meter_type=_as_str(c.get("meterType"), "smart"),
                 )
             )
     return contracts
@@ -110,13 +155,16 @@ def parse_interval_readings(
     """
     _skip_types = {"none", "pending"}
     readings: list[IntervalReading] = []
-    for section in data.get("sections") or []:
-        for item in section.get("items") or []:
-            block = item.get(source_field) or {}
-            rate_type: str = block.get("type", "none")
-            if rate_type in _skip_types:
+    for section_raw in _as_list(_as_dict(data).get("sections")):
+        for item_raw in _as_list(_as_dict(section_raw).get("items")):
+            item = _as_dict(item_raw)
+            block = _as_dict(item.get(source_field))
+            rate_type = block.get("type", "none")
+            # A non-str type can't name a tariff series (and an unhashable
+            # one would blow up the set membership) — treat as malformed.
+            if not isinstance(rate_type, str) or rate_type in _skip_types:
                 continue
-            dt_str: str = item.get("dateTime", "")
+            dt_str = item.get("dateTime", "")
             try:
                 dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
                 if dt.tzinfo is None:
@@ -146,12 +194,16 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
     kWh from consumption.quantity (outer — see module docstring).
     """
     readings: list[DailyReading] = []
-    for section in data.get("sections") or []:
-        for item in section.get("items") or []:
-            consumption = item.get("consumption") or {}
-            if consumption.get("type") in {"none", "pending"}:
+    for section_raw in _as_list(_as_dict(data).get("sections")):
+        for item_raw in _as_list(_as_dict(section_raw).get("items")):
+            item = _as_dict(item_raw)
+            consumption = _as_dict(item.get("consumption"))
+            rate_type = consumption.get("type")
+            # str-only membership test: an unhashable type value (dict/list)
+            # must not raise; absent/odd types keep the original keep-path.
+            if isinstance(rate_type, str) and rate_type in {"none", "pending"}:
                 continue
-            dt_str: str = item.get("dateTime", "")
+            dt_str = item.get("dateTime", "")
             try:
                 dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
                 day: date = dt.date()
@@ -170,10 +222,11 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
 
     Path: data["billPeriod"]["current"].
     """
-    current = (data.get("billPeriod") or {}).get("current") or {}
+    payload = _as_dict(data)
+    current = _as_dict(_as_dict(payload.get("billPeriod")).get("current"))
 
-    start_str: str = (current.get("start") or {}).get("date", "")
-    end_str: str = (current.get("end") or {}).get("date", "")
+    start_str = _as_str(_as_dict(current.get("start")).get("date"))
+    end_str = _as_str(_as_dict(current.get("end")).get("date"))
     today_utc = datetime.now(UTC).date()
     try:
         start = date.fromisoformat(start_str)
@@ -184,15 +237,22 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
     except ValueError, TypeError:
         end = today_utc
 
-    usage = current.get("usage") or {}
-    cost_label: str = usage.get("amount", "$0.00")
+    usage = _as_dict(current.get("usage"))
+    cost_label = _as_str(usage.get("amount"), "$0.00")
 
     # projection is in the overview response but not in the usage summary;
     # return empty string if absent — callers can populate from overview.
-    projection_label: str = data.get("additionalLabelValue", "")
+    projection_label = _as_str(payload.get("additionalLabelValue"))
 
-    quantity_str: str = (usage.get("quantity") or "0").replace(",", "").split()[0]
-    consumption_kwh = _safe_float(quantity_str)
+    # quantity is usually a label ("1,234.5 kWh"); a bare JSON number, empty
+    # or whitespace-only string must degrade to 0.0, never crash
+    # (whitespace previously hit .split()[0] -> IndexError; fuzz-enforced).
+    quantity_raw = usage.get("quantity")
+    if isinstance(quantity_raw, int | float) and not isinstance(quantity_raw, bool):
+        consumption_kwh = _safe_float(quantity_raw)
+    else:
+        parts = _as_str(quantity_raw, "0").replace(",", "").split()
+        consumption_kwh = _safe_float(parts[0] if parts else 0.0)
 
     return BillPeriod(
         start=start,
@@ -205,7 +265,8 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
 
 def parse_plan(data: dict[str, Any]) -> PlanRates:
     """Parse /api/v2/plan/energy/{contractNumber} response."""
-    product_name: str = data.get("productName", "")
+    payload = _as_dict(data)
+    product_name = _as_str(payload.get("productName"))
     unit_rates: list[dict[str, Any]] = []
     supply_charge: float = 0.0
     tou_unit_rates: dict[str, float] = {}
@@ -214,16 +275,17 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
     # inferred even when the per-rate title is generic ("First N kWh").
     current_header = ""
 
-    for rate in data.get("gstInclusiveRates") or []:
+    for rate_raw in _as_list(payload.get("gstInclusiveRates")):
+        rate = _as_dict(rate_raw)
         kind = rate.get("kind")
         if kind == "header":
-            current_header = rate.get("title") or ""
+            current_header = _as_str(rate.get("title"))
             continue
         if kind != "detail":
             continue
-        rate_type: str = rate.get("type", "")
+        rate_type = _as_str(rate.get("type"))
         price = _safe_float(rate.get("price"))
-        title: str = rate.get("title") or ""
+        title = _as_str(rate.get("title"))
         if rate_type == "c/day" and "supply" in title.lower():
             supply_charge = price
         if rate_type == "c/kWh":
@@ -249,10 +311,11 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
     # can never masquerade as the feed-in rate; unmatched plans stay None
     # (sensor reads `unavailable`, never a misleading 0.0).
     feed_in_rate: float | None = None
-    for rate in data.get("gstExclusiveRates") or []:
+    for rate_raw in _as_list(payload.get("gstExclusiveRates")):
+        rate = _as_dict(rate_raw)
         if rate.get("kind") != "detail" or rate.get("type") != "c/kWh":
             continue
-        title = rate.get("title") or ""
+        title = _as_str(rate.get("title"))
         if "feed-in" in title.lower() or "feed in" in title.lower():
             feed_in_rate = _safe_float(rate.get("price"))
             break

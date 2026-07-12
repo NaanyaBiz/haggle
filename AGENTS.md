@@ -56,7 +56,7 @@ custom_components/haggle/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
 │   ├── models.py        # TokenSet, Contract, IntervalReading, DailyReading, BillPeriod, PlanRates
-│   ├── parser.py        # JSON → typed dataclasses (filters type=none intervals)
+│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals
 │   └── pinning.py       # SPKI extraction helper for Trust-On-First-Use TLS pinning
 ├── strings.json         # translatable config-flow strings
 └── translations/en.json # English strings (must mirror strings.json)
@@ -79,6 +79,9 @@ tests/
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
 ├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, _safe_float
 ├── test_pinning.py                  # SPKI extraction + host-name guards
+├── fuzz/
+│   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
+│   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 └── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
@@ -103,7 +106,8 @@ scripts/
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
 │   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + attested zip asset (Sigstore)
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
-│   └── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
+│   ├── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
+│   └── fuzz.yml         # weekly + on-parser-change atheris fuzzing of agl/parser.py
 ├── CODEOWNERS           # @naanyabiz owns everything
 └── dependabot.yml       # weekly pip + github-actions updates, grouped into one PR per ecosystem
 

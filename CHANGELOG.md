@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **AGL response parsers are now total over arbitrary JSON** (#173): a
+  MITM-crafted or corrupt body can no longer crash a poll cycle via the
+  parser layer. Fixed crash classes — whitespace/numeric `usage.quantity`
+  (`IndexError`/`AttributeError` in `parse_bill_period`), non-dict nodes at
+  any envelope level (`.get` on list/str/int), unhashable
+  `consumption.type` values (`TypeError` on set membership), missing
+  `contractNumber` (`KeyError` — entry now skipped), and non-str plan
+  titles (`.lower()` on int). Regression-pinned in
+  `tests/test_parser.py::TestParserTotality`.
+- **Continuous fuzzing of the parsers** (#173): atheris harness
+  (`tests/fuzz/fuzz_parser.py`) asserts totality plus the finite/
+  non-negative numeric guarantee, seeded from the anonymised fixtures;
+  runs weekly and on parser changes (`fuzz.yml`, hash-pinned install).
+  Addresses the OpenSSF Scorecard Fuzzing check.
+
 Supply-chain surface reduction from the 2026-07 dependency review (no
 user-facing impact — the integration still ships zero pip requirements):
 

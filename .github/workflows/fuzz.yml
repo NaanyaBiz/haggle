@@ -1,0 +1,56 @@
+name: Fuzz
+
+# Atheris fuzzing of the AGL response parsers (tests/fuzz/fuzz_parser.py).
+# The parsers are the trust boundary for attacker-influenceable JSON (TLS
+# pinning is warn-only — see SECURITY.md), so they must be total over
+# arbitrary input. Weekly deep run + a short run when the parser or the
+# harness changes. Closes the Scorecard Fuzzing gap (#173).
+
+on:
+  schedule:
+    # Weekly Monday 05:42 UTC — offset from the CodeQL (03:17) and
+    # Scorecard (04:22) crons.
+    - cron: "42 5 * * 1"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "custom_components/haggle/agl/**"
+      - "tests/fuzz/**"
+      - ".github/workflows/fuzz.yml"
+
+permissions: read-all
+
+jobs:
+  fuzz:
+    name: Fuzz AGL parsers (atheris)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Install atheris (hash-pinned)
+        run: uv pip install --require-hashes -r tests/fuzz/requirements.txt
+
+      - name: Fuzz parsers
+        env:
+          PYTHONPATH: .
+          # Short smoke on PRs; deeper sweep on the weekly schedule.
+          TIME_BUDGET: ${{ github.event_name == 'pull_request' && '120' || '600' }}
+        run: |
+          mkdir -p /tmp/corpus
+          cp tests/fixtures/*.json /tmp/corpus/
+          uv run python tests/fuzz/fuzz_parser.py /tmp/corpus \
+            -max_total_time="${TIME_BUDGET}" -print_final_stats=1
