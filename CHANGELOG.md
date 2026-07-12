@@ -32,6 +32,16 @@ user-facing impact — the integration still ships zero pip requirements):
   SHA-pinned, `publish_results: true`). At review time the repo's direct
   dependencies measured 5.4–7.4; the repo itself attests releases — a check
   none of its dependencies pass.
+- **Releases now ship an attested artifact**: `release.yml` builds
+  `haggle-<ver>.zip` and uploads it with its Sigstore provenance bundle
+  (`.zip.sigstore`) as release assets (verify:
+  `gh attestation verify haggle-<ver>.zip --repo NaanyaBiz/haggle`). HACS
+  install path unchanged (`zip_release` stays false). Also adds the
+  missing top-level `permissions: {}` to `release.yml` (Scorecard
+  Token-Permissions 9→10). First Scorecard self-assessment: **7.0/10**;
+  the remaining deductions are triaged in `SECURITY.md` ("Own Scorecard
+  posture") with follow-ups in #171 (ruleset), #172 (Best Practices
+  badge), #173 (parser fuzzing).
 - **Threat model updated**: `SECURITY.md` "Supply chain" now records the
   full posture — zero shipped requirements and the dev-only bump risk
   calculus, the 167-package lockfile attribution (~90% HA-ecosystem tax,

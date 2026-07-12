@@ -149,6 +149,34 @@ dependencies measured 5.4–7.4 on OpenSSF Scorecard (transitives up to
 sits in code paths this integration never imports — JWT expiry is
 decoded with hand-rolled base64, not PyJWT).
 
+**Own Scorecard posture.** First self-assessment (Scorecard v5.3.0,
+2026-07-12): **7.0/10**, with 10s on Pinned-Dependencies, SAST, CI-Tests,
+Dangerous-Workflow, Dependency-Update-Tool, Security-Policy, License,
+Binary-Artifacts and Vulnerabilities. Remaining deductions, triaged:
+
+- `Maintained: 0` — pure repo-age gate (<90 days); self-resolves ~2026-08.
+- `Code-Review: 0`, `Contributors: 0` — measure team structure (a second
+  human reviewer; multi-organization contributors). **Accepted at 0** for
+  a solo-maintained repo; bot reviews (Codex/Claude) are excluded by
+  Scorecard's design and self-review would be theater.
+- `Packaging: -1` — means "no PyPI/registry publish workflow"; not
+  applicable to a HACS-distributed integration. Inconclusive checks are
+  excluded from the aggregate. Accepted.
+- `Branch-Protection: -1` — default workflow token cannot read classic
+  protection rules; remediation is a ruleset on `main` (#171), not a PAT
+  secret in CI.
+- `CII-Best-Practices: 0` — bestpractices.dev registration tracked in
+  #172 (passing level only; silver+ requires two-person review).
+- `Fuzzing: 0` — tracked in #173; genuine target (`agl/parser.py` parses
+  MITM-influenceable JSON), not badge-chasing.
+- `Signed-Releases: -1` — releases carried no assets; from the next tag,
+  `release.yml` uploads `haggle-<ver>.zip` plus its Sigstore bundle
+  (`.zip.sigstore`), verifiable offline or via
+  `gh attestation verify haggle-<ver>.zip --repo NaanyaBiz/haggle`.
+
+Realistic ceiling ≈ 8.5–9: the residual gap is the team-structure checks
+above, which a single-maintainer project cannot honestly score on.
+
 **Accepted risks (diminishing-returns line).**
 `pytest-homeassistant-custom-component` is a single-maintainer package
 tracked as a range (`<0.14`) — vendoring it would mean self-maintaining

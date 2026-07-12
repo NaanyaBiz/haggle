@@ -101,7 +101,7 @@ scripts/
 │   ├── ci.yml           # ruff + mypy + pytest matrix (Python 3.14); coverage inline, no external vendor
 │   ├── hacs.yml         # HACS validation
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
-│   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + build-provenance attestation
+│   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + attested zip asset (Sigstore)
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
 │   └── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
 ├── CODEOWNERS           # @naanyabiz owns everything
