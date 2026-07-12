@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   default (`gpg.format ssh`). Server-side signed-commit enforcement is
   deliberately NOT enabled — squash merges to `main` are already
   GitHub-signed, and remote agent sessions cannot hold the key.
+- **OpenSSF Best Practices badge earned at passing level** (#172):
+  registered as [bestpractices.dev project 13582](https://www.bestpractices.dev/projects/13582)
+  with all 66 passing criteria answered and evidenced (100%); badge added
+  to the README. Feeds the Scorecard `CII-Best-Practices` check (0 → 5 on
+  its next run).
 
 ### Changed
 
