@@ -40,10 +40,19 @@ jobs:
           subject-path: |
             custom_components/haggle/**/*
 
+      # First-party gh CLI (preinstalled on the runner) instead of a
+      # third-party action: this is the only workflow with contents:write +
+      # id-token:write, so no third-party code runs in it (2026-07
+      # dependency review).
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
-        with:
-          name: "v${{ steps.version.outputs.version }}"
-          body_path: release_notes.txt
-          draft: false
-          prerelease: ${{ contains(github.ref_name, '-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=()
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" \
+            --title "v${{ steps.version.outputs.version }}" \
+            --notes-file release_notes.txt \
+            "${args[@]}"
