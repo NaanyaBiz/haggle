@@ -23,7 +23,12 @@ The file is built to be posted publicly:
 | Usage figures, rates, tariff bands, solar flags, timestamps | Included — they are the diagnostic payload and are not personally identifying. |
 | HA core / Python / OS versions | Added automatically by Home Assistant's diagnostics wrapper (`home_assistant` block). |
 
-## Schema v1 field reference
+Schema v2 adds give-up visibility: `stall_give_up_spans` and the
+`gave_up` marker on `solar_heal` — each such record is mirrored by an HA
+Repairs issue in Settings, so holes announce themselves instead of hiding
+behind healthy-looking coverage stats.
+
+## Schema v2 field reference
 
 For the automated triage routine and maintainers. The integration's payload
 is under the standard HA wrapper's `"data"` key. `schema_version` gates
@@ -32,7 +37,7 @@ fall back to treating the file as opaque JSON.
 
 | Field | Meaning | Diagnostic signal |
 |---|---|---|
-| `schema_version` | Payload shape contract (currently `1`). | Gate parsing on it. |
+| `schema_version` | Payload shape contract (currently `2`). | Gate parsing on it. |
 | `integration.version` | Installed Haggle version. | Satisfies the "Haggle version" triage check. |
 | `contract_ref` / `account_ref` | Stable anonymous install identifiers (HMAC-keyed per install). | Correlate multiple reports from the same install. |
 | `runtime_available` | Whether setup succeeded far enough to have runtime state. | `false` → the setup failure itself is the bug (auth/network); `coordinator` is `null` and `statistics` empty — don't chase data-shape theories. |
@@ -44,7 +49,8 @@ fall back to treating the file as opaque JSON.
 | `coordinator.active_tou_bands` | ToU bands with stored statistics. | Empty on a self-described ToU account → interval tagging or plan problem. |
 | `coordinator.bill_period_start` | Start date of the current AGL bill period (last seen). | Required context for any "period sensor ≠ app tile" report — the period sensors measure from this date, the app tile does too, but cumulative sensors don't. |
 | `coordinator.data.*` | Latest `HaggleData` snapshot (period totals, rates, cumulative sums, solar period values). | `generation_period_kwh: null` with solar → generation backfill not caught up, **or a heal cycle is suppressing it** — check `solar_heal`. |
-| `solar_heal` | One-time generation leading-hole heal record: `{state, floor, attempts}`; `null` if never armed. | `state: "pending"` → period solar sensors are deliberately `unknown` this cycle and a full-window re-import is in progress. `"done"` with a still-short period total → compare `statistics.<generation>.first_date` against `floor`. |
+| `solar_heal` | One-time generation leading-hole heal record: `{state, floor, attempts}`; `null` if never armed. | `state: "pending"` → period solar sensors are deliberately `unknown` this cycle and a full-window re-import is in progress. `"done"` with a still-short period total → compare `statistics.<generation>.first_date` against `floor`. A `done` record with `gave_up: true` (+ final `attempts`) was reached by give-up, not clean completion — some days are permanently missing. |
+| `stall_give_up_spans` | List of `{start, end, cycles, gave_up_at}` spans where the normal-path solar backfill gave up (#154) and wrote zero-delta markers; `null` if never. | The ONLY durable evidence of these holes — the marker rows make `first_date`/`row_count` look healthy over them. Any span here + a "solar missing days" report → this is the cause; the days will not self-heal. |
 | `statistics.<series>.first_date` | **Earliest** day stored per series. | Later than `bill_period_start` (or the 30-day floor) while `last_date` is current → **leading hole** (#128 class): the resume logic will never revisit those days on its own. |
 | `statistics.<series>.last_date` | Most recent day imported per statistics series. | More than ~3 days behind today → fetch stall (rate limit, auth, or zero-day stall classes). A missing series that should exist → that feature never started. |
 | `statistics.<series>.row_count` | Stored hourly rows in the series. | Far fewer rows than the `first_date`→`last_date` span implies → interior gaps (transient per-day fetch errors, #145 class). |

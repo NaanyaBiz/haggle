@@ -313,6 +313,35 @@ class TestSagaFields:
         assert result["solar_heal"] == heal
         assert CONF_SOLAR_HEAL not in result["entry"]["data"]
 
+    async def test_stall_spans_surfaced(self, hass: HomeAssistant) -> None:
+        """Stall give-up spans appear top-level, never under entry.data —
+        they are the only durable evidence of marker-masked holes (CO-16.4)."""
+        from custom_components.haggle.const import CONF_SOLAR_STALL_SPANS
+
+        spans = [
+            {
+                "start": "2026-06-01",
+                "end": "2026-06-07",
+                "cycles": 3,
+                "gave_up_at": "2026-06-10T00:00:00+00:00",
+            }
+        ]
+        entry = await _make_entry(hass, has_solar=True)
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_SOLAR_STALL_SPANS: spans}
+        )
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+
+        assert result["stall_give_up_spans"] == spans
+        assert CONF_SOLAR_STALL_SPANS not in result["entry"]["data"]
+
+    async def test_stall_spans_none_when_never(self, hass: HomeAssistant) -> None:
+        entry = await _make_entry(hass)
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        assert result["stall_give_up_spans"] is None
+
     async def test_solar_heal_none_when_never_armed(self, hass: HomeAssistant) -> None:
         entry = await _make_entry(hass)
         with _patched_stats():

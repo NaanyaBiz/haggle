@@ -153,6 +153,9 @@ CONF_PINNED_SPKI_AUTH: Final = "pinned_spki_auth"  # secure.agl.com.au
 CONF_PINNED_SPKI_BFF: Final = "pinned_spki_bff"  # api.platform.agl.com.au
 # One-time solar generation leading-hole heal (#128). Stored as a record:
 #   {"state": "pending"|"done", "floor": "YYYY-MM-DD", "attempts": int}
+# A "done" record reached by GIVE-UP (rather than clean completion) additionally
+# carries {"gave_up": True, "attempts": int} so diagnostics can tell the two
+# apart — they previously collapsed to an identical {"state": "done"}.
 # Absent = never attempted. "pending" = a full-window re-import is in progress;
 # the `floor` is frozen when the heal starts so a 429-interrupted retry re-fetches
 # the SAME window instead of sliding forward and dropping its oldest day (Codex
@@ -166,6 +169,18 @@ CONF_SOLAR_HEAL: Final = "solar_heal"
 SOLAR_HEAL_PENDING: Final = "pending"
 SOLAR_HEAL_DONE: Final = "done"
 MAX_SOLAR_HEAL_ATTEMPTS: Final = 3
+
+# Permanent-hole records written when the normal-path solar backfill gives up
+# (#154, CO-16.4): the give-up writes healthy-looking zero-delta marker rows,
+# so the coverage stats in diagnostics self-mask the hole — these spans are the
+# only durable evidence. Surfaced as diagnostics `stall_give_up_spans` and as a
+# Repairs issue per span. Bounded list (oldest dropped) so entry.data stays small.
+CONF_SOLAR_STALL_SPANS: Final = "solar_stall_spans"
+MAX_STALL_SPAN_RECORDS: Final = 12
+# Learn-more target for the give-up Repairs issues.
+ISSUE_LEARN_MORE_URL: Final = (
+    "https://github.com/NaanyaBiz/haggle/blob/main/docs/diagnostics.md"
+)
 
 # Coordinator data attribute names — must match HaggleData field names exactly.
 DATA_CONSUMPTION_KWH: Final = "latest_cumulative_kwh"  # TOTAL_INCREASING sensor
