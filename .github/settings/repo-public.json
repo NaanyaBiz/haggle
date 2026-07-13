@@ -9,9 +9,9 @@
   "has_issues": true,
   "has_pages": false,
   "has_projects": true,
+  "has_pull_requests": true,
   "has_wiki": false,
   "is_template": false,
-  "license": "Apache-2.0",
   "pull_request_creation_policy": "all",
   "visibility": "public",
   "web_commit_signoff_required": false
