@@ -36,6 +36,7 @@ echo
 echo "-- Collaborators / keys / hooks --"
 collabs="$(gh api "repos/${REPO}/collaborators" --jq '[.[].login] | sort | join(",")')"
 check "collaborators" "${collabs}" "${EXPECTED_ADMIN}"
+check "pending collaborator invitations" "$(gh api "repos/${REPO}/invitations" --jq 'length')" "0"
 check "deploy keys" "$(gh api "repos/${REPO}/keys" --jq 'length')" "0"
 check "webhooks" "$(gh api "repos/${REPO}/hooks" --jq 'length')" "0"
 
@@ -58,7 +59,9 @@ for name in protect-main protect-release-tags; do
   [[ "${name}" == "protect-main" ]] && MAIN_ID="${id}"
   detail="$(gh api "repos/${REPO}/rulesets/${id}")"
   check "${name} enforcement" "$(jq -r '.enforcement' <<<"${detail}")" "active"
-  check "${name} bypass actors" "$(jq '.bypass_actors | length' <<<"${detail}")" "0"
+  # bypass_actors is only returned to callers with ruleset write access —
+  # a lesser token must FAIL this check, not sail through on a missing key.
+  check "${name} bypass actors" "$(jq -r 'if has("bypass_actors") then (.bypass_actors | length | tostring) else "UNREADABLE (token lacks ruleset write access)" end' <<<"${detail}")" "0"
 done
 if gh api "repos/${REPO}/branches/main/protection" >/dev/null 2>&1; then
   check "classic protection on main" "present" "absent"
@@ -71,6 +74,11 @@ echo "-- Actions policy --"
 actions="$(gh api "repos/${REPO}/actions/permissions")"
 check "allowed actions" "$(jq -r '.allowed_actions' <<<"${actions}")" "selected"
 check "SHA pinning required" "$(jq -r '.sha_pinning_required' <<<"${actions}")" "true"
+sel="$(gh api "repos/${REPO}/actions/permissions/selected-actions")"
+check "github-owned actions allowed" "$(jq -r '.github_owned_allowed' <<<"${sel}")" "true"
+check "verified-creator blanket allow" "$(jq -r '.verified_allowed' <<<"${sel}")" "false"
+check "publisher allowlist (exact)" "$(jq -r '.patterns_allowed | sort | join(",")' <<<"${sel}")" \
+  "astral-sh/setup-uv@*,hacs/action@*,home-assistant/actions/*,ossf/scorecard-action@*"
 wf_perms="$(gh api "repos/${REPO}/actions/permissions/workflow" \
   --jq '.default_workflow_permissions + "/" + (.can_approve_pull_request_reviews|tostring)')"
 check "default workflow token" "${wf_perms}" "read/false"

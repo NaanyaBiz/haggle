@@ -209,8 +209,12 @@ merge.
   `read-all`); `release.yml` and `settings-drift.yml` start from
   `permissions: {}` and scope write grants to the single job that needs
   them (`release.yml`: `contents` + `id-token` + `attestations` write).
-- **No third-party actions in privileged workflows**: the GitHub Release
-  is created with the first-party `gh` CLI, not a third-party action.
+- **No third-party actions in workflows holding `contents: write`**: the
+  GitHub Release is created with the first-party `gh` CLI, not a
+  third-party action. The one third-party action with any write grant is
+  `ossf/scorecard-action` (SHA-pinned) in scorecard.yml, which holds only
+  scoped `security-events`/`id-token` writes for publishing its results —
+  a documented, accepted exception.
 - **No external coverage vendor**: the Codecov upload was removed
   (write-only output, third-party code on every PR).
 - Every PR is gated by a `Dependency review` check: known-vulnerable
@@ -370,9 +374,12 @@ signed-tag release flow.
 
 **The control plane itself is versioned**: rulesets, public repo
 settings, and the Actions policy snapshot live in `.github/settings/`;
-changes land by PR first, and a weekly `settings-drift` workflow
-re-exports live state and files an issue on any divergence — detection,
-not prevention (RA-09).
+changes land by PR first. The weekly `settings-drift` workflow re-exports
+and diffs what the unprivileged workflow token can read — rulesets and
+public repo settings; the admin-only snapshot (merge methods, security
+toggles, Actions policy and its allowlist) is manual-refresh only, so it
+drifts silently between exports — detection, not prevention, and only for
+the covered surface (RA-09).
 
 **What alerts rather than blocks**: CodeQL alerts, Dependabot alerts,
 Scorecard regressions, settings-drift issues, and scheduled deep-fuzz

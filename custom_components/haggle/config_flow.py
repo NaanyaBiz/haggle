@@ -381,8 +381,9 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
         _LOGGER.info(
             "Creating haggle entry: account=%s contract=%s pin_auth=%s pin_bff=%s",
-            account_number or "unknown",
-            contract_number or "unknown",
+            # Class B identifiers (docs/threat-model.md §2): log last-4 only.
+            f"…{account_number[-4:]}" if account_number else "unknown",
+            f"…{contract_number[-4:]}" if contract_number else "unknown",
             "set" if self._auth_spki else "missing",
             "set" if self._bff_spki else "missing",
         )

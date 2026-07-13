@@ -67,7 +67,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
 
     _LOGGER.info(
         "Setting up haggle entry: contract=%s pin_auth=%s pin_bff=%s",
-        contract_number or "unknown",
+        # Class B identifier (docs/threat-model.md §2): log last-4 only.
+        f"…{contract_number[-4:]}" if contract_number else "unknown",
         "set" if pinned_auth else "unset",
         "set" if pinned_bff else "unset",
     )

@@ -53,7 +53,7 @@ Attacker-relevant properties:
 | Class | Data | Where it may live | Requirements triggered |
 |---|---|---|---|
 | **A — secret** | AGL/Auth0 refresh token (rotating); access token (15-min JWT) | refresh token: `entry.data` only; access token: memory only | Never committed, logged, or serialized. Diagnostics redact it; leak tests assert it can never appear; secret scanning guards commits at three layers — pre-commit gitleaks, GitHub push protection, and a required full-history gitleaks CI gate with repo-specific rules (`.gitleaks.toml`: Auth0 refresh-token and real-AGL-identifier patterns, plus a scanner self-test canary — PR #184). Error bodies are stripped before exceptions propagate. |
-| **B — personal** | account number, contract number, service address, residence-fingerprinting meter timeseries | the user's own HA instance (incl. entry title = address, threat I-3) | Never in the repo — fixtures use the canonical placeholders (`1234567890` / `9999999999` / `1 Sample Street SUBURB QLD 4000`), and the CI gitleaks rules treat the real identifiers as secrets. HMAC-anonymised in diagnostics (account/contract, including inside composite strings). Never in exception text (BFF URLs carry the contract number — strip before raising). |
+| **B — personal** | account number, contract number, service address, residence-fingerprinting meter timeseries | the user's own HA instance (incl. entry title = address, threat I-3) | Never in the repo — fixtures use the canonical placeholders (`1234567890` / `9999999999` / `1 Sample Street SUBURB QLD 4000`), and the CI gitleaks rules treat the real identifiers as secrets in the shapes they actually leak: keyed fields, usage-endpoint URL paths, and `haggle:*` statistic IDs. A bare 10-digit number outside those shapes is not detectable — the placeholder discipline remains the primary control. HMAC-anonymised in diagnostics (account/contract, including inside composite strings). Never in exception text (BFF URLs carry the contract number — strip before raising). |
 | **C — operational** | usage figures, rates, tariff bands, timestamps, SPKI-presence booleans | diagnostics, statistics, logs | Permitted — this is the diagnostic payload and is not personally identifying on its own. |
 | **D — public** | code, docs, CI config | repo | Normal review. |
 
@@ -157,17 +157,19 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | I-5 | Pre-rewrite git backup retaining real PII (workstation copy) | **Open — workstation action** | Git history was rewritten before the public flip (verified clean by three independent scans, and re-scanned full-history by the required gitleaks gate on every PR); an offline pre-rewrite backup on the maintainer's workstation is still pending secure deletion (presence re-verified 2026-07-13). Not a repo artifact; tracked to the maintainer. |
 | D-1 | `client_id` revocation stops all installs; no backoff | **Accepted (with S-2)** / retry storms **mitigated** | Auth failures route to HA's reauth flow (no retry storm); failed polls retry at 30 min, restored to 24 h on success; 429s halt chunks without data loss. Availability residual accepted per §8. |
 | D-2 | Rotated-token persist failure → lock-out on next restart | **Mitigated; residual accepted** | Persist failure now triggers **immediate reauth** (`__init__.py::_persist_refresh_token` → `entry.async_start_reauth`) instead of a silent time bomb. Residual: no two-phase persist — declined as disproportionate given the immediate-surface behaviour. |
-| D-3 | First-install backfill burst triggers BFF rate-limiting | **Mitigated** | 0.5 s inter-request pacing, 7-day chunks, 429 halts the chunk and resumes next cycle (#34/#155); a 429 never becomes a permanent hole by design. |
+| D-3 | First-install backfill burst triggers BFF rate-limiting | **Mitigated** | 0.5 s inter-request pacing, 7-day chunks, 429 halts the chunk and resumes next cycle (#34/#155); on the normal path a 429 never becomes a permanent hole. Within the bounded solar heal/stall give-up paths (§8), persistent rate-limiting counts toward the attempt caps and can end in a rare accepted hole. |
 | E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. Per-release SBOM and zip-release install path are planned, not yet in force. |
 | E-2 | Open-schema `dict(rate)` passthrough into runtime state | **Mitigated** | Allowlist parsing; "don't forward raw AGL response dicts" is a standing AGENTS.md rule. |
 | E-3 | Borrowed iOS `client_id` supports account-modification scopes the integration doesn't request | **Accepted with tripwire** | `AGL_OAUTH_SCOPE` contains no write scopes; **any change to the scope constant is a tier re-validation + regulatory re-determination trigger** (§7, §9) and a mandatory security-review item. |
 
 ## 5. Residual-threat notes
 
-The accepted rows above (S-2/D-1, S-3, R-1, I-1, I-3, D-2-residual, E-3)
-are deliberate, dated decisions — not omissions. They are consolidated as
-RA-14 in SECURITY.md's risk-acceptance register (accepted by @naanyabiz,
-2026-07-13), re-reviewed annually or when a second maintainer joins.
+The accepted rows above are deliberate, dated decisions — not omissions.
+S-3, R-1, I-3, D-2-residual and E-3 are consolidated as RA-14 in
+SECURITY.md's risk-acceptance register; I-1 (plaintext refresh token at
+rest) is RA-05 and S-2/D-1 (shared `client_id`) is RA-06 (each accepted
+by @naanyabiz, 2026-07-13), re-reviewed annually or when a second
+maintainer joins.
 Anything that changes an accepted threat's pre-conditions (new scope, new
 endpoint, new storage location, telemetry) reopens the row.
 
@@ -199,7 +201,13 @@ reach the maintainer's home infrastructure without a human approving the
 prompt. Enforced containment beyond the permission layer: the server-side
 `protect-main` ruleset binds it like any identity (PR + eight green
 required checks, zero bypass actors); merge and tag are human-gated
-actions; every commit carries the enforced AI-provenance trailer.
+actions — the committed permission policy grants no `gh pr merge` verb
+(narrowed 2026-07-14 after cross-review; previously `gh pr:*` was a
+standing merge route on any fresh checkout), and the per-machine `ask`
+rules add a live prompt on this machine. Every commit carries the
+AI-provenance trailer (enforced by a local commit-msg hook — a
+convention rather than a server-side control, backstopped by the PR
+history and session links in every commit message).
 
 **Automated triage routine.** A daily-cron-only hosted Claude agent
 (deliberately *not* event-triggered — issue events would let attackers
@@ -284,7 +292,9 @@ regression test in `tests/test_coordinator_statistics.py`):
   `(statistic_id, start)`). Data arriving later than 7 days after its slot
   may leave a permanent hole — accepted.
 - **Rate limiting**: a 429 halts the current chunk and resumes next cycle;
-  by design a 429 never produces a data hole.
+  on the normal path a 429 never produces a data hole. In the solar heal
+  path, sweeps halted by persistent 429s count toward the bounded give-up
+  caps below, so sustained rate-limiting can end in a rare accepted hole.
 - **Bounded give-up**: the solar leading-hole heal is capped at
   `MAX_SOLAR_HEAL_ATTEMPTS` (3) sweeps (lifetime hard cap 2×); a
   persistently erroring span is abandoned after
