@@ -24,7 +24,7 @@ For `/wt rm <branch>`:
 
 ## Convention
 
-- Main worktree (`/Users/dave/projects/haggle/`) is always on `main`.
+- Main worktree (`~/projects/haggle/`) is always on `main`.
 - Feature work happens in `../haggle.wt/<branch>/`.
 - Each worktree shares `.venv` and `.claude/settings.local.json` via symlink.
 - Never commit directly to `main` from a feature worktree — always PR.

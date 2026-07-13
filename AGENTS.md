@@ -177,8 +177,8 @@ all of the following before it can be merged. The `/pr` command enforces this.
 
 ## Worktree Workflow
 
-Main worktree (`/Users/dave/projects/haggle/`) is always on `main`. Feature
-work happens in sibling worktrees at `/Users/dave/projects/haggle.wt/<branch>/`.
+Main worktree (`~/projects/haggle/`) is always on `main`. Feature
+work happens in sibling worktrees at `~/projects/haggle.wt/<branch>/`.
 Never commit directly to `main` from a feature worktree — always open a PR.
 
 ```bash

@@ -52,7 +52,7 @@ Make the two edits in a release worktree, commit, and open a PR:
 ```bash
 ./scripts/wt new chore/release-$VERSION
 # ...make the manifest.json + CHANGELOG.md edits in the worktree...
-cd /Users/dave/projects/haggle.wt/chore-release-$VERSION
+cd ~/projects/haggle.wt/chore-release-$VERSION
 git add custom_components/haggle/manifest.json CHANGELOG.md
 git commit -m "chore(release): v$VERSION
 
@@ -71,7 +71,7 @@ requires the override prefix for any push from the main worktree — a tag
 push during a release is the sanctioned use:
 
 ```bash
-cd /Users/dave/projects/haggle
+cd ~/projects/haggle
 git fetch origin main && git pull --ff-only
 git tag -s "v$VERSION" origin/main -m "v$VERSION"
 HAGGLE_ALLOW_MAIN_PUSH=1 git push origin "v$VERSION"

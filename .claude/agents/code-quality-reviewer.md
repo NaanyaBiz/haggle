@@ -52,7 +52,7 @@ Delegate:
 ## Tooling checks (always run these)
 
 ```bash
-cd /Users/dave/projects/haggle  # or the active worktree
+cd ~/projects/haggle  # or the active worktree
 uv run ruff check custom_components/ tests/
 uv run ruff format --check custom_components/ tests/
 uv run mypy custom_components/haggle

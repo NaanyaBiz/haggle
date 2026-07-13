@@ -53,14 +53,14 @@ Delegate:
 
 When dependencies change (`pyproject.toml`, `uv.lock`):
 ```bash
-cd /Users/dave/projects/haggle  # or active worktree
+cd ~/projects/haggle  # or active worktree
 uv run pip-audit 2>/dev/null || echo "pip-audit not available — check manually"
 ```
 
 ## Secret scanning
 
 ```bash
-cd /Users/dave/projects/haggle  # or active worktree
+cd ~/projects/haggle  # or active worktree
 pre-commit run gitleaks --all-files 2>/dev/null || git diff HEAD | grep -iE '(token|secret|password|api_key)\s*=\s*["\x27][^"\x27]{8,}'
 ```
 
