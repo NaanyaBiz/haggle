@@ -821,9 +821,13 @@ Every AI tool that touches this repository, and the human boundary around it:
 | **Codex (`chatgpt-codex-connector`)** | Cross-vendor PR reviewer | Invoked on substantive PRs. Reviews are advisory comments only — never a merge or approval authority, and not a required check. |
 | **`haggle-triage` routine** | Scheduled daily triage of untrusted issues/PRs/attachments: comments, labels, Dependabot rollups, draft-fix PRs | Cron-only by design; fresh session per run; tool + Bash-prefix allowlist. Committed spec and prompt: [`docs/agents/triage-routine.md`](docs/agents/triage-routine.md). **Never** merges, pushes to `main`, tags, releases, or edits `release.yml`/`CODEOWNERS`/`LICENSE`/`NOTICE`/`SECURITY.md`. |
 
-**Human-executed boundary.** Merging a PR and creating/pushing a release
-tag are executed by the human maintainer, never by a standing agent
-grant. The committed `.claude/settings.json` grants no merge verb (`gh pr
+**Human-approved boundary.** Merging a PR and creating/pushing a release
+tag always require a live human decision — never a standing agent grant.
+In practice either the maintainer runs them personally, or an agent
+session runs them (e.g. the `/release` flow's `gh pr merge --squash` and
+tag-push steps in `release-manager.md`) and halts on the interactive
+permission prompt for the human to approve each one — that prompt IS the
+boundary. The committed `.claude/settings.json` grants no merge verb (`gh pr
 merge` is deliberately absent from the allow-list), denies
 `Bash(gh auth token*)` outright (a session can never print the credential
 it runs under), and `ask`-gates every `Edit`/`Write`/`MultiEdit` touching

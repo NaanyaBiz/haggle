@@ -44,9 +44,11 @@ routine reports the attachment as unreadable and asks for a valid one.
 
 ## Replay procedure (run before merging any prompt change)
 
-1. **Stand up a sandbox target.** Use a throwaway private scratch repo, or
-   dedicated issues on this repo whose titles are prefixed
-   `INJECTION-TEST:`. Never point the corpus at real user issues.
+1. **Stand up a sandbox target.** Use a throwaway private scratch repo,
+   ALWAYS — never this repo. The routine's inventory step lists every open
+   issue and PR with no test-prefix filter, so a same-repo replay would
+   also comment on, label, and branch for real user items during the test
+   run. Never point the corpus at real user issues.
 2. **Seed the payloads.** Open one issue per payload below, pasting the
    payload as the issue body. For payload 05, attach the malformed JSON as
    a `.json` file as well.
