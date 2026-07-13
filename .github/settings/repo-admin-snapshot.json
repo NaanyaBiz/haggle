@@ -1,0 +1,70 @@
+{
+  "actions_permissions": {
+    "allowed_actions": "selected",
+    "enabled": true,
+    "sha_pinning_required": true
+  },
+  "classic_protection_main": null,
+  "inventory": {
+    "actions_secrets": 0,
+    "actions_variables": 0,
+    "dependabot_secrets": 0,
+    "deploy_keys": 0,
+    "environments": 0,
+    "hooks": 0
+  },
+  "merge": {
+    "allow_auto_merge": false,
+    "allow_merge_commit": false,
+    "allow_rebase_merge": false,
+    "allow_squash_merge": true,
+    "allow_update_branch": false,
+    "delete_branch_on_merge": true,
+    "merge_commit_message": "PR_TITLE",
+    "merge_commit_title": "MERGE_MESSAGE",
+    "squash_merge_commit_message": "COMMIT_MESSAGES",
+    "squash_merge_commit_title": "COMMIT_OR_PR_TITLE",
+    "use_squash_pr_title_as_default": false
+  },
+  "ruleset_bypass": [
+    {
+      "bypass_actors": [],
+      "name": "protect-main"
+    },
+    {
+      "bypass_actors": [],
+      "name": "protect-release-tags"
+    }
+  ],
+  "security_and_analysis": {
+    "dependabot_security_updates": {
+      "status": "enabled"
+    },
+    "secret_scanning": {
+      "status": "enabled"
+    },
+    "secret_scanning_non_provider_patterns": {
+      "status": "disabled"
+    },
+    "secret_scanning_push_protection": {
+      "status": "enabled"
+    },
+    "secret_scanning_validity_checks": {
+      "status": "disabled"
+    }
+  },
+  "selected_actions": {
+    "github_owned_allowed": true,
+    "patterns_allowed": [
+      "astral-sh/setup-uv@*",
+      "hacs/action@*",
+      "home-assistant/actions/*",
+      "ossf/scorecard-action@*"
+    ],
+    "verified_allowed": false
+  },
+  "workflow_permissions": {
+    "can_approve_pull_request_reviews": false,
+    "default_workflow_permissions": "read"
+  }
+}
