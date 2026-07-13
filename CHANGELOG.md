@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- **Settings-as-code + weekly drift detection** (SDLC remediation WP3,
+  CO-9.1/9.3/6.3): the repo control plane (rulesets, public repo settings,
+  admin-only settings snapshot) is committed under `.github/settings/`;
+  `settings-drift.yml` re-exports weekly with the unprivileged workflow token
+  and files an issue on divergence. Settings changes are PR-first from now on;
+  the 2026-07-13 WP1 hardening batch is the recorded bootstrap exception.
 - **Fuzzing on every PR** (SDLC remediation WP2, PR-B): the atheris smoke
   (120 s) now runs unconditionally on every PR — no `paths:` filter — so it
   can become a required check; the corpus persists across runs via

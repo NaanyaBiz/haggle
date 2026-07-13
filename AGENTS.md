@@ -92,6 +92,8 @@ docs/
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
+├── export-settings.sh   # admin-run: re-export control-plane baselines into .github/settings/ (PR-first on any settings change)
+├── normalize-ruleset.jq / normalize-repo-public.jq  # shared normalizers (export script + settings-drift workflow)
 └── validate_manifest.py # used by the validate-manifest Claude hook
 
 .claude/
@@ -100,6 +102,7 @@ scripts/
 └── commands/            # 5 slash commands (new-entity, wt, release, hassfest, pr)
 
 .github/
+├── settings/            # declared state of the GitHub control plane (rulesets, repo settings) — see settings/README.md; weekly drift check
 ├── workflows/
 │   ├── ci.yml           # ruff + mypy + pytest (Python 3.14, coverage floor 89) + gitleaks full-history scan + dependency-review + shellcheck/actionlint/zizmor
 │   ├── hacs.yml         # HACS validation
@@ -107,7 +110,8 @@ scripts/
 │   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + attested zip asset (Sigstore)
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
 │   ├── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
-│   └── fuzz.yml         # weekly deep run + unconditional 120s PR smoke; corpus cached across runs; crash artifacts uploaded
+│   ├── fuzz.yml         # weekly deep run + unconditional 120s PR smoke; corpus cached across runs; crash artifacts uploaded
+│   └── settings-drift.yml # weekly: re-export rulesets + public repo settings, diff vs .github/settings/, issue on drift
 ├── CODEOWNERS           # @naanyabiz owns everything
 └── dependabot.yml       # weekly pip + github-actions updates, grouped into one PR per ecosystem
 
@@ -721,6 +725,16 @@ The HA Energy dashboard requires:
   total rises; a new over-complexity function gets decomposed, not legalized.
   The single sanctioned exemption is `coordinator._fetch_range` (noqa'd with
   rationale + debt issue).
+- **Don't change GitHub repo settings, rulesets, or Actions policy without a
+  PR updating `.github/settings/` first.** The control plane is settings-as-code
+  (2026-07 SDLC review): PR the intended state into `.github/settings/`, merge,
+  apply the change, then run `./scripts/export-settings.sh` and confirm the
+  working tree stays clean. The weekly `settings-drift` workflow files an issue
+  on any divergence. Break-glass changes are allowed but must be reconciled
+  by PR before the next weekly run. Admin-only settings (merge methods,
+  security toggles, Actions policy + selected-actions allowlist) are
+  snapshot-only — refresh `repo-admin-snapshot.json` in the same PR whenever
+  they change.
 - **Don't exact-pin `pytest-homeassistant-custom-component` to a single
   patch.** Upstream releases near-daily, so an exact pin manufactures a
   guaranteed weekly Dependabot PR and has caused resolver deadlocks
