@@ -100,6 +100,23 @@ jobs:
           echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
           tar -xzf gitleaks.tar.gz gitleaks
 
+      # Self-test: prove the scanner detects before trusting its verdict.
+      # A scanner that silently matches nothing (the failure mode alleged —
+      # and refuted — in gitleaks#2170, but real for any broken build) must
+      # fail this job, never greenlight the history scan. The seeded value
+      # is assembled at runtime so the workflow source itself can't match
+      # the github-pat rule.
+      - name: Scanner self-test (must detect seeded token)
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks-selftest"
+          printf 'token = "ghp_%s"\n' "Xk92mQfR7vLpTz3NwYbJc5HdGs81uEaMnB4o" \
+            > "$RUNNER_TEMP/gitleaks-selftest/seed.txt"
+          if "$RUNNER_TEMP/gitleaks" dir --no-banner --redact "$RUNNER_TEMP/gitleaks-selftest"; then
+            echo "::error::gitleaks did not detect the seeded token — scanner silently broken; history scan verdict is untrustworthy"
+            exit 1
+          fi
+          echo "self-test OK: seeded token detected"
+
       - name: Scan full git history
         run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact .'
 
