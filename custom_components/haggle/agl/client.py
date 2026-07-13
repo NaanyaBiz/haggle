@@ -58,6 +58,29 @@ if TYPE_CHECKING:
 
 _LOGGER = logging.getLogger(__name__)
 
+
+def _redact_body(text: str) -> str:
+    """Debug-safe body snippet: redact token-like values BEFORE truncating.
+
+    Truncating first can cut a long token before its closing quote, so the
+    redaction pattern would miss it and leak the prefix (Class A rule,
+    docs/threat-model.md §2). Users paste debug logs into public issues.
+    """
+    return re.sub(
+        r'"([a-z_]*token)"\s*:\s*"[^"]*"',
+        r'"\1":"«redacted»"',
+        text,
+    )[:200]
+
+
+def _redact_url(url: str) -> str:
+    """Debug-safe URL: usage/plan paths embed the contract number (Class B).
+
+    Long digit runs in path segments are reduced to their last 4 digits.
+    """
+    return re.sub(r"/(\d{2,8})(\d{4})(?=/|\?|$)", r"/…\2", url)
+
+
 # Failures below the HTTP-status layer. Every coordinator catch site is
 # designed around the AGLError family; letting these escape raw crashes the
 # whole update cycle BEFORE the solar heal's attempt accounting runs, which
@@ -184,11 +207,7 @@ class AglAuth:
                     text = await resp.text()
                     _LOGGER.debug(
                         "Token refresh non-200 body: %s",
-                        re.sub(
-                            r'"([a-z_]*token)"\s*:\s*"[^"]*"',
-                            r'"\1":"«redacted»"',
-                            text[:200],
-                        ),
+                        _redact_body(text),
                     )
                     raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
                 data: dict[str, Any] = await resp.json(content_type=None)
@@ -285,12 +304,17 @@ class AglClient:
             if resp.status == 429:
                 raise AGLRateLimitError(f"Rate limited (HTTP {resp.status})")
             if resp.status == 401:
-                _LOGGER.debug("Got 401 on %s; forcing token refresh", url)
+                _LOGGER.debug("Got 401 on %s; forcing token refresh", _redact_url(url))
             elif resp.status >= 400:
                 # URL contains contract_number (PII) and body may carry
                 # AGL-side diagnostics; keep both in DEBUG only.
                 text = await resp.text()
-                _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
+                _LOGGER.debug(
+                    "HTTP %s on %s body: %s",
+                    resp.status,
+                    _redact_url(url),
+                    _redact_body(text),
+                )
                 raise AGLError(f"HTTP {resp.status} fetching AGL data")
             else:
                 return await resp.json(content_type=None)
@@ -309,8 +333,8 @@ class AglClient:
                 _LOGGER.debug(
                     "HTTP %s on %s body (post-refresh): %s",
                     resp2.status,
-                    url,
-                    text[:200],
+                    _redact_url(url),
+                    _redact_body(text),
                 )
                 raise AGLError(f"HTTP {resp2.status} fetching AGL data")
             return await resp2.json(content_type=None)

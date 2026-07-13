@@ -4,7 +4,6 @@
     "allow": [
       "Bash(uv:*)",
       "Bash(uv run:*)",
-      "Bash(uvx:*)",
       "Bash(pre-commit:*)",
       "Bash(git status*)",
       "Bash(git diff*)",
@@ -29,6 +28,7 @@
     ],
     "ask": [
       "Edit(.claude/**)",
+      "MultiEdit(.claude/**)",
       "Write(.claude/**)"
     ],
     "deny": [
