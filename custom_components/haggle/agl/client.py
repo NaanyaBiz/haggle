@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -56,6 +57,38 @@ if TYPE_CHECKING:
     from datetime import date
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _redact_body(text: str) -> str:
+    """Debug-safe body snippet: redact token-like values BEFORE truncating.
+
+    Truncating first can cut a long token before its closing quote, so the
+    redaction pattern would miss it and leak the prefix (Class A rule,
+    docs/threat-model.md §2). Users paste debug logs into public issues.
+    """
+    text = re.sub(
+        r'"([a-z_]*token)"\s*:\s*"[^"]*"',
+        r'"\1":"«redacted»"',
+        text,
+    )
+    # Bodies can echo the request path or identifier fields (Class B):
+    # apply the same digit-segment and keyed-identifier redactions.
+    text = re.sub(r"/(\d{2,8})(\d{4})(?=[/?\"]|$)", r"/…\2", text)
+    text = re.sub(
+        r'"((?:account|contract)_?[Nn]umber)"\s*:\s*"?(?:\d{2,8})(\d{4})',
+        r'"\1":"…\2',
+        text,
+    )
+    return text[:200]
+
+
+def _redact_url(url: str) -> str:
+    """Debug-safe URL: usage/plan paths embed the contract number (Class B).
+
+    Long digit runs in path segments are reduced to their last 4 digits.
+    """
+    return re.sub(r"/(\d{2,8})(\d{4})(?=/|\?|$)", r"/…\2", url)
+
 
 # Failures below the HTTP-status layer. Every coordinator catch site is
 # designed around the AGLError family; letting these escape raw crashes the
@@ -176,9 +209,15 @@ class AglAuth:
                     # (mfa_token, error_description, internal trace IDs); keep
                     # them out of the exception that propagates to
                     # ConfigEntryAuthFailed → HA Persistent Notifications.
-                    # Body lives in DEBUG only.
+                    # Body lives in DEBUG only — and even there, token-like
+                    # values are redacted first: users enable debug logging
+                    # while troubleshooting and paste logs into public issues
+                    # (Class A rule, docs/threat-model.md §2).
                     text = await resp.text()
-                    _LOGGER.debug("Token refresh non-200 body: %s", text[:200])
+                    _LOGGER.debug(
+                        "Token refresh non-200 body: %s",
+                        _redact_body(text),
+                    )
                     raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
                 data: dict[str, Any] = await resp.json(content_type=None)
         except _TRANSPORT_ERRORS as err:
@@ -274,12 +313,17 @@ class AglClient:
             if resp.status == 429:
                 raise AGLRateLimitError(f"Rate limited (HTTP {resp.status})")
             if resp.status == 401:
-                _LOGGER.debug("Got 401 on %s; forcing token refresh", url)
+                _LOGGER.debug("Got 401 on %s; forcing token refresh", _redact_url(url))
             elif resp.status >= 400:
                 # URL contains contract_number (PII) and body may carry
                 # AGL-side diagnostics; keep both in DEBUG only.
                 text = await resp.text()
-                _LOGGER.debug("HTTP %s on %s body: %s", resp.status, url, text[:200])
+                _LOGGER.debug(
+                    "HTTP %s on %s body: %s",
+                    resp.status,
+                    _redact_url(url),
+                    _redact_body(text),
+                )
                 raise AGLError(f"HTTP {resp.status} fetching AGL data")
             else:
                 return await resp.json(content_type=None)
@@ -298,8 +342,8 @@ class AglClient:
                 _LOGGER.debug(
                     "HTTP %s on %s body (post-refresh): %s",
                     resp2.status,
-                    url,
-                    text[:200],
+                    _redact_url(url),
+                    _redact_body(text),
                 )
                 raise AGLError(f"HTTP {resp2.status} fetching AGL data")
             return await resp2.json(content_type=None)

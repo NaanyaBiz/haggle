@@ -30,6 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Living threat model committed + SECURITY.md overhauled** (SDLC
+  remediation WP5): the STRIDE model now lives in-repo at
+  `docs/threat-model.md` (redacted, current-state, 19 threats tracked to
+  disposition), replacing SECURITY.md's pointer at a gitignored path that
+  404'd on GitHub. SECURITY.md gains a consequence profile & risk tier,
+  severity-graduated response SLAs, a gating policy matching the live
+  ruleset, credential-exposure / end-of-life / known-vulnerable-release
+  playbooks, an evidence-retention note, a quarterly access review
+  (`scripts/access-review.sh`) and a consolidated risk-acceptance register.
+  Also corrects the overstated claim that Home Assistant OS encrypts
+  `.storage` at rest (SECURITY.md + `config_flow.py` comment) — the
+  config-entry store is plaintext JSON on every install type absent
+  host-level full-disk encryption.
 - **Scorecard remediation batch verified** (#179): aggregate **7.0 → 7.5**
   across the same-day runs — Fuzzing 0→10 (atheris harness credited),
   Token-Permissions 9→10, Signed-Releases −1→8 (v0.4.0-beta.5 is the first
@@ -41,9 +54,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewritten to the new state. Last mover: the `Maintained` repo-age gate
   (~Aug 2026).
 - **Release tags are now SSH-signed**, and local commits are signed by
-  default (`gpg.format ssh`). Server-side signed-commit enforcement is
-  deliberately NOT enabled — squash merges to `main` are already
-  GitHub-signed, and remote agent sessions cannot hold the key.
+  default (`gpg.format ssh`). Server-side signed-commit enforcement,
+  initially deferred, was enabled in the 2026-07-13 hardening batch
+  (`required_signatures` in the `protect-main` ruleset) — workable because
+  squash merges to `main` are GitHub-signed; rollback stays on the table
+  if it blocks a legitimate flow (first Dependabot cycle is the tripwire).
 - **OpenSSF Best Practices badge earned at passing level** (#172):
   registered as [bestpractices.dev project 13582](https://www.bestpractices.dev/projects/13582)
   with all 66 passing criteria answered and evidenced (100%); badge added

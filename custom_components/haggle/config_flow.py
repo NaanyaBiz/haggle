@@ -367,7 +367,10 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         # Fall back to a SHA-256 hash of the refresh token (one-way) so the
         # entity registry — written as plaintext JSON — never sees raw token
-        # material. The token itself stays in entry.data which HAOS encrypts.
+        # material. NOTE: entry.data (.storage/core.config_entries) is ALSO
+        # plaintext JSON on every install type, HAOS included, unless the
+        # host runs full-disk encryption — see SECURITY.md "Storage".
+        # Hashing here avoids widening that exposure to a second file.
         if account_number and contract_number:
             unique_id = f"{account_number}_{contract_number}"
         elif self._refresh_token:
@@ -378,8 +381,9 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         self._abort_if_unique_id_configured()
         _LOGGER.info(
             "Creating haggle entry: account=%s contract=%s pin_auth=%s pin_bff=%s",
-            account_number or "unknown",
-            contract_number or "unknown",
+            # Class B identifiers (docs/threat-model.md §2): log last-4 only.
+            f"…{account_number[-4:]}" if account_number else "unknown",
+            f"…{contract_number[-4:]}" if contract_number else "unknown",
             "set" if self._auth_spki else "missing",
             "set" if self._bff_spki else "missing",
         )

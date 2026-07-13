@@ -2,9 +2,11 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "Bash(uv:*)",
       "Bash(uv run:*)",
-      "Bash(uvx:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv lock:*)",
+      "Bash(uv pip:*)",
+      "Bash(uv export:*)",
       "Bash(pre-commit:*)",
       "Bash(git status*)",
       "Bash(git diff*)",
@@ -12,14 +14,28 @@
       "Bash(git branch*)",
       "Bash(git show*)",
       "Bash(git worktree*)",
-      "Bash(gh pr:*)",
+      "Bash(gh pr view*)",
+      "Bash(gh pr list*)",
+      "Bash(gh pr diff*)",
+      "Bash(gh pr checks*)",
+      "Bash(gh pr status*)",
+      "Bash(gh pr comment*)",
+      "Bash(gh pr create*)",
+      "Bash(gh pr edit*)",
+      "Bash(gh pr ready*)",
       "Bash(gh run:*)",
       "Bash(gh issue:*)",
       "Bash(gh repo view*)",
       "Bash(./scripts/*)",
       "Bash(scripts/*)"
     ],
+    "ask": [
+      "Edit(.claude/**)",
+      "MultiEdit(.claude/**)",
+      "Write(.claude/**)"
+    ],
     "deny": [
+      "Bash(gh auth token*)",
       "Bash(git push --force*)",
       "Bash(git reset --hard*)",
       "Bash(rm -rf /*)"

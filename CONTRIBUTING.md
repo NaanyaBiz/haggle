@@ -35,7 +35,7 @@ hassfest invocation.
 - `main` is always shippable. Never push to it directly — the
   `guard-main-branch` pre-commit hook will block you.
 - Feature work happens in sibling worktrees at
-  `/Users/dave/projects/haggle.wt/<branch>/` (or wherever your local
+  `~/projects/haggle.wt/<branch>/` (or wherever your local
   setup lives). The `./scripts/wt new <branch>` helper sets one up.
 - When you open a PR, target `main`. If a PR depends on another open PR,
   say so in the description.
