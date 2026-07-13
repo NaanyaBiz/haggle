@@ -57,6 +57,13 @@ field name, token lifetime, header), update that bullet now.
 
 **AGENTS.md — What NOT to Do** — if a new footgun was discovered, add it.
 
+**Security & privacy check** — if this branch touches tokens, auth, HTTP,
+logging, diagnostics, or adds any new data field: confirm the change
+respects the data classification in `docs/threat-model.md` §2 (no Class
+A/B value can reach logs, exception text, diagnostics, or fixtures), and
+update `SECURITY.md` / `docs/threat-model.md` if the security posture, a
+trust boundary, or an accepted risk changed.
+
 **Memory files** — record any non-obvious decision, confirmed API behaviour,
 or user preference that should survive context resets. Write to
 `~/.claude/projects/<project>/memory/`.
@@ -121,6 +128,7 @@ summary (≤70 chars).
 - [ ] AGENTS.md — Repo Map reflects current file tree
 - [ ] AGENTS.md — AGL API facts verified / corrected
 - [ ] Memory files updated (or N/A — nothing non-obvious to record)
+- [ ] Security/privacy — data-classification check done (docs/threat-model.md) or N/A
 
 ## Test plan
 - [ ] All existing tests pass (`uv run pytest`)

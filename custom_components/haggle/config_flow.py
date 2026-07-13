@@ -367,7 +367,10 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> ConfigFlowResult:
         # Fall back to a SHA-256 hash of the refresh token (one-way) so the
         # entity registry — written as plaintext JSON — never sees raw token
-        # material. The token itself stays in entry.data which HAOS encrypts.
+        # material. NOTE: entry.data (.storage/core.config_entries) is ALSO
+        # plaintext JSON on every install type, HAOS included, unless the
+        # host runs full-disk encryption — see SECURITY.md "Storage".
+        # Hashing here avoids widening that exposure to a second file.
         if account_number and contract_number:
             unique_id = f"{account_number}_{contract_number}"
         elif self._refresh_token:

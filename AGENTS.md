@@ -88,10 +88,12 @@ tests/
 
 docs/
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
-└── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
+├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
+└── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
+├── access-review.sh     # quarterly access review (SECURITY.md "Access Review") — asserts the expected access surface + prints the manual checklist; read-only, maintainer-run with local gh auth, deliberately not CI
 ├── export-settings.sh   # admin-run: re-export control-plane baselines into .github/settings/ (PR-first on any settings change)
 ├── normalize-ruleset.jq / normalize-repo-public.jq  # shared normalizers (export script + settings-drift workflow)
 └── validate_manifest.py # used by the validate-manifest Claude hook
@@ -136,6 +138,7 @@ all of the following before it can be merged. The `/pr` command enforces this.
 | `AGENTS.md` — AGL API | Correct any API facts that were proven wrong (endpoints, field names, token lifetimes, headers) | this file |
 | `AGENTS.md` — What NOT to Do | Add a new prohibition if a footgun was discovered | this file |
 | Memory files | Record non-obvious decisions, confirmed API behaviour, or user preferences that should survive context resets | `~/.claude/projects/.../memory/` |
+| `SECURITY.md` + `docs/threat-model.md` | Update when a change alters the security posture, trust boundaries, or accepted risks (new endpoint, scope, storage location, data field, agent, or gate exception) | repo root + `docs/` |
 
 **Sprint / phase boundary** (when a branch completes a named sprint or phase):
 
@@ -695,11 +698,17 @@ The HA Energy dashboard requires:
   ruleset-era flow: bump via a short-lived PR, then create a **signed** tag
   on the squash-merge commit (`git tag -s vX.Y.Z origin/main`) and push
   just the tag with the `HAGGLE_ALLOW_MAIN_PUSH=1` hook override — tag
-  pushes are not blocked by the branch ruleset. See
-  `.claude/agents/release-manager.md` for the full sequence. Also don't
-  enable "require signed commits" in the ruleset: remote agent sessions
-  can't hold the signing key, and squash merges to `main` are
-  GitHub-signed already.
+  creation is not blocked by the rulesets (`protect-release-tags` blocks
+  update/delete/force on `v*`, not creation). See
+  `.claude/agents/release-manager.md` for the full sequence. Since
+  2026-07-13 the `protect-main` ruleset ALSO requires signed commits —
+  compatible with this flow because squash merges to `main` are
+  GitHub-signed and release tags are signed locally (security@naanya.biz
+  ed25519 key), but it means remote agent sessions (which can't hold the
+  key) cannot land anything on `main` except via squash-merged PRs. If the
+  requirement blocks a legitimate flow (the first Dependabot cycle is the
+  watch item), roll it back PR-first via `.github/settings/`, never as a
+  silent toggle.
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had
