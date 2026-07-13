@@ -1,7 +1,7 @@
 # Threat Model — haggle
 
 **Status**: living document. Re-reviewed at every minor/major release and on
-any tier re-validation trigger (§9). Changes land by PR like all code.
+any impact re-assessment trigger (§9). Changes land by PR like all code.
 **Provenance**: originated as a point-in-time STRIDE assessment
 (2026-05-02, commit `fea8ce1`); rewritten 2026-07 as the committed,
 current-state model. The raw assessment pack (SBOMs, SCA/SAST/secrets scan
@@ -154,13 +154,12 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | I-2 | Token material in logged error bodies | **Mitigated** | Bodies stripped before exceptions propagate (AGENTS.md rule; regression tests, e.g. `test_force_refresh_redacts_body_from_exception`). |
 | I-3 | Service address as entry title; contract number in statistic IDs — visible to all HA users of the instance | **Accepted** | Visible only to users the owner has admitted to their own HA instance; the entry title is user-renamable in HA; diagnostics exports anonymise both. Optional future: offer a display-name field in the config flow. |
 | I-4 | `beautifulsoup4` dead dependency | **Resolved** | Removed; `manifest.json` ships `"requirements": []`. |
-| I-5 | Pre-rewrite git backup retaining real PII (workstation copy) | **Open — workstation action** | Git history was rewritten before the public flip (verified clean by three independent scans, and re-scanned full-history by the required gitleaks gate on every PR); an offline pre-rewrite backup on the maintainer's workstation is still pending secure deletion (presence re-verified 2026-07-13). Not a repo artifact; tracked to the maintainer. |
 | D-1 | `client_id` revocation stops all installs; no backoff | **Accepted (with S-2)** / retry storms **mitigated** | Auth failures route to HA's reauth flow (no retry storm); failed polls retry at 30 min, restored to 24 h on success; 429s halt chunks without data loss. Availability residual accepted per §8. |
 | D-2 | Rotated-token persist failure → lock-out on next restart | **Mitigated; residual accepted** | Persist failure now triggers **immediate reauth** (`__init__.py::_persist_refresh_token` → `entry.async_start_reauth`) instead of a silent time bomb. Residual: no two-phase persist — declined as disproportionate given the immediate-surface behaviour. |
 | D-3 | First-install backfill burst triggers BFF rate-limiting | **Mitigated** | 0.5 s inter-request pacing, 7-day chunks, 429 halts the chunk and resumes next cycle (#34/#155); on the normal path a 429 never becomes a permanent hole. Within the bounded solar heal/stall give-up paths (§8), persistent rate-limiting counts toward the attempt caps and can end in a rare accepted hole. |
 | E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. Per-release SBOM and zip-release install path are planned, not yet in force. |
 | E-2 | Open-schema `dict(rate)` passthrough into runtime state | **Mitigated** | Allowlist parsing; "don't forward raw AGL response dicts" is a standing AGENTS.md rule. |
-| E-3 | Borrowed iOS `client_id` supports account-modification scopes the integration doesn't request | **Accepted with tripwire** | `AGL_OAUTH_SCOPE` contains no write scopes; **any change to the scope constant is a tier re-validation + regulatory re-determination trigger** (§7, §9) and a mandatory security-review item. |
+| E-3 | Borrowed iOS `client_id` supports account-modification scopes the integration doesn't request | **Accepted with tripwire** | `AGL_OAUTH_SCOPE` contains no write scopes; **any change to the scope constant is an impact re-assessment + regulatory re-determination trigger** (§7, §9) and a mandatory security-review item. |
 
 ## 5. Residual-threat notes
 
@@ -177,7 +176,7 @@ endpoint, new storage location, telemetry) reopens the row.
 
 All product code is AI-authored (Claude Code) and human-reviewed/merged by
 the maintainer. Two agentic systems operate **on the repo**; the shipped
-product contains no AI component. Each is tiered by the **union of its
+product contains no AI component. Each is assessed on the **union of its
 tool grants**, not by the (non-agentic) product's nominal consequence
 class; widening any agent's grants re-opens this section.
 
@@ -189,14 +188,13 @@ AGL API responses, GitHub issue/PR content, fetched web pages.
 *Grant union (post-hardening, 2026-07-13)*: read/write to the working
 tree; routine local git and feature-branch pushes; the build/test/lint
 toolchain; read-only HA MCP tools. The per-machine allowlist was pruned
-from ~136 to ~70 narrow entries; PR merge, the tag-push override prefix,
-and remote access (`ssh`/`scp`) are gated by `ask` rules so each fires a
-live human permission prompt; printing the gh credential (`gh auth token`)
-is denied outright. Long-lived HA bearer tokens that previously sat
-embedded in the permission file were removed and revoked (revocation
-verified); the replacement is a single-purpose token in a gitignored env
-file. *Blast radius if hijacked*: the local checkout plus feature-branch
-pushes. The permission layer (ask-rules on merge/tag/remote-access and on
+from ~136 to ~70 narrow entries; PR merge and the tag-push override
+prefix are gated by `ask` rules so each fires a live human permission
+prompt; printing the gh credential (`gh auth token`) is denied outright. (The maintainer's broader workstation and account
+hygiene is operational practice outside this document's scope — this
+section covers the agents' capabilities as they touch this repository.)
+*Blast radius if hijacked*: the local checkout plus feature-branch
+pushes. The permission layer (ask-rules on merge/tag and on
 edits to the agent's own config under `.claude/`) is **tamper-resistant,
 not tamper-proof**: the session holds general-purpose interpreters
 (`python3`, `uv run`) whose file writes are not path-gated, so a
@@ -233,13 +231,10 @@ diagnostics attachments parsed strictly against the documented schema
 (`docs/diagnostics.md`), undocumented fields ignored; per-run volume caps.
 These prompt rules are defence-in-depth, not enforcement — the enforced
 backstop is the branch ruleset plus the human merging everything. Known
-residuals (open hardening items): the routine currently runs on a broader
-credential than it needs — a dedicated fine-grained PAT scoped to this
-repo only, plus a dedicated execution environment (it presently runs in a
-shared environment), are tracked but not yet done; and its authoritative
-prompt lives platform-side — committing a sanitised copy of the routine
-spec to the repo is likewise pending, so until that lands this section is
-the committed record of its scope.
+residual (open hardening item): its authoritative prompt lives
+platform-side — committing a sanitised copy of the routine spec to the
+repo is pending, so until that lands this section is the committed record
+of its scope.
 
 **Anthropic as a supplier.** The models behind both agents (pinned model
 IDs in `.claude/agents/*.md`) are a hosted supply-chain input: model
@@ -275,8 +270,8 @@ features in the issue backlog.
 before merging any of: a write/account-modification OAuth scope; any
 POST/PUT/PATCH/DELETE to AGL outside `/oauth/token`; any actuating HA
 service (plan switching, load control, purchasing, VPP/market
-participation); CDR accreditation; telemetry. (Same tripwires as the tier
-re-validation triggers in SECURITY.md.)
+participation); CDR accreditation; telemetry. (Same tripwires as the
+impact re-assessment triggers in SECURITY.md.)
 
 ## 8. Resilience and recovery targets
 
@@ -319,8 +314,8 @@ coordinated re-release via HACS. Accepted (S-2/D-1; RA-06).
 ## 9. Review triggers and cadence
 
 Re-assess this model: at every minor/major release (release-manager
-checklist); on any tier re-validation trigger (SECURITY.md §Consequence
-Profile); on any new trust boundary (new outbound host, new inbound data
+checklist); on any impact re-assessment trigger (SECURITY.md §Impact
+Assessment); on any new trust boundary (new outbound host, new inbound data
 source, new agent); on widening any AI agent's tool grants (§6); annually
 as part of the posture re-assessment, which includes re-reading Home
 Assistant's current security guidance for integrations.

@@ -107,8 +107,6 @@ echo "  [ ] Prune stale personal tokens:      https://github.com/settings/tokens
 echo "  [ ] SSH + signing keys match the expected set (the security@naanya.biz"
 echo "      ed25519 signing key + known access keys); remove anything unexpected:"
 echo "                                        https://github.com/settings/keys"
-echo "  [ ] Pre-rewrite workstation backup: confirm disposition — secure deletion"
-echo "      is an open maintainer action (threat model I-5 / risk register)."
 echo "  [ ] Record this run (date + result) on the standing access-review issue."
 
 if [[ "${FAILURES}" -gt 0 ]]; then

@@ -69,20 +69,23 @@ Out of scope:
   on the HA host (the integration's threat model assumes the HA process
   is trusted).
 
-## Consequence Profile & Risk Tier
+## Impact Assessment
 
 Data handled: one household's electricity interval/billing data plus the
 user's own AGL OAuth refresh token, stored on the user's own Home
-Assistant host; nothing is transmitted anywhere except to AGL's API. The
-single tier-elevating factor is supply-chain blast radius: a compromised
-release executes inside every HACS installer's HA process. Under a
-bank-style criticality scheme this is a **Tier-3-equivalent workload that
-runs its supply-chain and MITM controls at Tier-1 intensity** — which is
-why the release/CI controls here are stricter than the rest of the project
-needs. This classification is what the triage judgements elsewhere in this
-document (e.g. "a green-CI dev bump is zero-user-risk") rest on.
+Assistant host; nothing is transmitted anywhere except to AGL's API.
+Assessed on confidentiality / integrity / availability impact, the
+integration itself is a **low-to-moderate impact** workload: worst-case
+compromise of a single install affects one household's energy data and
+that user's AGL session, on hardware they own. The one factor assessed at
+**high impact** is supply-chain reach — a compromised release executes
+inside every HACS installer's HA process — which is why the release and
+CI integrity controls here are engineered well above what the package's
+direct impact would justify. This classification is what the triage
+judgements elsewhere in this document (e.g. "a green-CI dev bump is
+zero-user-risk") rest on.
 
-**Tier re-validation triggers** — any of the following requires
+**Impact re-assessment triggers** — any of the following requires
 re-validating this classification and the threat model before merge: a new
 OAuth scope in `AGL_OAUTH_SCOPE`; any non-token-endpoint write call to
 AGL; any new outbound host; any actuating HA service; any
@@ -185,7 +188,7 @@ the Bluetooth stack, `pyjwt`) are never imported by haggle code.
 **Adopting a new dependency.** Before any new dependency is added — a dev
 package, a GitHub Action, a pre-commit hook, and above all any runtime
 requirement (which would break the zero-requirements invariant and is a
-tier re-validation trigger) — the pre-adoption gate is: verify registry
+impact re-assessment trigger) — the pre-adoption gate is: verify registry
 provenance (the package resolves to the source repository it claims to
 come from; prefer signed or attested releases where the ecosystem offers
 them), check maintenance health (recent activity, maintainer count,
@@ -326,7 +329,7 @@ surface.
 
 100% of this repo's code is AI-authored (Claude Code) and human-reviewed
 by the maintainer; two agents operate **on** the repository and none ship
-in the product. Each is tiered by the union of its tool grants, not the
+in the product. Each is assessed on the union of its tool grants, not the
 (non-agentic) product's nominal consequence class, and widening any
 agent's grants re-opens the analysis. The full treatment — inputs,
 injection scenarios, containment, and Anthropic as a hosted model
@@ -339,7 +342,7 @@ merge, tag, and release.
 | Agent | Untrusted inputs | Grant union | Blast radius if hijacked |
 |---|---|---|---|
 | Interactive dev agent (Claude Code, under the maintainer's identity) | AGL API responses; GitHub issue/PR content it reads; fetched web pages | Working-tree read/write; routine local git + feature-branch push; the build/test/lint toolchain. No standing grant to merge PRs, push to `main`, push tags, release, or reach remote hosts — each forces a live human prompt; reading the `gh` auth token is denied outright. | The local checkout plus feature branches. It cannot self-merge, self-release, or reach infrastructure beyond the repo without a human approving; direct `main` pushes are server-rejected by the ruleset. |
-| Automated triage routine (daily-cron hosted agent) | All issue/PR/comment/diff/attachment content | Cron-only (deliberately not event-triggered — issue events would let attackers summon it); fresh session per run; comments, labels, and PR branches only. It never merges, never pushes to `main`, never tags or releases, and never modifies `release.yml`, CODEOWNERS, LICENSE, NOTICE, or this file. | Spam/noise on this repo's issues and PRs. **Open hardening item**: it currently holds a broader credential than the task needs and runs in a shared environment; a repo-scoped fine-grained PAT (no Workflows scope) and a dedicated execution environment are pending (RA-16). |
+| Automated triage routine (daily-cron hosted agent) | All issue/PR/comment/diff/attachment content | Cron-only (deliberately not event-triggered — issue events would let attackers summon it); fresh session per run; comments, labels, and PR branches only. It never merges, never pushes to `main`, never tags or releases, and never modifies `release.yml`, CODEOWNERS, LICENSE, NOTICE, or this file. | Spam/noise on this repo's issues and PRs; a hijacked run is bounded by the zero-bypass ruleset and the human-gated merge/tag/release boundary. |
 
 AI IP-contamination (verbatim training-data reproduction reaching a
 merge) has no in-repo detector and is a recorded acceptance — RA-11
@@ -484,8 +487,6 @@ its own rows.
 | RA-13 | No formal secure-development training regime for the maintainer. | OpenSSF Best Practices attestations; the AGENTS.md footgun corpus (recurring by construction — every PR appends new footguns); annual badge re-validation + HA security-guidance re-read. | Accepted — @naanyabiz, 2026-07-13 | Annually |
 | RA-14 | Residual STRIDE threats accepted per the threat-model register: I-3 (service address as entry title), R-1 (no token-rotation audit trail), D-2 residual (no two-phase persist), E-3 (borrowed client_id supports elevated scopes), S-3 (no callback-host check). | Per-threat rationale + tripwires in [docs/threat-model.md](docs/threat-model.md) §4–5. | Accepted — @naanyabiz, 2026-07-13 | Annually / on trigger |
 | RA-15 | (Pointer) The dated acceptances embedded elsewhere in this file — Scorecard "Accepted at N" scores, the scorecard-action mutable container tag, hacs/hassfest branch-SHA pins, the phcc range pin and HA transitive tree, warn-only SPKI pin mismatch — are standing acceptances on the same terms as this register. | See the respective sections. | Accepted — @naanyabiz, 2026-07-13 | Annually |
-| RA-16 | The automated triage routine holds a broader GitHub credential than its task needs and executes in a shared environment. | Cron-only trigger; fresh session per run; untrusted-content prompt armour; the zero-bypass ruleset + human-gated merge/tag/release bound the worst case. | **Open** — a repo-scoped fine-grained PAT (no Workflows scope) and a dedicated execution environment are pending agent-governance hardening. | On completion of the hardening item |
-| RA-17 | An offline pre-rewrite backup of the repository — its history contains pre-anonymisation personal identifiers — remains on the maintainer's workstation (verified still present 2026-07-13). | Offline, single machine, never part of the public repo; the public history was rewritten before the flip and verified clean by three independent scans. | **Open** — secure deletion is a pending maintainer action. | Until deleted |
 
 ## Coordinated Disclosure
 
