@@ -2413,7 +2413,9 @@ class TestGenerationHealState:
 
         registry = ir.async_get(hass)
         assert (
-            registry.async_get_issue(DOMAIN, f"solar_heal_gave_up_{_CONTRACT}")
+            registry.async_get_issue(
+                DOMAIN, f"solar_heal_gave_up_{coord.config_entry.entry_id}"
+            )
             is not None
         )
 
@@ -2605,7 +2607,9 @@ class TestGenerationHealState:
 
         registry = ir.async_get(hass)
         assert (
-            registry.async_get_issue(DOMAIN, f"solar_repair_gave_up_{_CONTRACT}")
+            registry.async_get_issue(
+                DOMAIN, f"solar_repair_gave_up_{coord.config_entry.entry_id}"
+            )
             is not None
         )
 
@@ -2726,10 +2730,12 @@ class TestSolarStallGiveUp:
         from homeassistant.helpers import issue_registry as ir
 
         registry = ir.async_get(hass)
+        gave_up_date = spans[0]["gave_up_at"][:10]
         assert (
             registry.async_get_issue(
                 DOMAIN,
-                f"solar_stall_gave_up_{_CONTRACT}_{chunk[0].isoformat()}",
+                f"solar_stall_gave_up_{coord.config_entry.entry_id}"
+                f"_{chunk[0].isoformat()}_{gave_up_date}",
             )
             is not None
         )

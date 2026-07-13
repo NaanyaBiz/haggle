@@ -802,10 +802,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         dismissed heal issue cannot swallow a later repair give-up.
         """
         kind = "solar_repair_gave_up" if repairing else "solar_heal_gave_up"
+        # Issue id keys on entry_id (random hex), NOT the contract number —
+        # ids serialize verbatim into HA's issue registry store, and the
+        # Class B discipline keeps identifiers out of composite strings.
+        # The entry placeholder (title = the entry's own display name) tells
+        # multi-entry installs which contract needs attention.
         ir.async_create_issue(
             self.hass,
             DOMAIN,
-            f"{kind}_{self.contract_number}",
+            f"{kind}_{self.config_entry.entry_id}",
             is_fixable=False,
             is_persistent=True,
             severity=ir.IssueSeverity.ERROR if repairing else ir.IssueSeverity.WARNING,
@@ -813,6 +818,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             translation_placeholders={
                 "attempts": str(attempts),
                 "floor": floor.isoformat(),
+                "entry": self.config_entry.title,
             },
             learn_more_url=ISSUE_LEARN_MORE_URL,
         )
@@ -1165,10 +1171,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 CONF_SOLAR_STALL_SPANS: spans[-MAX_STALL_SPAN_RECORDS:],
             },
         )
+        # entry_id not contract number (Class B stays out of the registry
+        # store); the give-up DATE in the id means a recurrence of the same
+        # span — possible after the user repairs the marker rows — raises a
+        # fresh issue instead of staying swallowed by an old dismissal.
+        gave_up_date = spans[-1]["gave_up_at"][:10]
         ir.async_create_issue(
             self.hass,
             DOMAIN,
-            f"solar_stall_gave_up_{self.contract_number}_{start.isoformat()}",
+            f"solar_stall_gave_up_{self.config_entry.entry_id}"
+            f"_{start.isoformat()}_{gave_up_date}",
             is_fixable=False,
             is_persistent=True,
             severity=ir.IssueSeverity.WARNING,
@@ -1177,6 +1189,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 "start": start.isoformat(),
                 "end": end.isoformat(),
                 "cycles": str(cycles),
+                "entry": self.config_entry.title,
             },
             learn_more_url=ISSUE_LEARN_MORE_URL,
         )
