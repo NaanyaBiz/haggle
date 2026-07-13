@@ -101,7 +101,7 @@ scripts/
 
 .github/
 ├── workflows/
-│   ├── ci.yml           # ruff + mypy + pytest matrix (Python 3.14); coverage inline, no external vendor
+│   ├── ci.yml           # ruff + mypy + pytest (Python 3.14, coverage floor 89) + gitleaks full-history scan + dependency-review + shellcheck/actionlint/zizmor
 │   ├── hacs.yml         # HACS validation
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
 │   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + attested zip asset (Sigstore)
@@ -112,6 +112,7 @@ scripts/
 └── dependabot.yml       # weekly pip + github-actions updates, grouped into one PR per ecosystem
 
 # Repo-root posture files
+.gitleaks.toml           # repo-specific secret rules (Auth0 refresh tokens, real AGL account/contract numbers) layered on gitleaks defaults
 SECURITY.md              # disclosure path + threat-model summary
 CONTRIBUTING.md          # dev loop + commit conventions + PR checklist
 CODE_OF_CONDUCT.md       # Contributor Covenant 2.1
@@ -714,6 +715,12 @@ The HA Energy dashboard requires:
   review removed the write-only Codecov upload from `ci.yml` — don't
   re-add external telemetry vendors to CI without a consumer for their
   output.
+- **Don't lower `--cov-fail-under` in ci.yml to make a PR pass, and don't
+  raise `max-complexity` to absorb a new C901 offender.** Both floors are
+  deliberate ratchet gates (SDLC review CO-17.2): coverage ratchets UP as the
+  total rises; a new over-complexity function gets decomposed, not legalized.
+  The single sanctioned exemption is `coordinator._fetch_range` (noqa'd with
+  rationale + debt issue).
 - **Don't exact-pin `pytest-homeassistant-custom-component` to a single
   patch.** Upstream releases near-daily, so an exact pin manufactures a
   guaranteed weekly Dependabot PR and has caused resolver deadlocks

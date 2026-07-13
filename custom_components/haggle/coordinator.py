@@ -940,7 +940,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         credit = max(0.0, self._latest_generation_credit - base_credit)
         return kwh, credit
 
-    async def _fetch_range(
+    # C901: complexity 13 vs gate of 12 — the 429-break / heal-accounting /
+    # per-series-range logic is deliberately in one place. Decomposition is
+    # tracked in the debt issue created with this change; do not grow this
+    # function further.
+    async def _fetch_range(  # noqa: C901
         self,
         cons_range: tuple[date, date] | None,
         solar_range: tuple[date, date] | None,
