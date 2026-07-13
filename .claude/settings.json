@@ -27,6 +27,10 @@
       "Bash(./scripts/*)",
       "Bash(scripts/*)"
     ],
+    "ask": [
+      "Edit(.claude/**)",
+      "Write(.claude/**)"
+    ],
     "deny": [
       "Bash(git push --force*)",
       "Bash(git reset --hard*)",

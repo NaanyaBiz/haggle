@@ -370,7 +370,11 @@ so the CI-side checks are the authoritative gate.
 **Release tags** (`v*`) are covered by a second ruleset
 (`protect-release-tags`): once a release tag exists it cannot be updated,
 deleted, or force-moved; creation stays open to the human-executed,
-signed-tag release flow.
+signed-tag release flow. Known gap, remediation in flight: the release
+workflow does not yet verify that a new tag points at a commit on `main`,
+so a tag on an unchecked commit would build and attest — the ancestry
+gate (`git merge-base --is-ancestor`) lands with the release-chain work
+package (SDLC remediation WP4).
 
 **The control plane itself is versioned**: rulesets, public repo
 settings, and the Actions policy snapshot live in `.github/settings/`;

@@ -22,6 +22,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -176,9 +177,19 @@ class AglAuth:
                     # (mfa_token, error_description, internal trace IDs); keep
                     # them out of the exception that propagates to
                     # ConfigEntryAuthFailed → HA Persistent Notifications.
-                    # Body lives in DEBUG only.
+                    # Body lives in DEBUG only — and even there, token-like
+                    # values are redacted first: users enable debug logging
+                    # while troubleshooting and paste logs into public issues
+                    # (Class A rule, docs/threat-model.md §2).
                     text = await resp.text()
-                    _LOGGER.debug("Token refresh non-200 body: %s", text[:200])
+                    _LOGGER.debug(
+                        "Token refresh non-200 body: %s",
+                        re.sub(
+                            r'"([a-z_]*token)"\s*:\s*"[^"]*"',
+                            r'"\1":"«redacted»"',
+                            text[:200],
+                        ),
+                    )
                     raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
                 data: dict[str, Any] = await resp.json(content_type=None)
         except _TRANSPORT_ERRORS as err:

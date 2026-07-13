@@ -196,11 +196,16 @@ is denied outright. Long-lived HA bearer tokens that previously sat
 embedded in the permission file were removed and revoked (revocation
 verified); the replacement is a single-purpose token in a gitignored env
 file. *Blast radius if hijacked*: the local checkout plus feature-branch
-pushes — a prompt-injected session cannot self-merge, self-release, or
-reach the maintainer's home infrastructure without a human approving the
-prompt. Enforced containment beyond the permission layer: the server-side
-`protect-main` ruleset binds it like any identity (PR + eight green
-required checks, zero bypass actors); merge and tag are human-gated
+pushes. The permission layer (ask-rules on merge/tag/remote-access and on
+edits to the agent's own config under `.claude/`) is **tamper-resistant,
+not tamper-proof**: the session holds general-purpose interpreters
+(`python3`, `uv run`) whose file writes are not path-gated, so a
+sufficiently deliberate injected session could rewrite its own
+configuration — such edits are tamper-evident in `git diff`/session logs
+rather than prevented. The *enforced* floor is server-side
+and cryptographic: the `protect-main` ruleset binds any identity holding
+the token (PR + eight green required checks, zero bypass actors,
+squash-only, signed commits); merge and tag are human-gated
 actions — the committed permission policy grants no `gh pr merge` verb
 (narrowed 2026-07-14 after cross-review; previously `gh pr:*` was a
 standing merge route on any fresh checkout), and the per-machine `ask`
