@@ -32,6 +32,7 @@
       "Write(.claude/**)"
     ],
     "deny": [
+      "Bash(gh auth token*)",
       "Bash(git push --force*)",
       "Bash(git reset --hard*)",
       "Bash(rm -rf /*)"
