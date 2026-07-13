@@ -63,17 +63,15 @@ jobs:
           # an empty loop would false-flag every committed baseline as
           # "no matching live ruleset" (Codex review, #188).
           ruleset_ids=$(gh api "repos/$GH_REPO/rulesets" --paginate --jq '.[].id')
-          declare -A live_slugs=()
           for id in $ruleset_ids; do
             gh api "repos/$GH_REPO/rulesets/$id" > /tmp/live/raw.json
             name=$(jq -r '.name' /tmp/live/raw.json)
             slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' \
                    | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
-            if [ -z "$slug" ] || [ -n "${live_slugs[$slug]:-}" ]; then
+            if [ -z "$slug" ] || [ -e "/tmp/live/ruleset-$slug.json" ]; then
               echo "::error::ruleset name '$name' produces an empty or colliding slug '$slug'"
               exit 1
             fi
-            live_slugs[$slug]=1
             jq -S -f scripts/normalize-ruleset.jq /tmp/live/raw.json \
               > "/tmp/live/ruleset-$slug.json"
             committed=".github/settings/ruleset-$slug.json"
@@ -90,7 +88,7 @@ jobs:
           for committed in .github/settings/ruleset-*.json; do
             [ -e "$committed" ] || continue
             slug=$(basename "$committed" .json); slug=${slug#ruleset-}
-            if [ -z "${live_slugs[$slug]:-}" ]; then
+            if [ ! -e "/tmp/live/ruleset-$slug.json" ]; then
               echo "### Committed baseline \`$committed\` has no matching live ruleset (deleted or renamed?)" >> "$report"
             fi
           done

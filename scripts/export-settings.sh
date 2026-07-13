@@ -24,20 +24,27 @@ mkdir -p "$OUT"
 # aborts on API failure, whereas a $(...) inside the for-list would not —
 # and an empty loop after deletion would silently export "no rulesets".
 ruleset_ids=$(gh api "repos/$REPO/rulesets" --paginate --jq '.[].id')
-find "$OUT" -maxdepth 1 -name 'ruleset-*.json' -delete
-declare -A written_slugs=()
+# Build into a temp dir and swap only after every fetch succeeded — the
+# committed baselines are never in a deleted-but-not-rewritten state.
+# (File-existence doubles as the slug-collision check; no bash-4
+# associative arrays — macOS ships bash 3.2.)
+tmp_rulesets=$(mktemp -d)
 for id in $ruleset_ids; do
   raw=$(gh api "repos/$REPO/rulesets/$id")
   name=$(jq -r '.name' <<<"$raw")
   slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
-  if [ -z "$slug" ] || [ -n "${written_slugs[$slug]:-}" ]; then
+  if [ -z "$slug" ] || [ -e "$tmp_rulesets/ruleset-$slug.json" ]; then
     echo "ERROR: ruleset name '$name' produces an empty or colliding slug '$slug' — rename the ruleset" >&2
     exit 1
   fi
-  written_slugs[$slug]=1
-  jq -S -f scripts/normalize-ruleset.jq <<<"$raw" > "$OUT/ruleset-$slug.json"
-  echo "wrote $OUT/ruleset-$slug.json"
+  jq -S -f scripts/normalize-ruleset.jq <<<"$raw" > "$tmp_rulesets/ruleset-$slug.json"
 done
+find "$OUT" -maxdepth 1 -name 'ruleset-*.json' -delete
+for f in "$tmp_rulesets"/ruleset-*.json; do
+  mv "$f" "$OUT/$(basename "$f")"
+  echo "wrote $OUT/$(basename "$f")"
+done
+rmdir "$tmp_rulesets"
 
 # --- 2. Public repo settings (CI drift-checked) ---
 gh api "repos/$REPO" | jq -S -f scripts/normalize-repo-public.jq > "$OUT/repo-public.json"

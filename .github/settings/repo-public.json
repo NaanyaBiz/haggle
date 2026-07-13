@@ -9,6 +9,7 @@
   "has_issues": true,
   "has_pages": false,
   "has_projects": true,
+  "has_pull_requests": true,
   "has_wiki": false,
   "is_template": false,
   "pull_request_creation_policy": "all",
