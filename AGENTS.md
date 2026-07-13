@@ -107,7 +107,7 @@ scripts/
 │   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + attested zip asset (Sigstore)
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
 │   ├── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
-│   └── fuzz.yml         # weekly + on-parser-change atheris fuzzing of agl/parser.py
+│   └── fuzz.yml         # weekly deep run + unconditional 120s PR smoke; corpus cached across runs; crash artifacts uploaded
 ├── CODEOWNERS           # @naanyabiz owns everything
 └── dependabot.yml       # weekly pip + github-actions updates, grouped into one PR per ecosystem
 

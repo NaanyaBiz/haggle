@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### CI
 
+- **Fuzzing on every PR** (SDLC remediation WP2, PR-B): the atheris smoke
+  (120 s) now runs unconditionally on every PR — no `paths:` filter — so it
+  can become a required check; the corpus persists across runs via
+  `actions/cache` (weekly 600 s runs deepen it) and crash inputs upload as
+  artifacts on failure.
 - **Merge-blocking security and quality gates** (SDLC remediation WP2, PR-A):
   gitleaks full-history secret scan with repo-specific Auth0/AGL rules
   (`.gitleaks.toml`) closing the `--no-verify` bypass; PR dependency-review
