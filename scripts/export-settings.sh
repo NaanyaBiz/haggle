@@ -40,7 +40,11 @@ for id in $ruleset_ids; do
   jq -S -f scripts/normalize-ruleset.jq <<<"$raw" > "$tmp_rulesets/ruleset-$slug.json"
 done
 find "$OUT" -maxdepth 1 -name 'ruleset-*.json' -delete
+# Zero live rulesets is a legitimate state to export (deliberate
+# retirement) — without nullglob the unmatched glob would stay literal
+# and abort the mv after the delete above (Codex, #190).
 for f in "$tmp_rulesets"/ruleset-*.json; do
+  [ -e "$f" ] || continue
   mv "$f" "$OUT/$(basename "$f")"
   echo "wrote $OUT/$(basename "$f")"
 done
