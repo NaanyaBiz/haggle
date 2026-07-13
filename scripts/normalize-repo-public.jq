@@ -3,7 +3,10 @@
 # identical output from an admin-token and an anonymous response). Volatile
 # fields (counts, timestamps, description, topics) are deliberately excluded.
 # Admin-gated fields (merge methods, security_and_analysis) live in
-# repo-admin-snapshot.json.
+# repo-admin-snapshot.json. The license field is deliberately absent: it is
+# content-derived (GitHub's detector over the LICENSE file), not a
+# control-plane setting — tracking it here would false-drift on a license
+# file edit or a detector change (Codex review, PR #188).
 {
   default_branch,
   visibility,
@@ -20,5 +23,5 @@
   has_discussions,
   has_pages,
   has_downloads,
-  license: (.license.spdx_id // null)
+  has_pull_requests
 }
