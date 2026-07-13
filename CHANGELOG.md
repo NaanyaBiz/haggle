@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Agent governance docs** (SDLC remediation WP6): the haggle-triage
+  routine's authoritative spec is now committed at
+  `docs/agents/triage-routine.md` under repo-first change control (edits land
+  here, then sync to the platform — CO-12.8), with a manual injection-replay
+  corpus (`docs/agents/injection-corpus.md`) gating any prompt change;
+  AGENTS.md gains the AI-toolchain table and the human-executed
+  merge/tag boundary statement grounded in the committed permission policy.
+
 ### CI
 
 - **Settings-as-code + weekly drift detection** (SDLC remediation WP3,

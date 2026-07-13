@@ -230,11 +230,16 @@ github.com/api.github.com plus size-capped user-attachment downloads;
 diagnostics attachments parsed strictly against the documented schema
 (`docs/diagnostics.md`), undocumented fields ignored; per-run volume caps.
 These prompt rules are defence-in-depth, not enforcement — the enforced
-backstop is the branch ruleset plus the human merging everything. Known
-residual (open hardening item): its authoritative prompt lives
-platform-side — committing a sanitised copy of the routine spec to the
-repo is pending, so until that lands this section is the committed record
-of its scope.
+backstop is the branch ruleset plus the human merging everything. The
+routine's committed record is
+[docs/agents/triage-routine.md](agents/triage-routine.md) (repo-first
+change control: the spec and prompt are edited there by PR — gated by the
+injection-corpus replay in `docs/agents/injection-corpus.md` — and the live
+platform-side definition is then synced from the merged file). Honest
+residual: the platform copy remains editable outside version control, so
+the sync is maintainer discipline, not an enforced control; if the two
+ever disagree, the committed file is authoritative and the platform copy
+must be re-synced from it.
 
 **Anthropic as a supplier.** The models behind both agents (pinned model
 IDs in `.claude/agents/*.md`) are a hosted supply-chain input: model

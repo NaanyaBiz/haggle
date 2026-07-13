@@ -89,7 +89,10 @@ tests/
 docs/
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
 ├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
-└── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
+├── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
+└── agents/
+    ├── triage-routine.md    # authoritative spec of the haggle-triage routine (repo-first change control, CO-12.8) — edit HERE, then sync the platform copy
+    └── injection-corpus.md  # canned hostile payloads + manual replay procedure — run before ANY triage-prompt change
 
 scripts/
 ├── wt                   # bash worktree helper (new / list / rm)
@@ -806,3 +809,34 @@ The integration is built against the API responses returned to a legitimate AGL
 customer using AGL's own mobile client endpoints. No proprietary AGL code is
 included. Anonymised response shapes are mirrored under `tests/fixtures/`; the
 full API contract is documented in the "AGL API — Key Facts" section above.
+
+### AI toolchain
+
+Every AI tool that touches this repository, and the human boundary around it:
+
+| Tool | Role | Pinning / scope |
+|---|---|---|
+| **Claude Code (CLI)** | Interactive author of all product code, operating under the maintainer's identity | The CLI itself auto-updates (not pinnable). Its tool grants are governed by `.claude/settings.json` (committed — the durable policy record) plus a per-machine `.claude/settings.local.json` (gitignored). |
+| **Claude Code subagents** | Domain + review agents invoked in-session (see Subagent Triggers above) | Model-pinned in `.claude/agents/*.md`: 7× `claude-sonnet-4-6`, 1× `claude-haiku-4-5-20251001` (`release-manager`). |
+| **Codex (`chatgpt-codex-connector`)** | Cross-vendor PR reviewer | Invoked on substantive PRs. Reviews are advisory comments only — never a merge or approval authority, and not a required check. |
+| **`haggle-triage` routine** | Scheduled daily triage of untrusted issues/PRs/attachments: comments, labels, Dependabot rollups, draft-fix PRs | Cron-only by design; fresh session per run; tool + Bash-prefix allowlist. Committed spec and prompt: [`docs/agents/triage-routine.md`](docs/agents/triage-routine.md). **Never** merges, pushes to `main`, tags, releases, or edits `release.yml`/`CODEOWNERS`/`LICENSE`/`NOTICE`/`SECURITY.md`. |
+
+**Human-executed boundary.** Merging a PR and creating/pushing a release
+tag are executed by the human maintainer, never by a standing agent
+grant. The committed `.claude/settings.json` grants no merge verb (`gh pr
+merge` is deliberately absent from the allow-list), denies
+`Bash(gh auth token*)` outright (a session can never print the credential
+it runs under), and `ask`-gates every `Edit`/`Write`/`MultiEdit` touching
+`.claude/**` — tamper-resistant, not tamper-proof; see the honest bounds
+in [docs/threat-model.md §6](docs/threat-model.md). Per-machine `ask`
+rules add a live permission prompt on merge and on the tag-push override.
+The enforced floor is server-side: the zero-bypass `protect-main` ruleset
+(see `SECURITY.md § Gating Policy`).
+
+**Grant-union re-assessment trigger.** Widening any agent's grants —
+adding an allow entry to `.claude/settings.json` or
+`.claude/settings.local.json`, or widening the triage routine's tool /
+Bash-prefix allowlist in `docs/agents/triage-routine.md` — is a material
+change that re-opens `SECURITY.md § AI development agents` and
+`docs/threat-model.md § 6 (AI development agents)`. Update both in the
+same change; do not accrete grants silently.

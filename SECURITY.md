@@ -342,7 +342,17 @@ merge, tag, and release.
 | Agent | Untrusted inputs | Grant union | Blast radius if hijacked |
 |---|---|---|---|
 | Interactive dev agent (Claude Code, under the maintainer's identity) | AGL API responses; GitHub issue/PR content it reads; fetched web pages | Working-tree read/write; routine local git + feature-branch push; the build/test/lint toolchain. No standing grant to merge PRs, push to `main`, push tags, release, or reach remote hosts — each forces a live human prompt; reading the `gh` auth token is denied outright. | The local checkout plus feature branches. It cannot self-merge, self-release, or reach infrastructure beyond the repo without a human approving; direct `main` pushes are server-rejected by the ruleset. |
-| Automated triage routine (daily-cron hosted agent) | All issue/PR/comment/diff/attachment content | Cron-only (deliberately not event-triggered — issue events would let attackers summon it); fresh session per run; comments, labels, and PR branches only. It never merges, never pushes to `main`, never tags or releases, and never modifies `release.yml`, CODEOWNERS, LICENSE, NOTICE, or this file. | Spam/noise on this repo's issues and PRs; a hijacked run is bounded by the zero-bypass ruleset and the human-gated merge/tag/release boundary. |
+| Automated triage routine (`haggle-triage`, daily-cron hosted agent — spec and prompt committed at [docs/agents/triage-routine.md](docs/agents/triage-routine.md)) | All issue/PR/comment/diff/attachment content | Cron-only (deliberately not event-triggered — issue events would let attackers summon it); fresh session per run; comments, labels, and PR branches only. It never merges, never pushes to `main`, never tags or releases, and never modifies `release.yml`, CODEOWNERS, LICENSE, NOTICE, or this file. | Spam/noise on this repo's issues and PRs; a hijacked run is bounded by the zero-bypass ruleset and the human-gated merge/tag/release boundary. |
+
+The triage routine's configuration and prompt are under repo-first
+change control: [docs/agents/triage-routine.md](docs/agents/triage-routine.md)
+is the authoritative record, edited by PR, and the live routine is synced
+from the merged file. The pre-change control on any prompt edit is a
+manual replay of the injection corpus
+([docs/agents/injection-corpus.md](docs/agents/injection-corpus.md)) — every payload must
+be labelled `possible-prompt-injection` and produce no other action
+before the change lands. Manual by necessity: the routine runs on a
+hosted platform CI cannot exercise, so a CI gate here would be theatre.
 
 AI IP-contamination (verbatim training-data reproduction reaching a
 merge) has no in-repo detector and is a recorded acceptance — RA-11
