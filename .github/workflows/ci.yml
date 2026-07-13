@@ -137,6 +137,12 @@ jobs:
           fail-on-severity: moderate
           vulnerability-check: true
           license-check: true
+          # Explicit, not default (default blocks runtime scope only).
+          # GitHub currently classifies uv.lock deps as runtime scope
+          # (verified on this PR's snapshot), so the default happens to
+          # cover us today — pinning all three scopes removes the
+          # dependence on that classification behaviour.
+          fail-on-scopes: runtime, development, unknown
           # Apache-2.0 repo. The dependency estate is dev/CI-only
           # (manifest.json ships zero runtime requirements), so this gate
           # protects contributor machines and CI, not the shipped artifact.
