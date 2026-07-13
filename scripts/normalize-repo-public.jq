@@ -22,5 +22,6 @@
   has_wiki,
   has_discussions,
   has_pages,
-  has_downloads
+  has_downloads,
+  has_pull_requests
 }

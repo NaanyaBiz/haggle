@@ -27,6 +27,13 @@ on:
 
 permissions: {}
 
+# One run at a time, queued not cancelled: a stale run finishing after a
+# newer clean run must not reopen/comment the drift issue from old data
+# (Codex review, #188).
+concurrency:
+  group: settings-drift
+  cancel-in-progress: false
+
 jobs:
   drift:
     name: Detect settings drift
@@ -51,12 +58,21 @@ jobs:
           : > "$report"
 
           # --- rulesets (normalizer strips viewer-dependent fields) ---
+          # Fetch the id list as an assignment: under set -e this aborts on
+          # API failure, whereas $(...) inside the for-list would not — and
+          # an empty loop would false-flag every committed baseline as
+          # "no matching live ruleset" (Codex review, #188).
+          ruleset_ids=$(gh api "repos/$GH_REPO/rulesets" --paginate --jq '.[].id')
           declare -A live_slugs=()
-          for id in $(gh api "repos/$GH_REPO/rulesets" --paginate --jq '.[].id'); do
+          for id in $ruleset_ids; do
             gh api "repos/$GH_REPO/rulesets/$id" > /tmp/live/raw.json
             name=$(jq -r '.name' /tmp/live/raw.json)
             slug=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]' \
                    | sed -E 's/[^a-z0-9]+/-/g; s/^-+|-+$//g')
+            if [ -z "$slug" ] || [ -n "${live_slugs[$slug]:-}" ]; then
+              echo "::error::ruleset name '$name' produces an empty or colliding slug '$slug'"
+              exit 1
+            fi
             live_slugs[$slug]=1
             jq -S -f scripts/normalize-ruleset.jq /tmp/live/raw.json \
               > "/tmp/live/ruleset-$slug.json"
