@@ -38,7 +38,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actionlint + zizmor (medium+) over scripts and workflows;
   `persist-credentials: false` on every checkout.
 
-### Security
 
 - **Living threat model committed + SECURITY.md overhauled** (SDLC
   remediation WP5): the STRIDE model now lives in-repo at

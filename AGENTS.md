@@ -829,8 +829,10 @@ tag-push steps in `release-manager.md`) and halts on the interactive
 permission prompt for the human to approve each one — that prompt IS the
 boundary. The committed `.claude/settings.json` grants no merge verb (`gh pr
 merge` is deliberately absent from the allow-list), denies
-`Bash(gh auth token*)` outright (a session can never print the credential
-it runs under), and `ask`-gates every `Edit`/`Write`/`MultiEdit` touching
+`Bash(gh auth token*)` outright (blocking the direct print path — an
+interpreter file-read of gh's own config remains possible and is
+tamper-evident rather than prevented, per the honest bounds in
+[docs/threat-model.md §6](docs/threat-model.md)), and `ask`-gates every `Edit`/`Write`/`MultiEdit` touching
 `.claude/**` — tamper-resistant, not tamper-proof; see the honest bounds
 in [docs/threat-model.md §6](docs/threat-model.md). Per-machine `ask`
 rules add a live permission prompt on merge and on the tag-push override.
