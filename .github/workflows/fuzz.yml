@@ -3,8 +3,11 @@ name: Fuzz
 # Atheris fuzzing of the AGL response parsers (tests/fuzz/fuzz_parser.py).
 # The parsers are the trust boundary for attacker-influenceable JSON (TLS
 # pinning is warn-only — see SECURITY.md), so they must be total over
-# arbitrary input. Weekly deep run + a short run when the parser or the
-# harness changes. Closes the Scorecard Fuzzing gap (#173).
+# arbitrary input. Weekly deep run (600 s) + a 120 s smoke on EVERY PR —
+# unconditional (no paths: filter) so the check can be made required; a
+# path-filtered required check wedges non-matching PRs on an "expected"
+# status forever. Corpus persists across runs via actions/cache; crash
+# inputs upload as artifacts on failure. (#173; SDLC review CO-7.2)
 
 on:
   schedule:
@@ -14,10 +17,6 @@ on:
   workflow_dispatch:
   pull_request:
     branches: [main]
-    paths:
-      - "custom_components/haggle/agl/**"
-      - "tests/fuzz/**"
-      - ".github/workflows/fuzz.yml"
 
 permissions: read-all
 
@@ -46,13 +45,50 @@ jobs:
       - name: Install atheris (hash-pinned)
         run: uv pip install --require-hashes -r tests/fuzz/requirements.txt
 
+      # Caches are immutable per key: every run saves under a fresh key and
+      # restores the newest prior snapshot via the restore-keys prefix.
+      # PR runs can read main-scoped caches (default-branch caches are
+      # visible to every ref) but save only into their own PR scope — the
+      # weekly scheduled runs are what deepen the persistent corpus.
+      - name: Restore fuzz corpus
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/corpus
+          key: fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            fuzz-corpus-
+
+      - name: Seed corpus from fixtures
+        # Plain cp, not cp -n: coreutils >= 9.2 exits non-zero when -n skips
+        # an existing file, and re-copying identical fixtures is idempotent.
+        # Evolved corpus entries have content-hash names — never clobbered.
+        run: |
+          mkdir -p /tmp/corpus /tmp/crash-artifacts
+          cp tests/fixtures/*.json /tmp/corpus/
+
       - name: Fuzz parsers
         env:
           PYTHONPATH: .
           # Short smoke on PRs; deeper sweep on the weekly schedule.
           TIME_BUDGET: ${{ github.event_name == 'pull_request' && '120' || '600' }}
         run: |
-          mkdir -p /tmp/corpus
-          cp tests/fixtures/*.json /tmp/corpus/
           uv run python tests/fuzz/fuzz_parser.py /tmp/corpus \
+            -artifact_prefix=/tmp/crash-artifacts/ \
             -max_total_time="${TIME_BUDGET}" -print_final_stats=1
+
+      # Save even when fuzzing failed: coverage-increasing inputs found
+      # before a crash are exactly the ones worth keeping for the rerun.
+      - name: Save fuzz corpus
+        if: always()
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: /tmp/corpus
+          key: fuzz-corpus-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Upload crash artifacts
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-crash-artifacts
+          path: /tmp/crash-artifacts/
+          if-no-files-found: ignore
