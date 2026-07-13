@@ -66,11 +66,20 @@ def _redact_body(text: str) -> str:
     redaction pattern would miss it and leak the prefix (Class A rule,
     docs/threat-model.md §2). Users paste debug logs into public issues.
     """
-    return re.sub(
+    text = re.sub(
         r'"([a-z_]*token)"\s*:\s*"[^"]*"',
         r'"\1":"«redacted»"',
         text,
-    )[:200]
+    )
+    # Bodies can echo the request path or identifier fields (Class B):
+    # apply the same digit-segment and keyed-identifier redactions.
+    text = re.sub(r"/(\d{2,8})(\d{4})(?=[/?\"]|$)", r"/…\2", text)
+    text = re.sub(
+        r'"((?:account|contract)_?[Nn]umber)"\s*:\s*"?(?:\d{2,8})(\d{4})',
+        r'"\1":"…\2',
+        text,
+    )
+    return text[:200]
 
 
 def _redact_url(url: str) -> str:

@@ -43,10 +43,10 @@ regexes = ['''^(?:1234567890|9999999999|0+|1+|2+|3+|4+|5+|6+|7+|8+|9+)$''']
 
 [[rules]]
 id = "agl-contract-in-usage-url"
-description = "AGL contract number embedded in a usage-endpoint URL path (pasted capture/log)"
-regex = '''(?i)/usage/smart/Electricity(?:Solar)?/(\d{6,12})[/?]'''
+description = "AGL contract number embedded in a usage- or plan-endpoint URL path (pasted capture/log)"
+regex = '''(?i)/(?:usage/smart/Electricity(?:Solar)?|plan/energy)/(\d{6,12})(?:[/?\s"'`]|$)'''
 secretGroup = 1
-keywords = ["usage/smart"]
+keywords = ["usage/smart", "plan/energy"]
 
 [[rules.allowlists]]
 regexTarget = "secret"

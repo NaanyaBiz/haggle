@@ -2,8 +2,11 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "Bash(uv:*)",
       "Bash(uv run:*)",
+      "Bash(uv sync:*)",
+      "Bash(uv lock:*)",
+      "Bash(uv pip:*)",
+      "Bash(uv export:*)",
       "Bash(pre-commit:*)",
       "Bash(git status*)",
       "Bash(git diff*)",
