@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### CI
+
+- **Merge-blocking security and quality gates** (SDLC remediation WP2, PR-A):
+  gitleaks full-history secret scan with repo-specific Auth0/AGL rules
+  (`.gitleaks.toml`) closing the `--no-verify` bypass; PR dependency-review
+  (vulnerabilities ≥ moderate + strong-copyleft licence denylist); coverage
+  floor `--cov-fail-under=89`; ruff C901 complexity gate at 12; shellcheck +
+  actionlint + zizmor (medium+) over scripts and workflows;
+  `persist-credentials: false` on every checkout.
+
 ### Security
 
 - **Scorecard remediation batch verified** (#179): aggregate **7.0 → 7.5**

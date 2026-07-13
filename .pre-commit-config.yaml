@@ -51,9 +51,37 @@ repos:
 
   # Secret scanning
   - repo: https://github.com/gitleaks/gitleaks
-    rev: 43fae355e6fe4d99d2a7b240a224b85e2903aeb4 # frozen: v8.21.2
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # frozen: v8.30.1
     hooks:
       - id: gitleaks
+
+  # Shell scripts — scripts/check_claude_coauthor.sh, scripts/wt (shebang-
+  # detected), .claude/hooks/*.sh. Several implement repo controls (the
+  # provenance trailer, the branch guard), so they get linted like code.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: 745eface02aef23e168a8afb6b5737818efbea95 # frozen: v0.11.0.1
+    hooks:
+      - id: shellcheck
+
+  # GitHub Actions workflow lint. language: golang — pre-commit >= 3.0
+  # bootstraps its own Go toolchain, no dev-machine Go install required.
+  - repo: https://github.com/rhysd/actionlint
+    rev: 914e7df21a07ef503a81201c76d2b11c789d3fca # frozen: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # Workflow security audit — zizmor from uv.lock (same anti-drift rule as
+  # the ruff/mypy local hooks above; Dependabot maintains the version).
+  # --offline: online audits need GitHub API access; offline covers all the
+  # rules we gate on. Threshold mirrors the CI step exactly.
+  - repo: local
+    hooks:
+      - id: zizmor
+        name: zizmor (uv.lock version)
+        language: system
+        entry: uv run zizmor --offline --min-severity medium
+        files: ^\.github/workflows/.*\.ya?ml$
+        require_serial: true
 
   # Conventional Commits
   - repo: https://github.com/compilerla/conventional-pre-commit

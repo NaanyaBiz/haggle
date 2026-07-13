@@ -1,0 +1,53 @@
+# Haggle-specific gitleaks rules layered on the default ruleset.
+# The two highest-consequence leak classes for this repo are NOT provider
+# patterns (GitHub push protection cannot see them; the default gitleaks
+# rules were tested and also miss them):
+#   1. An Auth0 opaque rotating refresh token (the user's AGL credential) —
+#      quoted (JSON/py) or unquoted (.env / form-encoded / curl captures).
+#   2. An un-anonymised AGL customer identifier: camelCase API fields,
+#      snake_case persisted HA keys, or embedded in a usage-endpoint URL
+#      path (pasted logs/captures) — the three places the client puts it.
+# Canonical anonymised placeholders (AGENTS.md "Contributing" §2) are
+# allowlisted; anything else in those positions is treated as a leak.
+# Used automatically by: the pre-commit gitleaks hook, and the CI
+# "Gitleaks (full history)" job (gitleaks auto-loads the target repo's
+# root .gitleaks.toml).
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "auth0-opaque-refresh-token"
+description = "Auth0/AGL opaque refresh token (key-anchored, long value, quoted or unquoted)"
+regex = '''(?i)refresh[_-]?token["']?\s*[:=]\s*["']?([A-Za-z0-9._~+/-]{60,400})'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["refresh_token", "refreshtoken", "refresh-token"]
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''(?i)fake|test|example|placeholder|redacted''']
+
+[[rules]]
+id = "agl-real-customer-identifier"
+description = "AGL accountNumber/contractNumber (camelCase API field or snake_case persisted key) that is not the canonical anonymised placeholder"
+regex = '''(?i)["']?(?:accountNumber|contractNumber|account_number|contract_number)["']?\s*[:=]\s*["']?(\d{6,12})'''
+secretGroup = 1
+keywords = ["accountnumber", "contractnumber", "account_number", "contract_number"]
+
+[[rules.allowlists]]
+regexTarget = "secret"
+# Canonical placeholders plus any all-same-digit synthetic value
+# (tests use 0000000000 / 1111111111 shapes; RE2 has no backrefs).
+regexes = ['''^(?:1234567890|9999999999|0+|1+|2+|3+|4+|5+|6+|7+|8+|9+)$''']
+
+[[rules]]
+id = "agl-contract-in-usage-url"
+description = "AGL contract number embedded in a usage-endpoint URL path (pasted capture/log)"
+regex = '''(?i)/usage/smart/Electricity(?:Solar)?/(\d{6,12})[/?]'''
+secretGroup = 1
+keywords = ["usage/smart"]
+
+[[rules.allowlists]]
+regexTarget = "secret"
+regexes = ['''^(?:1234567890|9999999999|0+|1+|2+|3+|4+|5+|6+|7+|8+|9+)$''']

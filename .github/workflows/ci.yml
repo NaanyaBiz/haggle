@@ -6,7 +6,11 @@ on:
   pull_request:
     branches: [main]
 
-permissions: read-all
+# Least-privilege: every job only reads the tree (checkout) and, for
+# dependency-review, the dependency graph — both covered by contents: read.
+# (zizmor excessive-permissions gate rejects blanket read-all.)
+permissions:
+  contents: read
 
 jobs:
   test:
@@ -18,6 +22,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
@@ -33,17 +39,113 @@ jobs:
         run: uv sync --extra dev
 
       - name: Ruff lint
-        run: uv run ruff check custom_components/ tests/
+        run: uv run ruff check custom_components/ tests/ scripts/
 
       - name: Ruff format check
-        run: uv run ruff format --check custom_components/ tests/
+        run: uv run ruff format --check custom_components/ tests/ scripts/
 
       - name: Mypy
         run: uv run mypy custom_components/haggle
+
+      # shellcheck + actionlint run through pre-commit so CI and local
+      # commits use the SAME frozen-SHA hook revs (anti-drift rule at the
+      # top of .pre-commit-config.yaml). zizmor comes from uv.lock.
+      - name: Cache pre-commit environments
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/pre-commit
+          key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
+
+      - name: Shellcheck (pinned pre-commit rev)
+        run: uv run pre-commit run shellcheck --all-files
+
+      - name: Actionlint (pinned pre-commit rev)
+        run: uv run pre-commit run actionlint --all-files
+
+      - name: Zizmor workflow audit (uv.lock version)
+        run: uv run zizmor --offline --min-severity medium .github/workflows/
 
       # Coverage is reported inline via --cov-report=term-missing (pyproject
       # addopts). No external coverage vendor: the Codecov upload was
       # write-only (no badge, no consumer) and third-party code on every PR
       # is surface we don't need (2026-07 dependency review).
+      # --cov-fail-under lives HERE, not in pyproject addopts, so local
+      # single-file runs (uv run pytest tests/test_parser.py) stay usable —
+      # a subset run computes low coverage by construction and would always
+      # trip an addopts-level floor. Current combined (lines+branches) total:
+      # 90.0% on 2026-07-13. Floor 89 = regression gate with ~1pt headroom.
+      # Ratchet UP as the total rises; never lower it to make a PR pass.
       - name: Pytest
-        run: uv run pytest
+        run: uv run pytest --cov-fail-under=89
+
+  gitleaks:
+    name: Gitleaks (full history)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0  # full history — the scan covers every commit
+          persist-credentials: false
+
+      # Checksum-pinned release binary rather than gitleaks/gitleaks-action:
+      # stricter than a SHA-pinned action (the action downloads the gitleaks
+      # binary at runtime by mutable version tag), zero third-party action
+      # code, and the version matches the pre-commit hook rev — update BOTH
+      # together (pre-commit autoupdate --freeze + bump this URL/checksum).
+      - name: Install gitleaks v8.30.1 (checksum-pinned)
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSLo gitleaks.tar.gz \
+            https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+
+      # Self-test: prove the scanner detects before trusting its verdict.
+      # A scanner that silently matches nothing (the failure mode alleged —
+      # and refuted — in gitleaks#2170, but real for any broken build) must
+      # fail this job, never greenlight the history scan. The seeded value
+      # is assembled at runtime so the workflow source itself can't match
+      # the github-pat rule.
+      - name: Scanner self-test (must detect seeded token)
+        run: |
+          mkdir -p "$RUNNER_TEMP/gitleaks-selftest"
+          printf 'token = "ghp_%s"\n' "Xk92mQfR7vLpTz3NwYbJc5HdGs81uEaMnB4o" \
+            > "$RUNNER_TEMP/gitleaks-selftest/seed.txt"
+          if "$RUNNER_TEMP/gitleaks" dir --no-banner --redact "$RUNNER_TEMP/gitleaks-selftest"; then
+            echo "::error::gitleaks did not detect the seeded token — scanner silently broken; history scan verdict is untrustworthy"
+            exit 1
+          fi
+          echo "self-test OK: seeded token detected"
+
+      - name: Scan full git history
+        run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact .'
+
+  dependency-review:
+    name: Dependency review
+    # PR-only: the action diffs base..head dependency manifests; push events
+    # to main have no base ref. WP1 makes this a required PR check.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Dependency review (vulnerabilities + licence gate)
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
+        with:
+          fail-on-severity: moderate
+          vulnerability-check: true
+          license-check: true
+          # Explicit, not default (default blocks runtime scope only).
+          # GitHub currently classifies uv.lock deps as runtime scope
+          # (verified on this PR's snapshot), so the default happens to
+          # cover us today — pinning all three scopes removes the
+          # dependence on that classification behaviour.
+          fail-on-scopes: runtime, development, unknown
+          # Apache-2.0 repo. The dependency estate is dev/CI-only
+          # (manifest.json ships zero runtime requirements), so this gate
+          # protects contributor machines and CI, not the shipped artifact.
+          # Deny strong/network copyleft only; weak copyleft (LGPL/MPL) dev
+          # tools are compatible with how this repo uses them.
+          deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, SSPL-1.0

@@ -49,6 +49,9 @@ dev = [
     "ruff>=0.15.20",
     "mypy>=2.1.0",
     "pre-commit>=4.6.0",
+    # Workflow security audit (CI step + pre-commit local hook). Rust binary
+    # wheels from PyPI; version governed by uv.lock like ruff/mypy.
+    "zizmor>=1.26",
 ]
 
 [project.urls]
@@ -72,6 +75,7 @@ select = [
     "I",           # isort
     "UP",          # pyupgrade
     "B",           # flake8-bugbear
+    "C901",        # mccabe complexity (threshold under [tool.ruff.lint.mccabe])
     "SIM",         # flake8-simplify
     "RUF",         # ruff-specific
     "ASYNC",       # flake8-async (catches blocking I/O in async)
@@ -96,6 +100,12 @@ ignore = [
 "custom_components/haggle/const.py" = ["S105"]   # CONF_*_TOKEN strings are key names, not secrets
 "custom_components/haggle/coordinator.py" = ["PLC0415"]   # recorder imports must be local — optional HA component
 "custom_components/haggle/diagnostics.py" = ["PLC0415"]   # same recorder-import constraint as coordinator.py
+
+[tool.ruff.lint.mccabe]
+# Gate new code at 12. The single function above this today,
+# coordinator._fetch_range (13), carries a rationale'd noqa and a debt issue
+# to decompose it — do not raise this number to absorb new offenders.
+max-complexity = 12
 
 [tool.ruff.lint.isort]
 combine-as-imports = true
