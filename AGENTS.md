@@ -88,6 +88,7 @@ tests/
 
 docs/
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
+├── releasing.md         # release acceptance policy — beta-soak rule, hotfix evidence rule, downgrade test, acceptance record
 ├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
 ├── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
 └── agents/

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Release acceptance policy** (`docs/releasing.md`, CO-15.5, CO-10.1):
+  standing beta-soak rule (≥ 7 days on the maintainer's live HA +
+  AGL-app reconciliation + zero open `beta-blocker` issues before any
+  stable), the hotfix-evidence rule for stables that skip the ladder, the
+  once-per-stable manual downgrade test, and the acceptance-evidence
+  record every stable release PR must carry. New `beta-blocker` label
+  gates promotion.
+
 ## [0.4.0-beta.6] — 2026-07-14
 
 ### Security
