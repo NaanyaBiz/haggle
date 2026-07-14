@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Project roadmap** (`ROADMAP.md`): the direction for roughly the next
+  twelve months plus explicit non-goals — single-retailer (AGL Australia)
+  only, electricity and its solar feed-in only, read-only Energy-dashboard
+  import, and no telemetry, device control, or portal scraping.
 - **Agent-side release/merge gates** (`.claude/`): the `/pr` command now
   refuses to merge with unchecked checklist boxes (the human-review
   disclosure box in particular); `/release` pre-conditions enforce the
