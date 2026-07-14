@@ -72,6 +72,10 @@ Every PR that touches code (not pure CI/tooling fixes) must update:
   facts changed; "What NOT to Do" if a footgun was discovered.
 - `Closes #N` in the PR body if it resolves an open issue.
 
+Checklist boxes are evidence, not decoration: before merge, every box is
+either ticked or deleted with a one-line reason. The AI-generation /
+human-review disclosure boxes must never merge unchecked.
+
 The `/pr` slash command (Claude Code) walks through this checklist and
 opens the PR with a sensible body.
 

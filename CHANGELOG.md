@@ -9,6 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Recorder-backed sum-chain regression tests**
+  (`tests/test_recorder_statistics.py`, CO-15.6): the three defect classes
+  that previously escaped through the mocked recorder seam — the v0.3.0
+  phantom-midnight spike, the #114 reach-back monotonicity break, and ToU
+  partition completeness — now also run against HA's real statistics engine
+  (phcc `recorder_mock`, in-memory SQLite), catching semantic drift between
+  the import logic and the recorder's actual cumulative-sum handling.
+- **Test-strategy + fixture-provenance docs** (CO-15.1, CO-10.2):
+  `docs/testing.md` (the four test layers, required depth per change type,
+  the 89 % ratcheting coverage floor, when live-HA manual testing is
+  required) and `tests/fixtures/PROVENANCE.md` (fixture anonymisation rule
+  plus the provenance record for the one real solar capture — contributed
+  publicly by its account holder on #128 — and the three-part rule for any
+  future real fixture).
+- **Weekly compat canary** (`.github/workflows/compat.yml`, CO-15.6): runs
+  the full suite against the latest `pytest-homeassistant-custom-component`
+  and `homeassistant` (including betas) every Tuesday — days-early warning
+  of upstream HA breakage. Non-blocking by construction (never a PR check);
+  failures open or refresh a single `ha-compat` issue.
+- **Release acceptance policy** (`docs/releasing.md`, CO-15.5, CO-10.1):
+  standing beta-soak rule (≥ 7 days on the maintainer's live HA +
+  AGL-app reconciliation + zero open `beta-blocker` issues before any
+  stable), the hotfix-evidence rule for stables that skip the ladder, the
+  once-per-stable manual downgrade test, and the acceptance-evidence
+  record every stable release PR must carry. New `beta-blocker` label
+  gates promotion.
 - **Rollback / downgrade guide** (README, CO-15.6): any prior release can
   be reinstalled via HACS Redownload — config entries are downgrade-safe
   (newer versions only add keys; schema version has never changed),
