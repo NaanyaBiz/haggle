@@ -333,8 +333,18 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # (`unknown`); a wrong number is worse than a blank one here.
         generation_period_kwh: float | None = None
         generation_period_credit: float | None = None
-        publish_period = heal_ctx is None or (
-            fetch_complete and await self._recorder_drained()
+        # A persisted PENDING heal proves the stored chain is incomplete even
+        # on a cycle that planned no sweep (e.g. solar writes frozen via
+        # options, CO-10.3) — publishing totals from it would be a standing
+        # undercount. A wrong number is worse than a blank one.
+        heal_pending = (self.config_entry.data.get(CONF_SOLAR_HEAL) or {}).get(
+            "state"
+        ) == SOLAR_HEAL_PENDING
+        publish_period = (heal_ctx is None and not heal_pending) or (
+            # the drain-and-publish shortcut (#152) applies only when a heal
+            # sweep actually ran this cycle — a frozen cycle's successful
+            # consumption fetch must not satisfy it
+            heal_ctx is not None and fetch_complete and await self._recorder_drained()
         )
         if self._has_solar and publish_period:
             (
@@ -1038,10 +1048,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         days — and vice versa. A day outside both ranges is skipped without a
         request. Worst case (fully disjoint chunks) is 7 + 7 requests, the same
         peak load as a steady-state solar cycle (7 days x 2 requests).
-        A heal sweep is the exception: its solar range spans the full
-        BACKFILL_DAYS window un-chunked (up to 30 + 7 requests in one cycle),
-        bounded per lifetime at 2x MAX_SOLAR_HEAL_ATTEMPTS sweeps. See
-        TestComposedRequestCeiling for the regression-guarded totals.
+        A heal sweep is the exception: its solar range spans the FROZEN
+        floor..yesterday window un-chunked — 30 + 7 requests when the pending
+        record is fresh, more if it aged while HA was offline (the floor
+        deliberately never slides) — bounded per lifetime at
+        2x MAX_SOLAR_HEAL_ATTEMPTS sweeps. See TestComposedRequestCeiling
+        for the regression-guarded totals.
 
         Sleeps between requests so a chunk-of-7 first-install backfill doesn't
         hammer AGL's BFF in under a second. AGL rate limits are account-wide,

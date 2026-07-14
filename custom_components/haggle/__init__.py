@@ -160,7 +160,10 @@ async def _async_revoke_grant(hass: HomeAssistant, entry: HaggleConfigEntry) -> 
     HA deletes entry.data with the entry, but the Auth0 grant would otherwise
     stay valid server-side until idle expiry. Auth0's /oauth/revoke accepts
     public-client (no secret) revocation and, with rotation enabled, revokes
-    the whole token family. Every failure is swallowed: removal must never be
+    the whole token family — which is also why revoking a possibly-STALE
+    token is fine: if the last rotation's persist failed (reauth path), the
+    entry holds the consumed predecessor, and revoking any family member
+    still invalidates the entire grant. Every failure is swallowed: removal must never be
     blocked by AGL/network state, and a failed revoke leaves the user exactly
     where they are today (README documents the AGL-side fallback).
 
@@ -220,8 +223,11 @@ async def async_remove_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> N
     non-destructive default is the right one. Do not add async_clear_statistics
     here without an explicit opt-in.
     """
-    await _async_revoke_grant(hass, entry)
+    # Local cleanup FIRST: a slow/blackholed Auth0 endpoint (or a shutdown
+    # cancelling the await below) must never leave orphan registry rows —
+    # that is the exact bug this function exists to prevent.
     registry = er.async_get(hass)
     entries = er.async_entries_for_config_entry(registry, entry.entry_id)
     for entity in entries:
         registry.async_remove(entity.entity_id)
+    await _async_revoke_grant(hass, entry)
