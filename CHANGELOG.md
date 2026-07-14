@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Recorder-backed sum-chain regression tests**
+  (`tests/test_recorder_statistics.py`, CO-15.6): the three defect classes
+  that previously escaped through the mocked recorder seam — the v0.3.0
+  phantom-midnight spike, the #114 reach-back monotonicity break, and ToU
+  partition completeness — now also run against HA's real statistics engine
+  (phcc `recorder_mock`, in-memory SQLite), catching semantic drift between
+  the import logic and the recorder's actual cumulative-sum handling.
+
 ## [0.4.0-beta.6] — 2026-07-14
 
 ### Security

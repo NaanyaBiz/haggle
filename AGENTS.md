@@ -83,6 +83,7 @@ tests/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition classes
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 └── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
 
