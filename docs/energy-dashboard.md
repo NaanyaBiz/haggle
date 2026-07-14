@@ -56,6 +56,10 @@ not for the Energy dashboard:
 
 ## Troubleshooting
 
+Suspect a recently-updated Haggle version rather than your dashboard
+config? Any prior release can be reinstalled safely — see
+[Rollback / downgrade](../README.md#rollback--downgrade) in the README.
+
 **A whole day shows as one big bar, on the wrong day.**
 The dashboard is charting a `sensor.…` entity instead of the `haggle:…`
 statistic. Remove the sensor from the dashboard's sources and add the
