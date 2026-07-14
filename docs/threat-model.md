@@ -303,8 +303,14 @@ regression test in `tests/test_coordinator_statistics.py`):
 - **Bounded give-up**: the solar leading-hole heal is capped at
   `MAX_SOLAR_HEAL_ATTEMPTS` (3) sweeps (lifetime hard cap 2×); a
   persistently erroring span is abandoned after
-  `SOLAR_STALL_GIVE_UP_CYCLES` (3) zero-progress cycles. Both produce rare
-  permanent holes rather than wedged integrations — accepted, logged at
+  `SOLAR_STALL_GIVE_UP_CYCLES` (3) zero-progress cycles. Every give-up is
+  user-visible: a persistent HA Repairs issue (ids key on the config
+  entry's random id, never an identifier) plus durable records — the heal
+  record's `gave_up`/`attempts` markers and the bounded
+  `solar_stall_spans` list in the entry data (dates and counts only,
+  Class C) — surfaced in diagnostics as `stall_give_up_spans`. Both
+  produce rare permanent holes rather than wedged integrations —
+  accepted, logged at
   WARNING (surfacing these as HA Repairs is tracked separately).
 - **Restart survival**: multi-cycle repair state is persisted in
   `entry.data` (`{state, floor, attempts}`), and the rotated refresh token

@@ -49,7 +49,7 @@ custom_components/haggle/
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
-├── diagnostics.py       # anonymized config-entry diagnostics (schema v1) — public-safe; parsed by the triage routine (docs/diagnostics.md)
+├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
 ├── agl/
@@ -423,7 +423,13 @@ and each item carries **both** a `consumption` block and a shape-identical
   `SOLAR_STALL_GIVE_UP_CYCLES` consecutive zero-progress cycles on the SAME
   chunk, zero-delta markers advance the resume past the span (WARNING logged).
   In-memory counter — restart resets it (conservative). Rate-limited sweeps
-  and heal sweeps are excluded by design.
+  and heal sweeps are excluded by design. Each give-up persists a span record
+  to `entry.data[CONF_SOLAR_STALL_SPANS]` (bounded list, surfaced in
+  diagnostics as `stall_give_up_spans`) and raises a persistent HA Repairs
+  issue — the marker rows make coverage stats look healthy over the hole, so
+  the span record is the only durable evidence (CO-16.4). Heal/repair
+  give-ups likewise raise Repairs issues and mark the done record with
+  `gave_up`/`attempts` so diagnostics can tell give-up from clean completion.
 - The beta.1 "numbers don't match" report (#128) was a **window artifact** —
   a cumulative-since-backfill sensor compared against the app's
   billing-period tile — not a field bug. When validating against the app,

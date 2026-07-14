@@ -39,6 +39,7 @@ from .const import (
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
     CONF_SOLAR_HEAL,
+    CONF_SOLAR_STALL_SPANS,
     DOMAIN,
     STAT_CONSUMPTION,
     STAT_COST,
@@ -49,7 +50,7 @@ if TYPE_CHECKING:
 
     from . import HaggleConfigEntry
 
-DIAGNOSTICS_SCHEMA_VERSION = 1
+DIAGNOSTICS_SCHEMA_VERSION = 2
 
 _TO_REDACT = {CONF_REFRESH_TOKEN}
 
@@ -180,6 +181,10 @@ async def async_get_config_entry_diagnostics(
     # field: distinguishes "period sensors deliberately blank while a heal
     # runs" from "gate failed" from "heal gave up" (#128 beta.3 round).
     solar_heal = entry_data.pop(CONF_SOLAR_HEAL, None)
+    # Stall give-up spans — the marker rows written at give-up make the
+    # coverage stats look healthy over the hole, so this is the only place
+    # the hole is visible (CO-16.4). None = never gave up.
+    stall_spans = entry_data.pop(CONF_SOLAR_STALL_SPANS, None)
 
     runtime = getattr(entry, "runtime_data", None)
     coordinator = runtime.coordinator if runtime is not None else None
@@ -243,6 +248,7 @@ async def async_get_config_entry_diagnostics(
             "pin_present_bff": pin_bff,
         },
         "solar_heal": solar_heal,
+        "stall_give_up_spans": stall_spans,
         "coordinator": coordinator_block,
         "statistics": statistics,
     }

@@ -25,8 +25,10 @@ from custom_components.haggle.const import (
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
     CONF_SOLAR_HEAL,
+    CONF_SOLAR_STALL_SPANS,
     DOMAIN,
     MAX_SOLAR_HEAL_ATTEMPTS,
+    MAX_STALL_SPAN_RECORDS,
     REWINDOW_DAYS,
     SOLAR_HEAL_DONE,
     SOLAR_HEAL_PENDING,
@@ -2403,7 +2405,40 @@ class TestGenerationHealState:
             },
             fetch_complete=False,
         )
-        assert self._heal(coord)["state"] == SOLAR_HEAL_DONE
+        heal = self._heal(coord)
+        assert heal["state"] == SOLAR_HEAL_DONE
+        assert heal["gave_up"] is True
+        assert heal["attempts"] == MAX_SOLAR_HEAL_ATTEMPTS
+        from homeassistant.helpers import issue_registry as ir
+
+        registry = ir.async_get(hass)
+        assert (
+            registry.async_get_issue(
+                DOMAIN, f"solar_heal_gave_up_{coord.config_entry.entry_id}"
+            )
+            is not None
+        )
+
+    async def test_clean_completion_records_no_give_up(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A clean sweep records plain done — no give-up marker, no Repairs
+        issue (the two previously collapsed to the same record; CO-16.4)."""
+        today = datetime.now(UTC).date()
+        coord, _, _, _ = await self._run(
+            hass,
+            preset={
+                "state": SOLAR_HEAL_PENDING,
+                "floor": (today - timedelta(days=25)).isoformat(),
+                "attempts": 1,
+            },
+            fetch_complete=True,
+        )
+        assert self._heal(coord) == {"state": SOLAR_HEAL_DONE}
+        from homeassistant.helpers import issue_registry as ir
+
+        registry = ir.async_get(hass)
+        assert not [i for i in registry.issues.values() if i.domain == DOMAIN]
 
     async def test_done_never_rearms(self, hass: HomeAssistant) -> None:
         """Once DONE, a still-present leading gap (needs_heal True) is NOT
@@ -2562,7 +2597,21 @@ class TestGenerationHealState:
             },
             fetch_complete=False,
         )
-        assert self._heal(coord) == {"state": SOLAR_HEAL_DONE, "repair": True}
+        assert self._heal(coord) == {
+            "state": SOLAR_HEAL_DONE,
+            "repair": True,
+            "gave_up": True,
+            "attempts": MAX_SOLAR_HEAL_ATTEMPTS,
+        }
+        from homeassistant.helpers import issue_registry as ir
+
+        registry = ir.async_get(hass)
+        assert (
+            registry.async_get_issue(
+                DOMAIN, f"solar_repair_gave_up_{coord.config_entry.entry_id}"
+            )
+            is not None
+        )
 
     async def test_period_totals_published_after_complete_drained_heal(
         self, hass: HomeAssistant
@@ -2673,6 +2722,48 @@ class TestSolarStallGiveUp:
         assert marked[-1] == chunk[1]
         assert len(marked) == BACKFILL_CHUNK_DAYS
         assert coord._solar_stall is None  # counter reset after give-up
+        spans = coord.config_entry.data[CONF_SOLAR_STALL_SPANS]
+        assert len(spans) == 1
+        assert spans[0]["start"] == chunk[0].isoformat()
+        assert spans[0]["end"] == chunk[1].isoformat()
+        assert spans[0]["cycles"] == SOLAR_STALL_GIVE_UP_CYCLES
+        from homeassistant.helpers import issue_registry as ir
+
+        registry = ir.async_get(hass)
+        gave_up_date = spans[0]["gave_up_at"][:10]
+        assert (
+            registry.async_get_issue(
+                DOMAIN,
+                f"solar_stall_gave_up_{coord.config_entry.entry_id}"
+                f"_{chunk[0].isoformat()}_{gave_up_date}",
+            )
+            is not None
+        )
+
+    async def test_stall_span_list_is_bounded(self, hass: HomeAssistant) -> None:
+        """The persisted span list drops the oldest beyond
+        MAX_STALL_SPAN_RECORDS so entry.data stays small."""
+        coord = _make_coordinator(hass)
+        dummies = [
+            {
+                "start": f"2026-01-{d:02d}",
+                "end": f"2026-01-{d:02d}",
+                "cycles": 3,
+                "gave_up_at": "2026-01-01T00:00:00+00:00",
+            }
+            for d in range(1, MAX_STALL_SPAN_RECORDS + 1)
+        ]
+        hass.config_entries.async_update_entry(
+            coord.config_entry,
+            data={**coord.config_entry.data, CONF_SOLAR_STALL_SPANS: dummies},
+        )
+        chunk = self._chunk()
+        with patch.object(coord, "_import_generation", new_callable=AsyncMock):
+            for _ in range(SOLAR_STALL_GIVE_UP_CYCLES):
+                await coord._track_solar_stall(chunk, progressed=False, skipped=True)
+        spans = coord.config_entry.data[CONF_SOLAR_STALL_SPANS]
+        assert len(spans) == MAX_STALL_SPAN_RECORDS
+        assert spans[-1]["start"] == chunk[0].isoformat()  # newest last
 
     async def test_progress_resets_counter(self, hass: HomeAssistant) -> None:
         """Any successful day (even alongside skips) resets the count — the

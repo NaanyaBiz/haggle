@@ -70,5 +70,19 @@
         "name": "Solar feed-in rate"
       }
     }
+  },
+  "issues": {
+    "solar_heal_gave_up": {
+      "title": "Solar history backfill gave up",
+      "description": "For entry {entry}: Haggle tried {attempts} times to backfill older solar history (back to {floor}), but AGL kept returning errors for at least one day, and has stopped retrying. The days that could not be fetched are permanently missing from the solar statistics. If those days matter to you, check whether the AGL app shows data for the same dates, then see the diagnostics guide (Learn more) for recovery options."
+    },
+    "solar_repair_gave_up": {
+      "title": "Solar statistics repair gave up",
+      "description": "For entry {entry}: Haggle detected a downward step in the cumulative solar statistics and tried {attempts} times to rebuild the series (back to {floor}), but could not complete a clean sweep. A downward step may persist in the solar statistics. It can be corrected manually via Developer Tools → Statistics — see the diagnostics guide (Learn more)."
+    },
+    "solar_stall_gave_up": {
+      "title": "Solar backfill skipped {start} to {end}",
+      "description": "For entry {entry}: AGL returned errors for every day in {start}..{end} for {cycles} consecutive polls, so Haggle marked the span as covered and moved on. These days are recorded as zero export and will not be retried automatically — a permanent gap in the solar statistics. If the AGL app shows data for these dates, see the diagnostics guide (Learn more) for recovery options."
+    }
   }
 }

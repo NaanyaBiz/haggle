@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import (
     DataUpdateCoordinator,
     UpdateFailed,
@@ -47,8 +48,11 @@ from .const import (
     BACKFILL_DAYS,
     BACKFILL_INTER_REQUEST_DELAY,
     CONF_SOLAR_HEAL,
+    CONF_SOLAR_STALL_SPANS,
     DOMAIN,
+    ISSUE_LEARN_MORE_URL,
     MAX_SOLAR_HEAL_ATTEMPTS,
+    MAX_STALL_SPAN_RECORDS,
     RECORDER_DRAIN_TIMEOUT,
     RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
@@ -757,7 +761,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                     "solar dates)",
                     attempts + 1,
                 )
-            new = {"state": SOLAR_HEAL_DONE}
+            # Distinguish give-up from clean completion in the persisted record
+            # (diagnostics) — both previously collapsed to {"state": "done"}.
+            new = {
+                "state": SOLAR_HEAL_DONE,
+                "gave_up": True,
+                "attempts": attempts + 1,
+            }
+            self._raise_heal_give_up_issue(floor, attempts + 1, repairing=repairing)
         else:
             new = {
                 "state": SOLAR_HEAL_PENDING,
@@ -776,6 +787,41 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 self.config_entry,
                 data={**self.config_entry.data, CONF_SOLAR_HEAL: record},
             )
+
+    def _raise_heal_give_up_issue(
+        self, floor: date, attempts: int, *, repairing: bool
+    ) -> None:
+        """Raise an HA Repairs issue for a heal/repair give-up (CO-16.4).
+
+        The give-up means a permanent hole (or a frozen downward step) in the
+        solar statistics; a log WARNING most users never read is not an alert.
+        Non-fixable (there is no automated remediation), persistent across
+        restarts, one issue id per event class per contract. Never deleted by
+        code — the underlying data condition is permanent; the user dismisses
+        it once read. The heal and repair generations get distinct ids so a
+        dismissed heal issue cannot swallow a later repair give-up.
+        """
+        kind = "solar_repair_gave_up" if repairing else "solar_heal_gave_up"
+        # Issue id keys on entry_id (random hex), NOT the contract number —
+        # ids serialize verbatim into HA's issue registry store, and the
+        # Class B discipline keeps identifiers out of composite strings.
+        # The entry placeholder (title = the entry's own display name) tells
+        # multi-entry installs which contract needs attention.
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"{kind}_{self.config_entry.entry_id}",
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.ERROR if repairing else ir.IssueSeverity.WARNING,
+            translation_key=kind,
+            translation_placeholders={
+                "attempts": str(attempts),
+                "floor": floor.isoformat(),
+                "entry": self.config_entry.title,
+            },
+            learn_more_url=ISSUE_LEARN_MORE_URL,
+        )
 
     async def _generation_needs_heal(
         self, stat_id_gen: str, floor: date, today: date
@@ -1096,7 +1142,57 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             count,
         )
         await self._import_generation([], fetched_days=span)
+        self._record_stall_give_up(span[0], span[-1], count)
         self._solar_stall = None
+
+    def _record_stall_give_up(self, start: date, end: date, cycles: int) -> None:
+        """Persist a stall give-up span and raise a Repairs issue (CO-16.4).
+
+        The give-up writes zero-delta marker rows over the span, so the
+        per-series coverage stats look healthy over the hole and the in-memory
+        counter leaves no trace — this record is the only durable artifact.
+        entry.data write follows the solar_heal pattern: no reload listener
+        fires. Issue id is per-span so a later, different hole is not masked
+        by a dismissal of an earlier one.
+        """
+        spans = list(self.config_entry.data.get(CONF_SOLAR_STALL_SPANS) or [])
+        spans.append(
+            {
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "cycles": cycles,
+                "gave_up_at": dt_util.utcnow().isoformat(timespec="seconds"),
+            }
+        )
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            data={
+                **self.config_entry.data,
+                CONF_SOLAR_STALL_SPANS: spans[-MAX_STALL_SPAN_RECORDS:],
+            },
+        )
+        # entry_id not contract number (Class B stays out of the registry
+        # store); the give-up DATE in the id means a recurrence of the same
+        # span — possible after the user repairs the marker rows — raises a
+        # fresh issue instead of staying swallowed by an old dismissal.
+        gave_up_date = spans[-1]["gave_up_at"][:10]
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            f"solar_stall_gave_up_{self.config_entry.entry_id}"
+            f"_{start.isoformat()}_{gave_up_date}",
+            is_fixable=False,
+            is_persistent=True,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="solar_stall_gave_up",
+            translation_placeholders={
+                "start": start.isoformat(),
+                "end": end.isoformat(),
+                "cycles": str(cycles),
+                "entry": self.config_entry.title,
+            },
+            learn_more_url=ISSUE_LEARN_MORE_URL,
+        )
 
     async def _fetch_day_consumption(
         self, day: date, previous: bool
