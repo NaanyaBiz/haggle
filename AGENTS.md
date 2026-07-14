@@ -39,6 +39,9 @@ docker run --rm \
   --integration-path /github/workspace/custom_components/haggle
 ```
 
+Test strategy (what layer of testing a change needs, coverage floor,
+when live-HA manual testing is required): [docs/testing.md](docs/testing.md).
+
 ---
 
 ## Repo Map
@@ -64,12 +67,13 @@ custom_components/haggle/
 tests/
 ├── conftest.py                      # _auto_enable_custom_integrations fixture
 ├── fixtures/
+│   ├── PROVENANCE.md                 # fixture provenance + the solar capture consent note
 │   ├── hourly_response.json         # 30-min interval data (Current/Hourly)
 │   ├── overview_response.json       # /v3/overview with accounts + contracts
 │   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates (flat rate)
 │   ├── tou_plan_response.json       # Time-of-Use plan — per-band gstInclusiveRates
 │   ├── tou_hourly_response.json     # mixed peak/offpeak/shoulder/normal intervals
-│   ├── solar_hourly_response.json   # REAL full-day ElectricitySolar capture (2026-07-01, app-reconciled)
+│   ├── solar_hourly_response.json   # REAL full-day ElectricitySolar capture (2026-07-01, app-reconciled) — provenance + consent: fixtures/PROVENANCE.md
 │   ├── solar_plan_response.json     # solar plan — feed-in rate in gstExclusiveRates
 │   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
 │   └── bill_period_response.json    # usage summary
@@ -83,12 +87,14 @@ tests/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition classes
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 └── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
 
 docs/
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
 ├── releasing.md         # release acceptance policy — beta-soak rule, hotfix evidence rule, downgrade test, acceptance record
+├── testing.md           # test strategy — four layers, coverage floor, when live-HA manual testing is required
 ├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
 ├── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
 └── agents/
@@ -115,6 +121,7 @@ scripts/
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
 │   ├── release.yml      # tag-triggered Release (first-party gh CLI): tag-on-main + tag-signature gates, HACS-installed attested zip (zip_release), SBOM attestations, check-run snapshot
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
+│   ├── compat.yml       # weekly non-blocking suite vs latest phcc/HA (incl. beta) — early upstream-breakage warning
 │   ├── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
 │   ├── fuzz.yml         # weekly deep run + unconditional 120s PR smoke; corpus cached across runs; crash artifacts uploaded
 │   └── settings-drift.yml # weekly: re-export rulesets + public repo settings, diff vs .github/settings/, issue on drift
@@ -226,6 +233,11 @@ invisible to anyone who doesn't already know to look.
 **PRs close issues explicitly.** Use `Closes #N` in the PR body so
 GitHub auto-closes on merge. If a PR partially addresses an issue,
 comment on the issue rather than closing it.
+
+Non-trivial feature issues state acceptance criteria up front (the
+feature template has an optional field; if it is left empty the
+maintainer states them on the issue before implementation); the closing
+PR's test plan references them.
 
 When mid-sprint code-review or audit work surfaces a tail of items,
 spawn issues for each one and label-and-prioritise them rather than

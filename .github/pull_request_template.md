@@ -18,3 +18,10 @@
 - [ ] This PR was generated or co-authored by Claude (Anthropic).
       All commits carry `Co-Authored-By: Claude <noreply@anthropic.com>`.
 - [ ] The human maintainer has reviewed and understands every change.
+
+<!--
+Checklist discipline: before merge, every box above must be either ticked
+or deleted with a one-line reason inline. The "human maintainer has
+reviewed" box is this repo's core provenance claim — a PR must not merge
+with it unchecked.
+-->
