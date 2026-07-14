@@ -70,6 +70,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated `[NEVER RELEASED]` — it was never tagged; its changes shipped
   in v0.4.0-beta.1.
 
+### Security
+
+- **Continuity & succession plan** (`SECURITY.md`): documents that project
+  ownership (GitHub account/repository and the release-signing key) passes to
+  the maintainer's next of kin per the maintainer's will, with the credentials
+  needed to operate the accounts retained so the estate can recover access.
+  Amends risk-acceptance **RA-04** (bus factor 1) from bare acceptance to an
+  accepted-with-plan posture, with the estate-administration latency recorded
+  as the residual.
+
 ## [0.4.0-beta.6] — 2026-07-14
 
 ### Security

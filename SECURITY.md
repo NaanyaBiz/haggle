@@ -500,6 +500,38 @@ webhook endpoints require admin scope, and parking an admin PAT in Actions
 would break the zero-standing-secrets invariant the review exists to
 protect.
 
+## Continuity and succession
+
+`haggle` has a bus factor of 1 (RA-04) and does not pretend otherwise. It does
+have a documented plan for what happens to the project if the maintainer dies or
+becomes unable to continue — so the outcome is "control transfers", not "the
+project is orphaned".
+
+**Ownership passes with the estate.** The maintainer's will directs that the
+project's assets — the GitHub account and the `NaanyaBiz/haggle` repository, the
+project name, and the release-signing key (the ed25519 key registered in
+`.github/allowed_signers`) — pass to the maintainer's next of kin as part of the
+estate. The beneficiary is free to continue maintaining the project, hand it to
+a new maintainer or organisation, or archive it.
+
+**Access is recoverable, not merely inheritable.** Legal ownership only helps if
+the successor can actually operate the accounts, so the credentials needed to do
+so — GitHub account recovery and a backup of the release-signing key — are
+retained where the maintainer's executor can reach them under the will, rather
+than existing only in the maintainer's memory or on a single device. GitHub's
+published process for deceased or incapacitated account holders is the fallback
+for transferring the repository if direct account access cannot be recovered.
+
+**Honest bounds.** This is best-effort continuity, not a hot standby: recovery
+runs on estate-administration timelines, not minutes, and there is no second
+active maintainer today (the SHOULD-level bus-factor gap the project openly
+accepts). Throughout any gap the Apache-2.0 licence lets the community fork and
+continue independently at any time. The plan removes the "nobody can ever get
+in" failure mode; it does not turn a single-maintainer project into a team.
+
+This plan is reviewed with RA-04 — annually, or when a second maintainer joins,
+at which point most of it is superseded by simply having two people with access.
+
 ## Risk-Acceptance Register
 
 Standing, dated entries. The same person authors, triages, and accepts
@@ -517,7 +549,7 @@ its own rows.
 | RA-01 | Single-party governance: no second-line review, no independent exception acceptance, no governance recipient distinct from the author. | External automated assurance (weekly Scorecard, CodeQL, OpenSSF Best Practices), public register, public repo. | Accepted — @naanyabiz, 2026-07-13 | Annually / on second maintainer |
 | RA-02 | No independent human code review; author = approver = deployer for every change and release (Scorecard Code-Review 0, Contributors 0, Branch-Protection capped at 3). | Zero-bypass ruleset + eight required checks; cross-vendor AI review (Codex) on substantive PRs; attested releases; pull-based distribution. | Accepted — @naanyabiz, 2026-07-13 | Annually / on second maintainer |
 | RA-03 | No independent security testing (human pen test / second-party red team), before first release or since. | Pre-release AI assessment pack (2026-05); continuous CodeQL + fuzzing + Scorecard; cross-vendor AI review as partial independence. | Accepted — @naanyabiz, 2026-07-13 | Annually |
-| RA-04 | Bus factor 1: if the maintainer disappears, triage/releases/security response stop until someone forks. | Public Apache-2.0 licence; AGENTS.md as succession document; enforced documentation checklist; attested releases. | Accepted — @naanyabiz, 2026-07-13 | Annually |
+| RA-04 | Bus factor 1: if the maintainer dies or steps away, triage/releases/security response pause until control transfers to the estate (see § Continuity and succession) or the project is forked. | Documented continuity & succession plan (estate-based ownership transfer + recoverable account/signing-key credentials, § Continuity and succession); public Apache-2.0 licence permitting independent fork; AGENTS.md as succession document; enforced documentation checklist; attested releases. Residual: recovery runs on estate-administration timelines, not minutes — no hot standby. | Accepted — @naanyabiz, 2026-07-15 (continuity plan added) | Annually |
 | RA-05 | User's refresh token is plaintext at rest on the HA host (platform ceiling — HA has no vault API for integrations; HAOS does not encrypt the data partition). | 15-min memory-only access token; rotate-on-every-use refresh token; hash-only `unique_id`; host-FDE guidance. | Accepted — @naanyabiz, 2026-07-13 | On HA platform change |
 | RA-06 | Shared AGL iOS `client_id`: single systemic availability dependency; AGL revocation stops every install at once; identity hot-update declined (would require phone-home). | Failures route to reauth (no retry storms); 30-min failure retry; recovery = coordinated re-release via HACS. | Accepted — @naanyabiz, 2026-07-13 | Annually / on AGL contact |
 | RA-07 | No telemetry into deployed instances: vulnerable installs cannot be enumerated, fleet health cannot be observed, time-to-restore cannot be measured, rollback cannot be automated. Deliberate privacy stance — phone-home from an energy integration would be worse than the risk it measures. | HACS update surfacing; GHSA publication; user-volunteered anonymised diagnostics. | Accepted — @naanyabiz, 2026-07-13 | Annually |
