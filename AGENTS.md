@@ -42,6 +42,14 @@ docker run --rm \
 Test strategy (what layer of testing a change needs, coverage floor,
 when live-HA manual testing is required): [docs/testing.md](docs/testing.md).
 
+Control expectations: this repository operates under the committed
+[secure-SDLC standard](docs/compliance/secure-sdlc-standard.md); every
+`CO-x.y` reference in this tree resolves there. The statement-level
+[conformance map](docs/compliance/conformance.md) records how each control
+is met (or the recorded exception) — a PR that changes a control surface
+(workflow, ruleset baseline, agent grant, release gate, security doc)
+updates the affected conformance rows in the same PR.
+
 ---
 
 ## Repo Map
@@ -92,6 +100,9 @@ tests/
 └── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
 
 docs/
+├── compliance/
+│   ├── secure-sdlc-standard.md  # the standard this repo operates under — 19 COs / 94 statements, industry-agnostic (v1.0)
+│   └── conformance.md           # statement-level conformance map: mechanism per statement + RA-xx exceptions — update rows in the SAME PR as any control-surface change
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
 ├── delivery-metrics.md  # quarterly delivery-metrics process + recorded time-to-restore exception (CO-18.3)
 ├── releasing.md         # release acceptance policy — beta-soak rule, hotfix evidence rule, downgrade test, acceptance record
@@ -777,13 +788,13 @@ The HA Energy dashboard requires:
   output.
 - **Don't lower `--cov-fail-under` in ci.yml to make a PR pass, and don't
   raise `max-complexity` to absorb a new C901 offender.** Both floors are
-  deliberate ratchet gates (SDLC review CO-17.2): coverage ratchets UP as the
+  deliberate ratchet gates (secure-SDLC standard CO-17.2): coverage ratchets UP as the
   total rises; a new over-complexity function gets decomposed, not legalized.
   The single sanctioned exemption is `coordinator._fetch_range` (noqa'd with
   rationale + debt issue).
 - **Don't change GitHub repo settings, rulesets, or Actions policy without a
   PR updating `.github/settings/` first.** The control plane is settings-as-code
-  (2026-07 SDLC review): PR the intended state into `.github/settings/`, merge,
+  (secure-SDLC standard CO-9): PR the intended state into `.github/settings/`, merge,
   apply the change, then run `./scripts/export-settings.sh` and confirm the
   working tree stays clean. The weekly `settings-drift` workflow files an issue
   on any divergence. Break-glass changes are allowed but must be reconciled

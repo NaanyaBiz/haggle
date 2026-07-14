@@ -56,3 +56,10 @@ config/
 !.env.example
 security/
 .venv
+
+# Proprietary conformance-review material (workstation-only — the public
+# record is docs/compliance/secure-sdlc-standard.md + conformance.md)
+docs/compliance/sdlc-standard-review-*.md
+docs/compliance/sdlc-review-*-workpapers/
+docs/compliance/remediation-program-*.md
+docs/compliance/remediation-*-workpapers/

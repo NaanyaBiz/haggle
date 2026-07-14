@@ -7,7 +7,7 @@ name: Fuzz
 # unconditional (no paths: filter) so the check can be made required; a
 # path-filtered required check wedges non-matching PRs on an "expected"
 # status forever. Corpus persists across runs via actions/cache; crash
-# inputs upload as artifacts on failure. (#173; SDLC review CO-7.2)
+# inputs upload as artifacts on failure. (#173; secure-SDLC standard CO-7.2)
 
 on:
   schedule:

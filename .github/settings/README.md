@@ -2,7 +2,7 @@
 
 This directory is the **declared state** of the GitHub control plane for this
 repository — the one part of the delivery environment that is not already
-version-controlled code (2026-07 SDLC review, CO-9). A personal-account repo
+version-controlled code (secure-SDLC standard CO-9 — docs/compliance/secure-sdlc-standard.md). A personal-account repo
 has no audit log, so these baselines + the weekly drift check are the only
 reviewable record of settings changes.
 

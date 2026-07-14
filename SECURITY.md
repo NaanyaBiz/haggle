@@ -104,7 +104,7 @@ the current code — the platform's expectations move, not just ours.
 ## Threat Model Summary
 
 The full living threat model — trust boundaries (including the
-diagnostics→public-issue boundary), the 19-threat STRIDE register with
+diagnostics→public-issue boundary), the 18-threat STRIDE register with
 per-threat dispositions, the AI development agents, the regulatory-scope
 determination, and the resilience targets — is committed at
 [docs/threat-model.md](docs/threat-model.md). It originated as a
