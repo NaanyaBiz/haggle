@@ -7,39 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
-
-- **Solar give-up states now raise actionable HA Repairs issues** instead of
-  only logging (SDLC remediation WP7, CO-16.4): heal/repair exhaustion and
-  stall give-up each create a persistent Repairs issue in Settings, the heal
-  record distinguishes give-up from clean completion (`gave_up`/`attempts`),
-  and stall give-up spans are persisted and surfaced in diagnostics
-  (schema v2) — previously the zero-delta marker rows made these permanent
-  holes invisible behind healthy-looking coverage stats.
-
-### CI
-
-- **Settings-as-code + weekly drift detection** (SDLC remediation WP3,
-  CO-9.1/9.3/6.3): the repo control plane (rulesets, public repo settings,
-  admin-only settings snapshot) is committed under `.github/settings/`;
-  `settings-drift.yml` re-exports weekly with the unprivileged workflow token
-  and files an issue on divergence. Settings changes are PR-first from now on;
-  the 2026-07-13 WP1 hardening batch is the recorded bootstrap exception.
-- **Fuzzing on every PR** (SDLC remediation WP2, PR-B): the atheris smoke
-  (120 s) now runs unconditionally on every PR — no `paths:` filter — so it
-  can become a required check; the corpus persists across runs via
-  `actions/cache` (weekly 600 s runs deepen it) and crash inputs upload as
-  artifacts on failure.
-- **Merge-blocking security and quality gates** (SDLC remediation WP2, PR-A):
-  gitleaks full-history secret scan with repo-specific Auth0/AGL rules
-  (`.gitleaks.toml`) closing the `--no-verify` bypass; PR dependency-review
-  (vulnerabilities ≥ moderate + strong-copyleft licence denylist); coverage
-  floor `--cov-fail-under=89`; ruff C901 complexity gate at 12; shellcheck +
-  actionlint + zizmor (medium+) over scripts and workflows;
-  `persist-credentials: false` on every checkout.
-
 ### Security
 
+- **Agent governance docs** (SDLC remediation WP6): the haggle-triage
+  routine's authoritative spec is now committed at
+  `docs/agents/triage-routine.md` under repo-first change control (edits land
+  here, then sync to the platform — CO-12.8), with a manual injection-replay
+  corpus (`docs/agents/injection-corpus.md`) gating any prompt change;
+  AGENTS.md gains the AI-toolchain table and the human-approved
+  merge/tag boundary statement grounded in the committed permission policy.
 - **Living threat model committed + SECURITY.md overhauled** (SDLC
   remediation WP5): the STRIDE model now lives in-repo at
   `docs/threat-model.md` (redacted, current-state, 19 threats tracked to
@@ -74,6 +50,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with all 66 passing criteria answered and evidenced (100%); badge added
   to the README. Confirmed scored by the Scorecard `CII-Best-Practices`
   check ("badge detected: Passing", 0 → 5).
+
+### Fixed
+
+- **Solar give-up states now raise actionable HA Repairs issues** instead of
+  only logging (SDLC remediation WP7, CO-16.4): heal/repair exhaustion and
+  stall give-up each create a persistent Repairs issue in Settings, the heal
+  record distinguishes give-up from clean completion (`gave_up`/`attempts`),
+  and stall give-up spans are persisted and surfaced in diagnostics
+  (schema v2) — previously the zero-delta marker rows made these permanent
+  holes invisible behind healthy-looking coverage stats.
+
+### CI
+
+- **Settings-as-code + weekly drift detection** (SDLC remediation WP3,
+  CO-9.1/9.3/6.3): the repo control plane (rulesets, public repo settings,
+  admin-only settings snapshot) is committed under `.github/settings/`;
+  `settings-drift.yml` re-exports weekly with the unprivileged workflow token
+  and files an issue on divergence. Settings changes are PR-first from now on;
+  the 2026-07-13 WP1 hardening batch is the recorded bootstrap exception.
+- **Fuzzing on every PR** (SDLC remediation WP2, PR-B): the atheris smoke
+  (120 s) now runs unconditionally on every PR — no `paths:` filter — so it
+  can become a required check; the corpus persists across runs via
+  `actions/cache` (weekly 600 s runs deepen it) and crash inputs upload as
+  artifacts on failure.
+- **Merge-blocking security and quality gates** (SDLC remediation WP2, PR-A):
+  gitleaks full-history secret scan with repo-specific Auth0/AGL rules
+  (`.gitleaks.toml`) closing the `--no-verify` bypass; PR dependency-review
+  (vulnerabilities ≥ moderate + strong-copyleft licence denylist); coverage
+  floor `--cov-fail-under=89`; ruff C901 complexity gate at 12; shellcheck +
+  actionlint + zizmor (medium+) over scripts and workflows;
+  `persist-credentials: false` on every checkout.
 
 ### Changed
 

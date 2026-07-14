@@ -61,7 +61,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>"
 git push -u origin chore/release-$VERSION
 gh pr create --title "chore(release): v$VERSION" --body "Version bump for v$VERSION."
 gh pr checks --watch   # wait for green
-gh pr merge --squash
+gh pr merge --squash   # halts on the interactive permission prompt — the human approval IS the release gate
 ```
 
 ## Tag the squash-merge commit (signed)
