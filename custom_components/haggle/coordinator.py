@@ -337,13 +337,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # on a cycle that planned no sweep (e.g. solar writes frozen via
         # options, CO-10.3) — publishing totals from it would be a standing
         # undercount. A wrong number is worse than a blank one.
-        heal_pending = (self.config_entry.data.get(CONF_SOLAR_HEAL) or {}).get(
-            "state"
-        ) == SOLAR_HEAL_PENDING
-        publish_period = (heal_ctx is None and not heal_pending) or (
-            # the drain-and-publish shortcut (#152) applies only when a heal
-            # sweep actually ran this cycle — a frozen cycle's successful
-            # consumption fetch must not satisfy it
+        # Frozen solar writes (options, CO-10.3) suppress the period totals
+        # outright: with planning skipped, the heal DETECTOR never runs, so an
+        # unhealed leading hole may exist with no pending record to prove it —
+        # publishing would be a standing undercount. A wrong number is worse
+        # than a blank one. (This also covers the persisted-PENDING case.)
+        # When enabled, the gate is unchanged: no sweep in flight, or a
+        # completed-and-drained sweep (#152) — the shortcut stays scoped to
+        # cycles where a sweep actually ran.
+        publish_period = (heal_ctx is None and self._solar_writes_enabled()) or (
             heal_ctx is not None and fetch_complete and await self._recorder_drained()
         )
         if self._has_solar and publish_period:
