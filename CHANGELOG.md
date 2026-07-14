@@ -51,6 +51,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the README. Confirmed scored by the Scorecard `CII-Best-Practices`
   check ("badge detected: Passing", 0 → 5).
 
+### Added
+
+- **Removing the integration now best-effort revokes the AGL/Auth0
+  refresh-token grant server-side** (SDLC remediation WP7, CO-11.4) — the one
+  piece of user data this integration controls that would otherwise outlive
+  uninstall. Failures are swallowed (removal never blocks on network state);
+  the README documents the AGL-side fallback for offline removals.
+
 ### Fixed
 
 - **Solar give-up states now raise actionable HA Repairs issues** instead of

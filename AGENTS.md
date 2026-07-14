@@ -250,6 +250,10 @@ trying to fold everything into the current PR.
 - **client_id**: `2mDkNcC8gkDLL7FTT1ZxF5rrQHrLTHL3` (documented 2026-04-30)
 - **Required headers**: `Client-Flavor: app.iOS.public.8.38.0-531`
 - **Access token**: JWT (RS256), `exp` = **15 min** (`expires_in: 900` — confirmed 2026-05-01). Decode `exp`; refresh 2 min early.
+- **Revocation on removal**: `async_remove_entry` makes a best-effort
+  `POST /oauth/revoke` (public client — `client_id` + `token` JSON body, no
+  secret) so the grant does not outlive uninstall; with rotation enabled
+  Auth0 revokes the whole token family. All failures swallowed by design.
 - **CRITICAL — token rotation**: Auth0 **rotates** the refresh token on every
   exchange. The integration MUST persist the new refresh token via
   `_persist_refresh_token` callback after every exchange or it will lock
