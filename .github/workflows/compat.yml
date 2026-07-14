@@ -15,6 +15,14 @@ on:
     - cron: "17 5 * * 2"
   workflow_dispatch:
 
+# Serialize runs: a manual dispatch overlapping the scheduled run could
+# otherwise race the report job's list-then-create and file duplicate
+# ha-compat issues (Codex, #203). Queued, never cancelled — every run
+# still executes.
+concurrency:
+  group: compat
+  cancel-in-progress: false
+
 # Zero default perms; each job states exactly what it needs
 # (zizmor excessive-permissions gate rejects blanket read-all).
 permissions: {}
