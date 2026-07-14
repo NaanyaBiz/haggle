@@ -23,6 +23,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   plus the provenance record for the one real solar capture — contributed
   publicly by its account holder on #128 — and the three-part rule for any
   future real fixture).
+- **Weekly compat canary** (`.github/workflows/compat.yml`, CO-15.6): runs
+  the full suite against the latest `pytest-homeassistant-custom-component`
+  and `homeassistant` (including betas) every Tuesday — days-early warning
+  of upstream HA breakage. Non-blocking by construction (never a PR check);
+  failures open or refresh a single `ha-compat` issue.
 
 ## [0.4.0-beta.6] — 2026-07-14
 
