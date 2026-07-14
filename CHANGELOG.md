@@ -66,6 +66,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Regression tests now pin the composed per-cycle AGL request ceiling
+  (17 calls on a worst-case normal cycle, 40 on a lifetime-bounded heal
+  sweep) so refactors cannot silently inflate the polite-client budget;
+  the `_fetch_range` request-budget docstring corrected to match (SDLC
+  remediation WP7, CO-16.2).
+
 - **Solar give-up states now raise actionable HA Repairs issues** instead of
   only logging (SDLC remediation WP7, CO-16.4): heal/repair exhaustion and
   stall give-up each create a persistent Repairs issue in Settings, the heal

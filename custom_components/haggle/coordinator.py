@@ -1038,6 +1038,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         days — and vice versa. A day outside both ranges is skipped without a
         request. Worst case (fully disjoint chunks) is 7 + 7 requests, the same
         peak load as a steady-state solar cycle (7 days x 2 requests).
+        A heal sweep is the exception: its solar range spans the full
+        BACKFILL_DAYS window un-chunked (up to 30 + 7 requests in one cycle),
+        bounded per lifetime at 2x MAX_SOLAR_HEAL_ATTEMPTS sweeps. See
+        TestComposedRequestCeiling for the regression-guarded totals.
 
         Sleeps between requests so a chunk-of-7 first-install backfill doesn't
         hammer AGL's BFF in under a second. AGL rate limits are account-wide,

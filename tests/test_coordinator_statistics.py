@@ -2172,6 +2172,143 @@ class TestGenerationHeal:
         assert solar_range == (today - timedelta(days=REWINDOW_DAYS), yesterday)
 
 
+class TestComposedRequestCeiling:
+    """CO-16.2: the per-cycle AGL request budget as ONE composed number.
+
+    Each component (chunk clamp, per-range counts, pacing, halt-on-429) is
+    regression-tested individually; these tests pin the COMPOSED worst case so
+    a refactor that preserves components but breaks their composition cannot
+    silently inflate the budget. Ceiling formula (from _fetch_and_import):
+    3 fixed (summary+plan+overview) + <=BACKFILL_CHUNK_DAYS consumption +
+    <=BACKFILL_CHUNK_DAYS solar normally, or <=BACKFILL_DAYS on a
+    (lifetime-bounded) heal sweep. Auth0 token refreshes are outside the
+    mocked client and excluded.
+    """
+
+    @staticmethod
+    def _client() -> AsyncMock:
+        client = AsyncMock()
+        client.async_get_usage_summary.return_value = _empty_summary()
+        client.async_get_plan.return_value = _empty_plan()
+        client.async_get_overview.return_value = [_solar_contract()]
+        client.async_get_usage_hourly.return_value = []
+        client.async_get_usage_hourly_previous.return_value = []
+        client.async_get_solar_hourly.return_value = []
+        return client
+
+    @staticmethod
+    def _total(client: AsyncMock) -> int:
+        return (
+            client.async_get_usage_summary.call_count
+            + client.async_get_plan.call_count
+            + client.async_get_overview.call_count
+            + client.async_get_usage_hourly.call_count
+            + client.async_get_usage_hourly_previous.call_count
+            + client.async_get_solar_hourly.call_count
+        )
+
+    async def test_worst_case_disjoint_chunks_normal_cycle(
+        self, hass: HomeAssistant
+    ) -> None:
+        client = self._client()
+        coord = _make_coordinator(hass, client=client)
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)  # rewindow: 7 days
+            return (12.3, today - timedelta(days=20))  # disjoint 7-day chunk
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            await coord._fetch_and_import()
+
+        assert self._total(client) == 3 + 2 * BACKFILL_CHUNK_DAYS
+        # No unaccounted client traffic: a new client call site must be added
+        # to the ceiling deliberately, not slip in unnoticed.
+        assert len(client.method_calls) == self._total(client)
+
+    async def test_worst_case_heal_sweep_cycle(self, hass: HomeAssistant) -> None:
+        """A heal sweep is the true per-cycle maximum: full BACKFILL_DAYS
+        window, un-chunked, plus the consumption rewindow — bounded per
+        lifetime at 2x MAX_SOLAR_HEAL_ATTEMPTS sweeps."""
+        client = self._client()
+        coord = _make_coordinator(hass, client=client)
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        hass.config_entries.async_update_entry(
+            coord.config_entry,
+            data={
+                **coord.config_entry.data,
+                CONF_SOLAR_HEAL: {
+                    "state": SOLAR_HEAL_PENDING,
+                    "floor": floor.isoformat(),
+                    "attempts": 0,
+                },
+            },
+        )
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, today - timedelta(days=8))
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch.object(
+                coord,
+                "_recorder_drained",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            await coord._fetch_and_import()
+
+        assert self._total(client) == 3 + BACKFILL_CHUNK_DAYS + BACKFILL_DAYS
+        assert len(client.method_calls) == self._total(client)
+
+
 class TestGenerationHealState:
     """The persisted heal state machine (Codex P1/P2/P3 on #150).
 
