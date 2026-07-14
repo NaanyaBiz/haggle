@@ -44,6 +44,26 @@ If any check fails, report the failure and stop. Do not create a release from a 
 1. `custom_components/haggle/manifest.json` → `"version": "X.Y.Z"`
 2. (hacs.json does NOT contain a version field — skip)
 3. `CHANGELOG.md` → move `## [Unreleased]` items to `## [X.Y.Z] - YYYY-MM-DD`
+4. `CHANGELOG.md` → add the escaped-defect count line directly under the
+   new `## [X.Y.Z] — YYYY-MM-DD` heading (before the first `###`
+   subsection). Count `escaped`-labelled issues closed since the previous
+   release was published:
+
+   ```bash
+   PREV_DATE=$(gh release list --limit 1 --json publishedAt --jq '.[0].publishedAt')
+   gh issue list --state closed --label escaped --limit 200 \
+     --json number,closedAt,labels \
+     --jq "[.[] | select(.closedAt > \"$PREV_DATE\") | {n: .number, high: ([.labels[].name] | index(\"sev:high\") != null)}]"
+   ```
+
+   Write the line even when the count is zero (the zero is the evidence):
+
+   `**Escaped defects closed this release:** 2 (1 sev:high) — #126, #147.`
+   `**Escaped defects closed this release:** 0.`
+
+   release.yml copies the whole section into the GitHub Release notes, so
+   this line ships in the release notes automatically — do not edit
+   release.yml.
 
 ## Bump via PR (the ruleset blocks direct commits to main)
 
@@ -63,6 +83,27 @@ gh pr create --title "chore(release): v$VERSION" --body "Version bump for v$VERS
 gh pr checks --watch   # wait for green
 gh pr merge --squash   # halts on the interactive permission prompt — the human approval IS the release gate
 ```
+
+For **stable** releases the PR body MUST carry the acceptance record
+(values supplied by the /release command; never invented — prereleases
+keep the plain one-line body above):
+
+    gh pr create --title "chore(release): v$VERSION" --body "$(cat <<'EOF'
+    Version bump for v$VERSION.
+
+    ## Acceptance evidence
+    - Beta soak: v$VERSION-beta.N published <date> → <N> days on the
+      maintainer's live HA, zero regressions
+      (or: HOTFIX — validation: <evidence supplied by Dave>)
+    - App reconciliation: <date> — dashboard <X.XX> kWh vs app <X.XX> kWh
+    - Beta blockers: 0 open (`beta-blocker` label)
+    - Downgrade test: v$VERSION → v<prev stable> redownload — entry loads,
+      no double-count, re-upgrade clean
+    EOF
+    )"
+
+Also copy the soak/hotfix line into the CHANGELOG `## [X.Y.Z]` promote
+entry.
 
 ## Tag the squash-merge commit (signed)
 
