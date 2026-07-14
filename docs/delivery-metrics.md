@@ -19,7 +19,10 @@ limitations).
   tags vs GitHub releases must agree. A version that never shipped must
   say so on its heading line (`[NEVER RELEASED]`, `[YANKED]`, or
   "not yet formally released") — see `[0.3.2]` for the canonical example
-  of why this check exists.
+  of why this check exists. Markers are cross-checked, not trusted: a
+  never-released marker with an existing tag, or a yanked marker whose
+  preserved tag is missing or whose GitHub release still exists, is
+  flagged as a contradiction.
 
 ## Accepted limitations (recorded exception, CO-18.3)
 
@@ -39,4 +42,4 @@ there is nothing to trend across.
 
 | Date | Releases | Change-failure (stable) | Change-failure (all) | Median bug→fix latency | Reconciliation |
 |---|---|---|---|---|---|
-| 2026-07-14 (baseline) | 16 | 1/6 | 7/15 | 1.5 d | `[0.3.2]` phantom found → annotated `[NEVER RELEASED]` |
+| 2026-07-14 (baseline) | 16 | 1/6 | 8/15 | 1.5 d | `[0.3.2]` phantom found → annotated `[NEVER RELEASED]` |

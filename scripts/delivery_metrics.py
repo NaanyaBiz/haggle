@@ -5,9 +5,10 @@ Three one-screen outputs:
 
 1. Release-record reconciliation — CHANGELOG version headings vs git tags
    vs GitHub releases, so phantom versions (e.g. the never-tagged 0.3.2)
-   are caught instead of silently accumulating. A heading is an
-   *acknowledged* non-release if its heading line carries a marker
-   ("NEVER RELEASED", "YANKED", "not yet formally released").
+   are caught instead of silently accumulating. A heading marker
+   ("NEVER RELEASED", "YANKED", "not yet formally released") acknowledges
+   a specific record state and suppresses only that condition; a marker
+   contradicting the actual tag/release records is itself flagged.
 2. Change-failure proxy — releases followed within 7 days by a corrective
    release (one whose CHANGELOG section has a "### Fixed" heading),
    reported over all releases and over stable (non-prerelease) releases.
@@ -25,7 +26,6 @@ Usage: python3 scripts/delivery_metrics.py   (needs an authenticated gh)
 
 from __future__ import annotations
 
-import itertools
 import json
 import re
 import statistics
@@ -37,9 +37,8 @@ from typing import Any
 CHANGELOG = Path(__file__).resolve().parent.parent / "CHANGELOG.md"
 CORRECTIVE_WINDOW = timedelta(days=7)
 HEADING = re.compile(r"^## \[(?P<ver>[^\]]+)\](?P<rest>[^\n]*)$", re.MULTILINE)
-ACKNOWLEDGED = re.compile(
-    r"NEVER RELEASED|YANKED|not yet formally released", re.IGNORECASE
-)
+NEVER_RELEASED = re.compile(r"NEVER RELEASED|not yet formally released", re.IGNORECASE)
+YANKED = re.compile(r"YANKED", re.IGNORECASE)
 
 
 def _run(*argv: str) -> str:
@@ -69,12 +68,35 @@ def reconcile(
     problems = []
     released = {r["tagName"] for r in releases}
     for ver, (rest, _body) in sections.items():
-        if ver == "Unreleased" or ACKNOWLEDGED.search(rest):
+        if ver == "Unreleased":
             continue
-        if f"v{ver}" not in tags:
-            problems.append(f"PHANTOM: CHANGELOG [{ver}] has no git tag v{ver}")
-        elif f"v{ver}" not in released:
-            problems.append(f"NO RELEASE: tag v{ver} has no GitHub release")
+        tag = f"v{ver}"
+        # Acknowledged markers suppress only the condition they acknowledge;
+        # a marker that contradicts the tag/release records is itself flagged.
+        if NEVER_RELEASED.search(rest):
+            if tag in tags:
+                problems.append(
+                    f"CONTRADICTION: [{ver}] marked never-released but tag {tag} exists"
+                )
+            if tag in released:
+                problems.append(
+                    f"CONTRADICTION: [{ver}] marked never-released but a GitHub release exists"
+                )
+            continue
+        if YANKED.search(rest):
+            if tag not in tags:
+                problems.append(
+                    f"CONTRADICTION: [{ver}] marked yanked but the preserved tag {tag} is missing"
+                )
+            if tag in released:
+                problems.append(
+                    f"CONTRADICTION: [{ver}] marked yanked but the GitHub release still exists"
+                )
+            continue
+        if tag not in tags:
+            problems.append(f"PHANTOM: CHANGELOG [{ver}] has no git tag {tag}")
+        elif tag not in released:
+            problems.append(f"NO RELEASE: tag {tag} has no GitHub release")
     problems.extend(
         f"UNDOCUMENTED: tag {tag} has no CHANGELOG heading"
         for tag in sorted(tags)
@@ -89,13 +111,21 @@ def change_failure(
     failed = []
     stable_failed = 0
     stable_total = sum(1 for r in releases[:-1] if not r["isPrerelease"])
-    for cur, nxt in itertools.pairwise(releases):
-        gap = _dt(nxt["publishedAt"]) - _dt(cur["publishedAt"])
-        _rest, body = sections.get(nxt["tagName"].removeprefix("v"), ("", ""))
-        if gap <= CORRECTIVE_WINDOW and "### Fixed" in body:
-            failed.append(f"{cur['tagName']} -> {nxt['tagName']} ({gap.days}d)")
-            if not cur["isPrerelease"]:
-                stable_failed += 1
+    # Scan every later release inside the window (not just the immediate
+    # successor — a non-corrective release in between must not shield the
+    # earlier one); each release counts as failed at most once.
+    for i, cur in enumerate(releases[:-1]):
+        cur_dt = _dt(cur["publishedAt"])
+        for nxt in releases[i + 1 :]:
+            gap = _dt(nxt["publishedAt"]) - cur_dt
+            if gap > CORRECTIVE_WINDOW:
+                break
+            _rest, body = sections.get(nxt["tagName"].removeprefix("v"), ("", ""))
+            if "### Fixed" in body:
+                failed.append(f"{cur['tagName']} -> {nxt['tagName']} ({gap.days}d)")
+                if not cur["isPrerelease"]:
+                    stable_failed += 1
+                break
     return failed, len(releases) - 1, stable_failed, stable_total
 
 
