@@ -65,6 +65,32 @@ security settings. Your imported `haggle:*` statistics are deliberately kept (th
 your own meter history); prune them via Developer Tools → Statistics if you want them
 gone.
 
+## Rollback / downgrade
+
+Any prior release (except yanked ones) can be reinstalled:
+**HACS → Haggle → ⋮ → Redownload → pick the version → restart HA.**
+
+- **Config entries are downgrade-safe.** Newer versions only *add* keys
+  to the stored entry (e.g. the solar-heal record, TLS-pin hashes);
+  older versions ignore keys they don't know, and the entry schema
+  version has never changed. No re-setup needed in either direction.
+- **Statistics survive.** Downgrading never requires touching the
+  recorder: imports are idempotent, so the older version simply
+  overwrites the trailing rewindow with its own (identical) sums. A
+  statistics wipe is only needed when the release notes for the version
+  you are *leaving* say it wrote corrupted sums — the procedure (delete
+  the `haggle:*` rows from `statistics` / `statistics_short_term`, let
+  the 30-day backfill rebuild) is in the CHANGELOG entries that need it.
+- **Solar caveat**: downgrading below v0.4.0 freezes the
+  `haggle:generation_*` series (history stays, no new rows). On
+  re-upgrade the gap backfills automatically.
+- **Outage tolerance**: AGL data lags 24–48 h anyway and every poll
+  re-fetches the trailing 7 days on top of a 30-day backfill floor —
+  an outage or rollback window of hours-to-days loses no data.
+
+Each stable release records a manual downgrade test to the previous
+stable in its release PR (see `docs/releasing.md`).
+
 ## Energy dashboard
 
 **Add the `haggle:…` statistics as your dashboard sources — never the

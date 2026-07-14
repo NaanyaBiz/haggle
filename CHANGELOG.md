@@ -35,6 +35,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   once-per-stable manual downgrade test, and the acceptance-evidence
   record every stable release PR must carry. New `beta-blocker` label
   gates promotion.
+- **Rollback / downgrade guide** (README, CO-15.6): any prior release can
+  be reinstalled via HACS Redownload — config entries are downgrade-safe
+  (newer versions only add keys; schema version has never changed),
+  statistics survive (idempotent imports; a wipe is only ever needed when
+  leaving a version whose release notes say it corrupted sums), and
+  downgrading below v0.4.0 merely freezes the solar series until
+  re-upgrade. Cross-linked from the Energy-dashboard troubleshooting doc.
 
 ## [0.4.0-beta.6] — 2026-07-14
 
