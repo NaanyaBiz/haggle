@@ -2742,6 +2742,50 @@ class TestGenerationHealState:
         # the pending record must be untouched — no phantom attempt burned
         assert coord.config_entry.data[CONF_SOLAR_HEAL]["attempts"] == 1
 
+    async def test_frozen_writes_suppress_totals_without_pending_record(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Freezing BEFORE a heal was ever armed leaves no pending record —
+        the heal detector never ran, so an unhealed leading hole may exist
+        undetected. Period totals stay suppressed on every frozen cycle."""
+        coord = _make_coordinator(
+            hass,
+            client=self._solar_client(),
+            options={OPT_SOLAR_STATISTICS_ENABLED: False},
+        )
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, yesterday)
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord, "_fetch_range", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(4.0, 1.0),
+            ) as mock_totals,
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+        ):
+            data = await coord._fetch_and_import()
+        mock_totals.assert_not_awaited()
+        assert data.generation_period_kwh is None
+        assert CONF_SOLAR_HEAL not in coord.config_entry.data
+
     async def test_option_default_keeps_solar_writes(self, hass: HomeAssistant) -> None:
         """Options absent -> solar planning runs (pins the default)."""
         coord = _make_coordinator(hass, client=self._solar_client())

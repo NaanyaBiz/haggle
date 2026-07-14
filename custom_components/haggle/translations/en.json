@@ -93,7 +93,7 @@
           "solar_statistics_enabled": "Write solar statistics (backfill and self-heal)"
         },
         "data_description": {
-          "solar_statistics_enabled": "Turn off to freeze all solar statistics writes (backfill, self-heal, give-up markers) without uninstalling or downgrading. Existing statistics are untouched; solar sensors stop updating and eventually show 'unknown'. Takes effect from the next poll. Consumption statistics are unaffected."
+          "solar_statistics_enabled": "Turn off to freeze all solar statistics writes (backfill, self-heal, give-up markers) without uninstalling or downgrading. Existing statistics are untouched; the bill-period solar sensors read 'unknown' while disabled and the cumulative sensors keep their last stored values. Takes effect from the next poll. Consumption statistics are unaffected."
         }
       }
     }
