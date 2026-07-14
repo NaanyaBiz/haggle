@@ -102,6 +102,12 @@ gh pr create \
   --body "<body>"
 ```
 
+> **Before merging (required)**: re-read the PR body on GitHub. Every
+> checklist box must be ticked or deleted-with-reason (`gh pr view
+> <number> --json body`). If the "human maintainer has reviewed and
+> understands every change" box is unchecked, STOP — ask Dave to review
+> and tick it; do not merge.
+
 > **Note — merging from a worktree**: `gh pr merge` will fail because
 > `main` is checked out in the primary worktree. Use the GitHub API
 > instead:

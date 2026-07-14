@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Agent-side release/merge gates** (`.claude/`): the `/pr` command now
+  refuses to merge with unchecked checklist boxes (the human-review
+  disclosure box in particular); `/release` pre-conditions enforce the
+  `docs/releasing.md` acceptance gate for stables (soak computation,
+  beta-blocker check, evidence collection); the release-manager agent
+  records the acceptance evidence in the release PR body and the
+  escaped-defect count line in the CHANGELOG section.
+
+### Added
+
 - **Recorder-backed sum-chain regression tests**
   (`tests/test_recorder_statistics.py`, CO-15.6): the three defect classes
   that previously escaped through the mocked recorder seam — the v0.3.0
