@@ -140,7 +140,7 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
 
 ## 4. Threat register and dispositions
 
-19 threats from the 2026-05-02 STRIDE assessment, tracked to disposition.
+18 threats from the 2026-05-02 STRIDE assessment, tracked to disposition.
 "Accepted" rows are standing risk acceptances recorded in SECURITY.md's
 risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 

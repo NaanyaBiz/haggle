@@ -29,7 +29,7 @@ operational spec those sections point at.
 The rule exists because the platform definition is editable outside every
 repo control (no PR, no review, no history). Committing the spec here
 puts the routine's actual behaviour — the prompt *is* the behaviour —
-under the same change control as code (SDLC review CO-12).
+under the same change control as code (secure-SDLC standard CO-12).
 
 ## Configuration
 

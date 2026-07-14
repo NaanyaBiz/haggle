@@ -16,8 +16,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   beta-blocker check, evidence collection); the release-manager agent
   records the acceptance evidence in the release PR body and the
   escaped-defect count line in the CHANGELOG section.
-
-### Added
+- **The secure-SDLC standard this repository operates under is now
+  committed** (`docs/compliance/secure-sdlc-standard.md` — 19 control
+  objectives / 94 statements, industry-agnostic v1.0) together with the
+  statement-level **conformance map**
+  (`docs/compliance/conformance.md`): mechanism-per-statement with
+  citations into the committed tree and the SECURITY.md risk-acceptance
+  register. Every `CO-x.y` reference in code comments, docs, and workflows
+  now resolves in-tree. The detailed conformance-review report and work
+  papers remain the maintainer's private material (now gitignored);
+  threat-register count corrected 19 → 18 in two docs (review finding).
 
 - **Recorder-backed sum-chain regression tests**
   (`tests/test_recorder_statistics.py`, CO-15.6): the three defect classes
