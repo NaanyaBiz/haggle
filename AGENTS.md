@@ -146,6 +146,7 @@ scripts/
 SECURITY.md              # disclosure path + threat-model summary
 CONTRIBUTING.md          # dev loop + commit conventions + PR checklist
 CODE_OF_CONDUCT.md       # Contributor Covenant 2.1
+ROADMAP.md               # ~12-month direction + explicit non-goals (single-retailer AGL, read-only, no telemetry)
 ```
 
 ---
@@ -642,6 +643,15 @@ The HA Energy dashboard requires:
   `_safe_float` helpers in `agl/parser.py` / `coordinator.py` so `inf`/`nan`/
   negative values can't reach `async_add_external_statistics` and corrupt the
   cumulative-sum series.
+- **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
+  unparenthesised form is intentional: it is `ruff format`'s canonical output
+  for this repo's Python 3.14 target (PEP 758, where `except A, B:` means
+  exactly `except (A, B):` and catches every listed type). Adding parentheses
+  is not idempotent — `ruff format` strips them straight back out and the
+  `ruff format --check` CI gate then fails. It is valid, correct 3.14 syntax,
+  and HA 2026.7 requires Python 3.14.2 so it always runs. (An audit once
+  compiled it under an older Python, saw a `SyntaxError`, and flagged it as a
+  repo-breaking bug — it is not one; do not act on that.)
 - **Don't forward raw AGL response dicts** via `dict(rate)` or similar
   open-schema passthrough. Allowlist exactly the fields the coordinator
   consumes, so a MITM-crafted response can't smuggle keys into runtime state.
