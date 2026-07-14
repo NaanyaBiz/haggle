@@ -114,6 +114,7 @@ scripts/
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
 │   ├── release.yml      # tag-triggered Release (first-party gh CLI): tag-on-main + tag-signature gates, HACS-installed attested zip (zip_release), SBOM attestations, check-run snapshot
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
+│   ├── compat.yml       # weekly non-blocking suite vs latest phcc/HA (incl. beta) — early upstream-breakage warning
 │   ├── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
 │   ├── fuzz.yml         # weekly deep run + unconditional 120s PR smoke; corpus cached across runs; crash artifacts uploaded
 │   └── settings-drift.yml # weekly: re-export rulesets + public repo settings, diff vs .github/settings/, issue on drift

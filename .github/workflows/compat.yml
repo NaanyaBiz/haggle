@@ -1,0 +1,85 @@
+name: Compat
+
+# Early-warning canary: run the full suite against the LATEST
+# pytest-homeassistant-custom-component and homeassistant (including
+# betas — phcc releases near-daily tracking HA dev). Deliberately
+# non-blocking: schedule + manual dispatch only, never a PR check.
+# A failure here means the NEXT HA release will likely break us,
+# not that main is broken. Failures open/refresh one ha-compat issue.
+
+on:
+  schedule:
+    # Weekly Tuesday 05:17 UTC — offset from CodeQL (Mon 03:17),
+    # Scorecard (Mon 04:22), Fuzz (Mon 05:42) and settings-drift
+    # (Tue 04:37) crons.
+    - cron: "17 5 * * 2"
+  workflow_dispatch:
+
+# Zero default perms; each job states exactly what it needs
+# (zizmor excessive-permissions gate rejects blanket read-all).
+permissions: {}
+
+jobs:
+  compat:
+    name: Suite vs latest phcc/HA
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          enable-cache: true
+
+      - name: Install locked dependencies
+        run: uv sync --extra dev
+
+      - name: Upgrade to latest harness + HA (incl. beta)
+        run: |
+          uv pip install --upgrade --prerelease=allow \
+            pytest-homeassistant-custom-component homeassistant
+          echo "Versions under test:"
+          uv pip list | grep -E '^(homeassistant|pytest-homeassistant)'
+
+      # --no-sync: uv run would otherwise re-sync the venv back to
+      # uv.lock and silently undo the upgrade above.
+      - name: Pytest vs latest
+        run: uv run --no-sync pytest --no-cov
+
+  report:
+    name: Open/refresh ha-compat issue
+    # gh CLI only — no actions at all in the one job holding a write scope
+    # (repo rule: third-party actions never share a job with write perms).
+    needs: compat
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: File or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          open_issue=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+            --label ha-compat --state open --json number --jq '.[0].number // empty')
+          if [ -n "$open_issue" ]; then
+            gh issue comment "$open_issue" --repo "$GITHUB_REPOSITORY" \
+              --body "Weekly compat run failed again: $RUN_URL"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Weekly compat run vs latest phcc/HA failed" \
+              --label ha-compat \
+              --body "The suite fails against the latest pytest-homeassistant-custom-component / homeassistant (incl. beta). Upstream HA change likely to break the next release window. Run: $RUN_URL — versions under test are printed in the 'Upgrade to latest harness' step."
+          fi
