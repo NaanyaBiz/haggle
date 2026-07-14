@@ -72,13 +72,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **Continuity & succession plan** (`SECURITY.md`): documents that project
-  ownership (GitHub account/repository and the release-signing key) passes to
-  the maintainer's next of kin per the maintainer's will, with the credentials
-  needed to operate the accounts retained so the estate can recover access.
-  Amends risk-acceptance **RA-04** (bus factor 1) from bare acceptance to an
-  accepted-with-plan posture, with the estate-administration latency recorded
-  as the residual.
+- **Continuity & succession plan** (`SECURITY.md`): documents that, on the
+  maintainer's death or permanent departure, project ownership (the GitHub
+  account/repository and the release-signing key) passes to next of kin per the
+  maintainer's will, with the account recovery codes + signing-key backup
+  retained so the executor can operate the account directly (GitHub's
+  deceased-user process, which transfers the repository but not account login,
+  is the fallback). Amends risk-acceptance **RA-04** (bus factor 1) to an
+  accepted-with-plan posture; living incapacity/unreachability and
+  estate-administration latency are recorded as the residual.
 
 ## [0.4.0-beta.6] — 2026-07-14
 
