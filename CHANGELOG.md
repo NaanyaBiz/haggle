@@ -51,7 +51,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to the README. Confirmed scored by the Scorecard `CII-Best-Practices`
   check ("badge detected: Passing", 0 → 5).
 
+### Added
+
+- **New Configure option to freeze solar statistics writes** (SDLC remediation
+  WP7, CO-10.3): backfill, self-heal, and give-up markers can be switched off
+  without uninstalling or downgrading — a deployment-vs-exposure control for
+  the integration's one semi-irreversible effect. Existing statistics are
+  untouched; takes effect from the next poll; consumption is unaffected.
+- **Removing the integration now best-effort revokes the AGL/Auth0
+  refresh-token grant server-side** (SDLC remediation WP7, CO-11.4) — the one
+  piece of user data this integration controls that would otherwise outlive
+  uninstall. Failures are swallowed (removal never blocks on network state);
+  the README documents the AGL-side fallback for offline removals.
+
 ### Fixed
+
+- Regression tests now pin the composed per-cycle AGL request ceiling
+  (17 calls on a worst-case normal cycle, 40 on a lifetime-bounded heal
+  sweep) so refactors cannot silently inflate the polite-client budget;
+  the `_fetch_range` request-budget docstring corrected to match (SDLC
+  remediation WP7, CO-16.2).
 
 - **Solar give-up states now raise actionable HA Repairs issues** instead of
   only logging (SDLC remediation WP7, CO-16.4): heal/repair exhaustion and

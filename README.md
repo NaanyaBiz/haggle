@@ -54,6 +54,17 @@ The integration will backfill 30 days of history on first run (throttled to
 7 days per daily poll), then poll once per day. AGL interval data lags
 24–48 h.
 
+## Removing
+
+Delete the Haggle entry from **Settings → Devices & Services**. On removal the
+integration makes a best-effort call to AGL's sign-in service (Auth0) to revoke its
+stored refresh token, so the grant does not outlive the install. If removal happens
+while offline — or you deleted the files without removing the entry, or restored a
+backup containing an old entry — revoke the session yourself in your AGL account's
+security settings. Your imported `haggle:*` statistics are deliberately kept (they are
+your own meter history); prune them via Developer Tools → Statistics if you want them
+gone.
+
 ## Energy dashboard
 
 **Add the `haggle:…` statistics as your dashboard sources — never the

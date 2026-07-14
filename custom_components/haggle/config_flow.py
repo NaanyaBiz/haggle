@@ -30,7 +30,13 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
 import voluptuous as vol
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
+from homeassistant.core import callback
 
 from .agl.client import AGLAuthError, AGLError
 from .agl.parser import parse_overview
@@ -58,6 +64,7 @@ from .const import (
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
     DOMAIN,
+    OPT_SOLAR_STATISTICS_ENABLED,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -216,6 +223,14 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     # ------------------------------------------------------------------
     # Step 1 -- show /authorize URL, collect callback URL
     # ------------------------------------------------------------------
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> HaggleOptionsFlow:
+        """Return the options flow handler."""
+        return HaggleOptionsFlow()
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -398,4 +413,35 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_PINNED_SPKI_AUTH: self._auth_spki,
                 CONF_PINNED_SPKI_BFF: self._bff_spki,
             },
+        )
+
+
+class HaggleOptionsFlow(OptionsFlow):
+    """Options: user off-switch for the solar statistics-writing subsystem.
+
+    CO-10.3: statistics writes are the one semi-irreversible effect this
+    integration has; this lets a user freeze the highest-blast-radius writer
+    (solar backfill / heal / give-up markers) without downgrading. Read live
+    by the coordinator — no reload listener (see OPT_SOLAR_STATISTICS_ENABLED
+    in const.py); applies from the next poll.
+    """
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Single-step options form."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        OPT_SOLAR_STATISTICS_ENABLED,
+                        default=self.config_entry.options.get(
+                            OPT_SOLAR_STATISTICS_ENABLED, True
+                        ),
+                    ): bool,
+                }
+            ),
         )

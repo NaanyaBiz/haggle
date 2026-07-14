@@ -176,6 +176,12 @@ MAX_SOLAR_HEAL_ATTEMPTS: Final = 3
 # only durable evidence. Surfaced as diagnostics `stall_give_up_spans` and as a
 # Repairs issue per span. Bounded list (oldest dropped) so entry.data stays small.
 CONF_SOLAR_STALL_SPANS: Final = "solar_stall_spans"
+
+# Options-flow keys (entry.options). Read LIVE by the coordinator each cycle —
+# deliberately no update listener / reload (the coordinator writes entry.data
+# mid-cycle for token rotation and heal state; a reload listener would bounce
+# the entry on every rotation). Takes effect from the next poll.
+OPT_SOLAR_STATISTICS_ENABLED: Final = "solar_statistics_enabled"
 MAX_STALL_SPAN_RECORDS: Final = 12
 # Learn-more target for the give-up Repairs issues.
 ISSUE_LEARN_MORE_URL: Final = (

@@ -53,6 +53,7 @@ from .const import (
     ISSUE_LEARN_MORE_URL,
     MAX_SOLAR_HEAL_ATTEMPTS,
     MAX_STALL_SPAN_RECORDS,
+    OPT_SOLAR_STATISTICS_ENABLED,
     RECORDER_DRAIN_TIMEOUT,
     RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
@@ -276,18 +277,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # bill-period totals below: reading it BEFORE the fetch guarantees the
         # rows behind the bill_start baseline were committed in an earlier
         # cycle, not queued in the recorder by this one.
-        last_gen_date: date | None = None
-        solar_range: tuple[date, date] | None = None
-        heal_ctx: tuple[date, int] | None = None
-        if self._has_solar:
-            stat_id_gen, stat_id_credit = self._generation_stat_ids()
-            last_gen_sum, last_gen_date = await self._get_last_stat(stat_id_gen)
-            last_credit_sum, _ = await self._get_last_stat(stat_id_credit)
-            self._latest_generation_kwh = last_gen_sum or 0.0
-            self._latest_generation_credit = last_credit_sum or 0.0
-            solar_range, heal_ctx = await self._plan_solar_fetch(
-                stat_id_gen, last_gen_date, today, yesterday
-            )
+        solar_range, heal_ctx, last_gen_date = await self._prepare_solar_cycle(
+            today, yesterday
+        )
 
         # Mark which ToU bands already have stored statistics so the per-tariff
         # series are emitted only for a contract that has been seen using ToU
@@ -341,8 +333,18 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # (`unknown`); a wrong number is worse than a blank one here.
         generation_period_kwh: float | None = None
         generation_period_credit: float | None = None
-        publish_period = heal_ctx is None or (
-            fetch_complete and await self._recorder_drained()
+        # A persisted PENDING heal proves the stored chain is incomplete even
+        # on a cycle that planned no sweep (e.g. solar writes frozen via
+        # options, CO-10.3) — publishing totals from it would be a standing
+        # undercount. A wrong number is worse than a blank one.
+        heal_pending = (self.config_entry.data.get(CONF_SOLAR_HEAL) or {}).get(
+            "state"
+        ) == SOLAR_HEAL_PENDING
+        publish_period = (heal_ctx is None and not heal_pending) or (
+            # the drain-and-publish shortcut (#152) applies only when a heal
+            # sweep actually ran this cycle — a frozen cycle's successful
+            # consumption fetch must not satisfy it
+            heal_ctx is not None and fetch_complete and await self._recorder_drained()
         )
         if self._has_solar and publish_period:
             (
@@ -582,6 +584,38 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         for stat_id in stat_ids:
             out.setdefault(stat_id, 0.0)
         return out
+
+    async def _prepare_solar_cycle(
+        self, today: date, yesterday: date
+    ) -> tuple[tuple[date, date] | None, tuple[date, int] | None, date | None]:
+        """Read generation resume state and plan this cycle's solar fetch.
+
+        Returns (solar_range, heal_ctx, last_gen_date); all None on
+        non-solar contracts. When the user has disabled solar statistics
+        writes via options (CO-10.3), the stored sums are still read (the
+        cumulative sensors keep their values) but no fetch/heal is planned.
+        """
+        if not self._has_solar:
+            return None, None, None
+        stat_id_gen, stat_id_credit = self._generation_stat_ids()
+        last_gen_sum, last_gen_date = await self._get_last_stat(stat_id_gen)
+        last_credit_sum, _ = await self._get_last_stat(stat_id_credit)
+        self._latest_generation_kwh = last_gen_sum or 0.0
+        self._latest_generation_credit = last_credit_sum or 0.0
+        if not self._solar_writes_enabled():
+            _LOGGER.debug(
+                "Solar statistics writes disabled via options; skipping "
+                "solar fetch/heal this cycle"
+            )
+            return None, None, last_gen_date
+        solar_range, heal_ctx = await self._plan_solar_fetch(
+            stat_id_gen, last_gen_date, today, yesterday
+        )
+        return solar_range, heal_ctx, last_gen_date
+
+    def _solar_writes_enabled(self) -> bool:
+        """User off-switch (options flow) for solar statistics writes (CO-10.3)."""
+        return bool(self.config_entry.options.get(OPT_SOLAR_STATISTICS_ENABLED, True))
 
     async def _plan_solar_fetch(
         self,
@@ -1014,6 +1048,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         days — and vice versa. A day outside both ranges is skipped without a
         request. Worst case (fully disjoint chunks) is 7 + 7 requests, the same
         peak load as a steady-state solar cycle (7 days x 2 requests).
+        A heal sweep is the exception: its solar range spans the FROZEN
+        floor..yesterday window un-chunked — 30 + 7 requests when the pending
+        record is fresh, more if it aged while HA was offline (the floor
+        deliberately never slides) — bounded per lifetime at
+        2x MAX_SOLAR_HEAL_ATTEMPTS sweeps. See TestComposedRequestCeiling
+        for the regression-guarded totals.
 
         Sleeps between requests so a chunk-of-7 first-install backfill doesn't
         hammer AGL's BFF in under a second. AGL rate limits are account-wide,

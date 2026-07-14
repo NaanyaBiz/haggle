@@ -48,7 +48,7 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract; options flow (solar statistics-writes toggle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
@@ -250,6 +250,10 @@ trying to fold everything into the current PR.
 - **client_id**: `2mDkNcC8gkDLL7FTT1ZxF5rrQHrLTHL3` (documented 2026-04-30)
 - **Required headers**: `Client-Flavor: app.iOS.public.8.38.0-531`
 - **Access token**: JWT (RS256), `exp` = **15 min** (`expires_in: 900` — confirmed 2026-05-01). Decode `exp`; refresh 2 min early.
+- **Revocation on removal**: `async_remove_entry` makes a best-effort
+  `POST /oauth/revoke` (public client — `client_id` + `token` JSON body, no
+  secret) so the grant does not outlive uninstall; with rotation enabled
+  Auth0 revokes the whole token family. All failures swallowed by design.
 - **CRITICAL — token rotation**: Auth0 **rotates** the refresh token on every
   exchange. The integration MUST persist the new refresh token via
   `_persist_refresh_token` callback after every exchange or it will lock
@@ -753,6 +757,11 @@ The HA Energy dashboard requires:
   security toggles, Actions policy + selected-actions allowlist) are
   snapshot-only — refresh `repo-admin-snapshot.json` in the same PR whenever
   they change.
+- **Don't add an options `update_listener`/reload-on-options to this
+  integration.** The coordinator writes entry.data mid-cycle (token rotation,
+  heal record, stall spans) and a reload listener would bounce the entry on
+  every rotation. Options are read LIVE each cycle
+  (`OPT_SOLAR_STATISTICS_ENABLED` in const.py documents the pattern).
 - **Don't exact-pin `pytest-homeassistant-custom-component` to a single
   patch.** Upstream releases near-daily, so an exact pin manufactures a
   guaranteed weekly Dependabot PR and has caused resolver deadlocks

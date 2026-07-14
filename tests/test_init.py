@@ -252,7 +252,9 @@ async def test_pin_check_with_no_pin_stays_silent(hass: HomeAssistant) -> None:
         mock_notify.assert_not_called()
 
 
-async def test_async_remove_entry_clears_orphan_entities(hass: HomeAssistant) -> None:
+async def test_async_remove_entry_clears_orphan_entities(
+    hass: HomeAssistant, aioclient_mock
+) -> None:
     """Removing the integration must purge entity-registry rows for the entry.
 
     Without this, reinstalling the integration finds a colliding entity_id
@@ -262,6 +264,9 @@ async def test_async_remove_entry_clears_orphan_entities(hass: HomeAssistant) ->
     from homeassistant.helpers import entity_registry as er
 
     from custom_components.haggle import async_remove_entry
+    from custom_components.haggle.const import AGL_AUTH_HOST
+
+    aioclient_mock.post(f"{AGL_AUTH_HOST}/oauth/revoke", status=200)
 
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -324,3 +329,65 @@ def test_device_info_does_not_claim_agl_authorship() -> None:
     # Soft-line: the disclaimer must be visible somewhere in the device card.
     assert manufacturer == "Haggle"
     assert "unofficial" in model.lower()
+
+
+async def test_remove_entry_revokes_grant(hass: HomeAssistant, aioclient_mock) -> None:
+    """Removal POSTs a best-effort /oauth/revoke with client_id + token (CO-11.4)."""
+    from custom_components.haggle import async_remove_entry
+    from custom_components.haggle.const import AGL_AUTH_HOST, AGL_CLIENT_ID
+
+    aioclient_mock.post(f"{AGL_AUTH_HOST}/oauth/revoke", status=200)
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=_ENTRY_DATA, unique_id="1234567890_9999999999"
+    )
+    entry.add_to_hass(hass)
+    await async_remove_entry(hass, entry)
+    assert aioclient_mock.call_count == 1
+    assert aioclient_mock.mock_calls[0][2] == {
+        "client_id": AGL_CLIENT_ID,
+        "token": _ENTRY_DATA[CONF_REFRESH_TOKEN],
+    }
+
+
+async def test_remove_entry_revoke_failure_swallowed(
+    hass: HomeAssistant, aioclient_mock, caplog
+) -> None:
+    """A dead endpoint must not block removal or leak the token into logs."""
+    import aiohttp
+    from homeassistant.helpers import entity_registry as er
+
+    from custom_components.haggle import async_remove_entry
+    from custom_components.haggle.const import AGL_AUTH_HOST
+
+    aioclient_mock.post(
+        f"{AGL_AUTH_HOST}/oauth/revoke", exc=aiohttp.ClientError("boom")
+    )
+    entry = MockConfigEntry(
+        domain=DOMAIN, data=_ENTRY_DATA, unique_id="1234567890_9999999999"
+    )
+    entry.add_to_hass(hass)
+    registry = er.async_get(hass)
+    registry.async_get_or_create(
+        domain="sensor",
+        platform=DOMAIN,
+        unique_id=f"{entry.entry_id}_consumption_period_kwh",
+        config_entry=entry,
+    )
+
+    await async_remove_entry(hass, entry)  # must not raise
+
+    assert er.async_entries_for_config_entry(registry, entry.entry_id) == []
+    assert _ENTRY_DATA[CONF_REFRESH_TOKEN] not in caplog.text
+
+
+async def test_remove_entry_no_token_no_call(
+    hass: HomeAssistant, aioclient_mock
+) -> None:
+    """An entry without a stored refresh token makes no network call."""
+    from custom_components.haggle import async_remove_entry
+
+    data = {k: v for k, v in _ENTRY_DATA.items() if k != CONF_REFRESH_TOKEN}
+    entry = MockConfigEntry(domain=DOMAIN, data=data, unique_id="no-token")
+    entry.add_to_hass(hass)
+    await async_remove_entry(hass, entry)
+    assert aioclient_mock.call_count == 0

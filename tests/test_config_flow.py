@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.haggle.agl.client import AGLAuthError, AGLError
 from custom_components.haggle.agl.models import Contract
@@ -286,3 +287,39 @@ async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) 
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "select_contract"
+
+
+async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:
+    """The options flow exposes and persists the solar-writes toggle (CO-10.3)."""
+    from custom_components.haggle.const import OPT_SOLAR_STATISTICS_ENABLED
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONTRACT_NUMBER: "9999999999", CONF_REFRESH_TOKEN: "v1.t"},
+        unique_id="opt-test",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {OPT_SOLAR_STATISTICS_ENABLED: False}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[OPT_SOLAR_STATISTICS_ENABLED] is False
+
+
+async def test_options_flow_defaults_to_enabled(hass: HomeAssistant) -> None:
+    """The toggle defaults to True — solar writes on unless the user opts out."""
+    from custom_components.haggle.const import OPT_SOLAR_STATISTICS_ENABLED
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONTRACT_NUMBER: "9999999999", CONF_REFRESH_TOKEN: "v1.t"},
+        unique_id="opt-default",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema = result["data_schema"].schema
+    key = next(k for k in schema if k.schema == OPT_SOLAR_STATISTICS_ENABLED)
+    assert key.default() is True
