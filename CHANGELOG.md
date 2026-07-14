@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Solar give-up states now raise actionable HA Repairs issues** instead of
+  only logging (SDLC remediation WP7, CO-16.4): heal/repair exhaustion and
+  stall give-up each create a persistent Repairs issue in Settings, the heal
+  record distinguishes give-up from clean completion (`gave_up`/`attempts`),
+  and stall give-up spans are persisted and surfaced in diagnostics
+  (schema v2) — previously the zero-delta marker rows made these permanent
+  holes invisible behind healthy-looking coverage stats.
+
 ### CI
 
 - **Settings-as-code + weekly drift detection** (SDLC remediation WP3,

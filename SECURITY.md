@@ -155,6 +155,11 @@ both the browser and the HA host simultaneously.
   use, so a stolen copy is invalidated at the integration's next exchange;
   the fallback `unique_id` is a one-way hash, never token material. If the
   token file worries you, enable full-disk encryption on the HA host.
+- Besides the refresh token, the config-entry data carries only
+  operational state: TLS pins (hashes), the solar heal record, and the
+  bounded `solar_stall_spans` give-up list — dates and counts only.
+  HA Repairs issues raised for give-up states key on the config entry's
+  random id, never on an account or contract identifier.
 - The short-lived access token (15-minute expiry) is **never** persisted.
 - The fallback `unique_id` (when contracts cannot be discovered at
   install time) is `sha256(refresh_token)[:16]`, not a token prefix.
