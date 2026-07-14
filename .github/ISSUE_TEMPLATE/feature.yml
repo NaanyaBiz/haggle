@@ -16,6 +16,18 @@ body:
     validations:
       required: true
 
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: >-
+        Testable pass/fail statements for "this feature is done" — e.g.
+        "sum of exported kWh matches the AGL app's Sold-to-Grid tile for
+        the same day". Optional: if left empty on a non-trivial request,
+        the maintainer states them on the issue before implementation.
+    validations:
+      required: false
+
   - type: checkboxes
     id: checklist
     attributes:
