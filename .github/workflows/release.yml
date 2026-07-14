@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      # Required for actions/attest-build-provenance to mint Sigstore-rooted
-      # attestations against the release artifact.
+      # Required for actions/attest-build-provenance and actions/attest to
+      # mint Sigstore-rooted attestations against the release artifact.
       id-token: write
       attestations: write
 
@@ -25,53 +25,161 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          # gh CLI authenticates via the GH_TOKEN env var below; nothing in
+          # this job needs the persisted git credential.
           persist-credentials: false
+
+      # Fail-closed release gate 1: the tag must point at a commit that
+      # reached main through the protect-main ruleset (PR + green required
+      # checks). A mistyped tag on a feature-branch commit would otherwise
+      # ship an untested tree carrying a valid provenance attestation. Runs
+      # before anything is built or signed.
+      - name: Verify tag commit is on main
+        run: |
+          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          if ! git merge-base --is-ancestor "${TAG_COMMIT}" refs/remotes/origin/main; then
+            echo "::error::Tag ${GITHUB_REF_NAME} points at ${TAG_COMMIT}, which is not an ancestor of origin/main. Refusing to release."
+            exit 1
+          fi
+          echo "Tag commit ${TAG_COMMIT} is an ancestor of origin/main."
+
+      # Fail-closed release gate 2: the tag itself must be SSH-signed by an
+      # allowed signer (.github/allowed_signers — the maintainer's release
+      # identity). An unsigned, lightweight, or foreign-signed tag would
+      # otherwise still build and attest. Tags predating the signing-identity
+      # switch (2026-07-13) are already published and never re-run this
+      # workflow, so the gate only binds new releases.
+      - name: Verify tag signature
+        run: |
+          git config gpg.ssh.allowedSignersFile "${GITHUB_WORKSPACE}/.github/allowed_signers"
+          if ! git tag -v "${GITHUB_REF_NAME}"; then
+            echo "::error::Tag ${GITHUB_REF_NAME} is not signed by an allowed signer (.github/allowed_signers). Refusing to release."
+            exit 1
+          fi
 
       - name: Extract version from tag
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
       - name: Extract changelog section
+        env:
+          # env-indirection: step outputs are never interpolated into run
+          # bodies in this privileged workflow (template-injection hygiene).
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
           # Extract the section between ## [VERSION] and the next ## [
           awk "/^## \[$VERSION\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md > release_notes.txt
 
-      # Real release artifact (HACS still installs from the source tarball —
-      # hacs.json zip_release stays false — but the zip gives Scorecard's
-      # Signed-Releases check a signed asset to score, and users a direct,
-      # verifiable download).
+      # The zip is BOTH the attested artifact and the artifact HACS installs
+      # (hacs.json: zip_release=true, filename=haggle.zip). HACS extracts it
+      # directly into <config>/custom_components/haggle/, so the integration
+      # directory CONTENTS must sit at the zip ROOT (manifest.json as a
+      # top-level entry, NOT haggle/manifest.json). The asset name must be
+      # the fixed string from hacs.json "filename" — HACS builds the download
+      # URL as releases/download/<tag>/<filename> with no templating.
       - name: Build release artifact
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          (cd custom_components && zip -r "../haggle-${VERSION}.zip" haggle)
+          (cd custom_components/haggle && zip -r "${GITHUB_WORKSPACE}/haggle.zip" . -x '*__pycache__*' '*.pyc')
+          unzip -l haggle.zip | grep -Eq ' manifest\.json$' || { echo "::error::manifest.json is not at the zip root"; exit 1; }
+
+      # Per-release SBOMs (SPDX + CycloneDX) via the syft CLI as a
+      # hash-verified binary: release.yml runs no third-party actions (house
+      # rule), and the pinned checksum gives the same immutability as a
+      # SHA-pinned action. The artifact ships zero third-party components
+      # (manifest.json "requirements": []), so the SBOM is a single
+      # first-party root package — that emptiness is the supply-chain claim
+      # worth attesting. Dependabot does not maintain this pin: refresh
+      # SYFT_VERSION + SYFT_SHA256 together from the checksums.txt on
+      # https://github.com/anchore/syft/releases when convenient.
+      - name: Generate SBOMs (syft, hash-verified)
+        run: |
+          SYFT_VERSION="1.46.0"
+          SYFT_SHA256="d654f678b709eb53c393d38519d5ed7d2e57205529404018614cfefa0fb2b5ca"
+          curl -sSfL -o syft.tar.gz "https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}/syft_${SYFT_VERSION}_linux_amd64.tar.gz"
+          echo "${SYFT_SHA256}  syft.tar.gz" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/syft"
+          tar -xzf syft.tar.gz -C "${RUNNER_TEMP}/syft" syft
+          rm syft.tar.gz
+          "${RUNNER_TEMP}/syft/syft" scan "file:haggle.zip" \
+            --source-name haggle \
+            --source-version "${GITHUB_REF_NAME#v}" \
+            -o "spdx-json=haggle.spdx.json" \
+            -o "cyclonedx-json=haggle.cdx.json"
 
       - name: Generate build provenance attestation
         id: attest
         uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
         with:
-          # Attest the actual artifact users can download. Verify with:
-          #   gh attestation verify haggle-<ver>.zip --repo NaanyaBiz/haggle
-          subject-path: haggle-${{ steps.version.outputs.version }}.zip
+          # Attest the artifact HACS installs. Verify with:
+          #   gh attestation verify haggle.zip --repo NaanyaBiz/haggle
+          subject-path: haggle.zip
+
+      # actions/attest is first-party (actions org) and is what the
+      # deprecated actions/attest-sbom now delegates to. Each step binds one
+      # SBOM to the zip's digest in GitHub's attestation store + Rekor.
+      - name: Attest SPDX SBOM
+        id: attest-spdx
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: haggle.zip
+          sbom-path: haggle.spdx.json
+
+      - name: Attest CycloneDX SBOM
+        id: attest-cdx
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4.1.1
+        with:
+          subject-path: haggle.zip
+          sbom-path: haggle.cdx.json
+
+      # Durable point-in-time record of which checks had run (and with what
+      # conclusion) on the release commit when it shipped. Push-event runs on
+      # this commit may legitimately still be in_progress — the enforced gate
+      # is the PR ruleset plus the ancestry check above; this file is
+      # evidence, not a gate, so it fails open.
+      - name: Snapshot check-run conclusions
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          gh api "repos/${GITHUB_REPOSITORY}/commits/${TAG_COMMIT}/check-runs?per_page=100" > raw-check-runs.json \
+            && jq --arg commit "${TAG_COMMIT}" --arg tag "${GITHUB_REF_NAME}" \
+                 '{commit: $commit, tag: $tag, captured_at: (now | todate),
+                   check_runs: [.check_runs[] | {name, status, conclusion, started_at, completed_at, html_url}]}' \
+                 raw-check-runs.json > check-runs.json
+          if [ ! -s check-runs.json ]; then
+            echo "::warning::check-run snapshot failed; releasing without it"
+            rm -f check-runs.json
+          fi
+          exit 0
 
       # First-party gh CLI (preinstalled on the runner) instead of a
       # third-party action: this is the only workflow with contents:write +
       # id-token:write, so no third-party code runs in it (2026-07
-      # dependency review). The Sigstore bundle is uploaded next to the zip
-      # so the release carries its own offline-verifiable signature.
+      # dependency review). The Sigstore bundles are uploaded next to the
+      # zip so the release carries its own offline-verifiable signatures.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          # env-indirection for all step outputs (template-injection hygiene).
+          VERSION: ${{ steps.version.outputs.version }}
+          ATTEST_BUNDLE: ${{ steps.attest.outputs.bundle-path }}
+          SPDX_BUNDLE: ${{ steps.attest-spdx.outputs.bundle-path }}
+          CDX_BUNDLE: ${{ steps.attest-cdx.outputs.bundle-path }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          cp "${{ steps.attest.outputs.bundle-path }}" "haggle-${VERSION}.zip.sigstore"
+          cp "${ATTEST_BUNDLE}" haggle.zip.sigstore
+          cp "${SPDX_BUNDLE}" haggle.zip.sbom-spdx.sigstore
+          cp "${CDX_BUNDLE}" haggle.zip.sbom-cdx.sigstore
           args=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
             args+=(--prerelease)
           fi
+          assets=(haggle.zip haggle.zip.sigstore
+                  haggle.spdx.json haggle.cdx.json
+                  haggle.zip.sbom-spdx.sigstore haggle.zip.sbom-cdx.sigstore)
+          [[ -f check-runs.json ]] && assets+=(check-runs.json)
           gh release create "$GITHUB_REF_NAME" \
             --title "v${VERSION}" \
             --notes-file release_notes.txt \
             "${args[@]}" \
-            "haggle-${VERSION}.zip" \
-            "haggle-${VERSION}.zip.sigstore"
+            "${assets[@]}"

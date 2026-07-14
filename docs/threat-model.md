@@ -114,9 +114,13 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
     on GitHub — tags cut before 2026-07-13 remain Unverified under the old
     tagger identity, accepted as historical fact); frozen-SHA pre-commit
     hooks.
-- **Pending hardening (planned, not yet landed)**: zip-release-only HACS
-  install path (`hacs.json` `zip_release`), per-release SBOM, SLSA level
-  uplift. Do not cite these as in force until they merge.
+- **In force since 2026-07** (previously pending): zip-release HACS
+  install path (the deployed bytes are the Sigstore-attested `haggle.zip`),
+  per-release attested SPDX + CycloneDX SBOMs, and fail-closed release
+  gates (tag ancestry to `main` + tag-signature verification against the
+  committed allowed-signers file, with server-side `required_signatures`
+  on the `v*` tag ruleset). SLSA remains at Build L2 by recorded
+  acceptance (SECURITY.md).
 
 ### TB-5: HA diagnostics JSON → public GitHub issue → AI triage routine
 - **From**: a user's HA instance (diagnostics download), attached by the
@@ -157,7 +161,7 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | D-1 | `client_id` revocation stops all installs; no backoff | **Accepted (with S-2)** / retry storms **mitigated** | Auth failures route to HA's reauth flow (no retry storm); failed polls retry at 30 min, restored to 24 h on success; 429s halt chunks without data loss. Availability residual accepted per §8. |
 | D-2 | Rotated-token persist failure → lock-out on next restart | **Mitigated; residual accepted** | Persist failure now triggers **immediate reauth** (`__init__.py::_persist_refresh_token` → `entry.async_start_reauth`) instead of a silent time bomb. Residual: no two-phase persist — declined as disproportionate given the immediate-surface behaviour. |
 | D-3 | First-install backfill burst triggers BFF rate-limiting | **Mitigated** | 0.5 s inter-request pacing, 7-day chunks, 429 halts the chunk and resumes next cycle (#34/#155); on the normal path a 429 never becomes a permanent hole. Within the bounded solar heal/stall give-up paths (§8), persistent rate-limiting counts toward the attempt caps and can end in a rare accepted hole. |
-| E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. Per-release SBOM and zip-release install path are planned, not yet in force. |
+| E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. In force since 2026-07: HACS installs the attested zip itself (`zip_release`), per-release attested SBOMs, and fail-closed ancestry + tag-signature release gates. |
 | E-2 | Open-schema `dict(rate)` passthrough into runtime state | **Mitigated** | Allowlist parsing; "don't forward raw AGL response dicts" is a standing AGENTS.md rule. |
 | E-3 | Borrowed iOS `client_id` supports account-modification scopes the integration doesn't request | **Accepted with tripwire** | `AGL_OAUTH_SCOPE` contains no write scopes; **any change to the scope constant is an impact re-assessment + regulatory re-determination trigger** (§7, §9) and a mandatory security-review item. |
 

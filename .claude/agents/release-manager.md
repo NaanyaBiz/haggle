@@ -83,11 +83,16 @@ tag already exists, so never pre-create one in the UI.
 
 ## After release
 
-- GitHub Actions `release.yml` picks up the tag and creates a GitHub Release
-  (prerelease if the tag contains `-`) with two assets: `haggle-$VERSION.zip`
-  and `haggle-$VERSION.zip.sigstore`.
+- Pre-flight reminder: hacs.json `filename` must equal the asset name
+  release.yml builds (`haggle.zip`) — never rename one without the other.
+- GitHub Actions `release.yml` gates the tag (must be an ancestor of
+  origin/main AND signed per .github/allowed_signers), then creates a
+  GitHub Release (prerelease if the tag contains `-`) with seven assets:
+  `haggle.zip` (the artifact HACS installs), `haggle.zip.sigstore`,
+  `haggle.spdx.json`, `haggle.cdx.json`, `haggle.zip.sbom-spdx.sigstore`,
+  `haggle.zip.sbom-cdx.sigstore`, and `check-runs.json` (fail-open).
 - Verify provenance:
-  `gh release download v$VERSION -p 'haggle-*.zip' -D /tmp && gh attestation verify /tmp/haggle-$VERSION.zip --repo NaanyaBiz/haggle`
+  `gh release download v$VERSION -p 'haggle.zip' -D /tmp && gh attestation verify /tmp/haggle.zip --repo NaanyaBiz/haggle`
 - HACS users will see the update within 24h (HACS polls tags).
 - CHANGELOG.md keeps its `## [Unreleased]` section (the bump PR should have
   left `### Targets for next sprint` under it).

@@ -119,7 +119,7 @@ reporter on request. The short version:
 | AGL HTTPS API → HA coordinator | TLS + Trust-On-First-Use SPKI pinning (see below). |
 | HA user browser → config flow | OAuth state nonce + PKCE S256. |
 | AGL JSON → HA recorder/statistics | Allowlist-style parsing; numeric values clamped to non-negative finite floats. |
-| GitHub Actions → HACS installers | All Actions SHA-pinned; release artefacts attested via `actions/attest-build-provenance`. |
+| GitHub Actions → HACS installers | All Actions SHA-pinned; release artefacts attested via `actions/attest-build-provenance`. HACS installs the attested zip itself (hacs.json `zip_release`); SPDX + CycloneDX SBOMs are attested against the same digest. |
 | HA diagnostics → public GitHub issue | Built to be public: refresh token redacted, account/contract HMAC-anonymised, final scrub pass + leak tests; parsed by the daily triage routine strictly as untrusted data. |
 
 ### Trust-On-First-Use TLS pinning
@@ -240,9 +240,15 @@ merge.
 - The HACS validation step runs without `continue-on-error`.
 - Release tags trigger an attested GitHub Release via
   `actions/attest-build-provenance` (Sigstore-rooted; verifiable with
-  `gh attestation`). Tags are human-cut and signed (ed25519) against the
-  maintainer's registered signing key; tags cut before 2026-07-13 predate
-  that identity and render as Unverified (RA-10).
+  `gh attestation`). The fixed `haggle.zip` asset is the artifact HACS
+  installs; per-release SPDX + CycloneDX SBOMs are attested against the
+  same digest and attached, alongside a check-run conclusion snapshot.
+  Tags are human-cut and signed (ed25519) against the maintainer's
+  registered signing key; tags cut before 2026-07-13 predate that
+  identity and render as Unverified (RA-10).
+- `release.yml` refuses to run on a tag whose commit is not an ancestor
+  of `origin/main`, or whose signature does not verify against
+  `.github/allowed_signers` (fail-closed release gates).
 
 **Secret scanning (layered).** GitHub push protection blocks
 provider-pattern secrets at push time. The two highest-consequence leak
@@ -285,15 +291,30 @@ CI-Tests, Dangerous-Workflow, Dependency-Update-Tool, Security-Policy,
 License, Binary-Artifacts, Vulnerabilities, **Fuzzing** (0→10,
 `PythonAtherisFuzzer integration found`) and **Token-Permissions** (9→10,
 top-level `permissions: {}` on `release.yml`). Remaining state, triaged
+**SLSA build level: accepted at Build L2.** Release provenance is
+platform-generated and Sigstore-signed (`actions/attest-build-provenance`),
+which is SLSA v1.0 Build L2. GitHub's documented L3 path — moving the
+build/attest steps into a reusable workflow and verifying with
+`--signer-workflow` — is deliberately not taken: with a single maintainer
+the same identity controls the caller, the callee, and the verification
+docs, so the isolation L3 formalises does not exist to enforce; and the
+consuming channel (HACS) performs no attestation verification at all, so
+no verifier would ever distinguish L3 from L2 here. Revisit if the build
+workflow is shared across repos or a second maintainer joins.
+
 (verification sweep in #179):
 
-- `Signed-Releases: 8` (was -1) — every release now ships
-  `haggle-<ver>.zip` plus its Sigstore bundle (`.zip.sigstore`); verified
-  end-to-end with `gh attestation verify haggle-<ver>.zip --repo
+- `Signed-Releases: 8` (was -1) — every release now ships the fixed
+  `haggle.zip` asset plus its Sigstore bundle (`.zip.sigstore`); verified
+  end-to-end with `gh attestation verify haggle.zip --repo
   NaanyaBiz/haggle` (SLSA provenance v1, digest match, built from the
   release tag). Scorecard reserves 9–10 for provenance it recognizes by
   the `*.intoto.jsonl` filename convention; the `.zip.sigstore` bundle
-  *is* SLSA provenance, so the residual 2 points are a naming artifact.
+  *is* SLSA provenance, so the residual 2 points are a naming artifact. SBOM
+  attestations verify against the same digest:
+  `gh attestation verify haggle.zip --repo NaanyaBiz/haggle
+  --predicate-type https://spdx.dev/Document/v2.3` (and
+  `https://cyclonedx.org/bom`).
   **Accepted at 8.**
 - `Branch-Protection: 3` (was -1 internal error) — the `protect-main`
   ruleset (#171, since extended to eight required checks + required
@@ -388,12 +409,17 @@ so the CI-side checks are the authoritative gate.
 **Release tags** (`v*`) are covered by a second ruleset
 (`protect-release-tags`): once a release tag exists it cannot be updated,
 deleted, or force-moved; creation stays open to the human-executed,
-signed-tag release flow. Known gaps, remediation in flight: the release
-workflow does not yet verify that a new tag points at a commit on `main`,
-nor that the tag is signed — a tag on an unchecked commit, or an unsigned
-tag, would still build and attest. Both gates (`git merge-base
---is-ancestor` ancestry check and tag-signature verification) land with
-the release-chain work package (SDLC remediation WP4).
+signed-tag release flow. Both release gates are in force: the release
+workflow refuses a tag whose commit is not an ancestor of `origin/main`
+(`git merge-base --is-ancestor`) and a tag whose SSH signature does not
+verify against the committed `.github/allowed_signers` (the maintainer's
+release identity) — an unchecked commit or an unsigned/foreign tag cannot
+build or attest. Known residual: tag-push workflows execute the workflow
+file at the tag's own ref, so a tag pointing at a commit that predates
+these gates would run the old, ungated workflow — inherent to tag
+triggers, bounded by tag creation being a maintainer-only, signed action:
+the `protect-release-tags` ruleset additionally requires signed tags
+server-side (enforced at creation, independent of workflow age).
 
 **The control plane itself is versioned**: rulesets, public repo
 settings, and the Actions policy snapshot live in `.github/settings/`;
@@ -495,7 +521,7 @@ its own rows.
 | RA-05 | User's refresh token is plaintext at rest on the HA host (platform ceiling — HA has no vault API for integrations; HAOS does not encrypt the data partition). | 15-min memory-only access token; rotate-on-every-use refresh token; hash-only `unique_id`; host-FDE guidance. | Accepted — @naanyabiz, 2026-07-13 | On HA platform change |
 | RA-06 | Shared AGL iOS `client_id`: single systemic availability dependency; AGL revocation stops every install at once; identity hot-update declined (would require phone-home). | Failures route to reauth (no retry storms); 30-min failure retry; recovery = coordinated re-release via HACS. | Accepted — @naanyabiz, 2026-07-13 | Annually / on AGL contact |
 | RA-07 | No telemetry into deployed instances: vulnerable installs cannot be enumerated, fleet health cannot be observed, time-to-restore cannot be measured, rollback cannot be automated. Deliberate privacy stance — phone-home from an energy integration would be worse than the risk it measures. | HACS update surfacing; GHSA publication; user-volunteered anonymised diagnostics. | Accepted — @naanyabiz, 2026-07-13 | Annually |
-| RA-08 | No admission control on the install path: HACS installs an unverified source snapshot and HA loads `custom_components/` without integrity checks (upstream capability gap). | Attested release artefact + documented `gh attestation verify` path; tag-integrity ruleset; protected release pipeline. | **Open** — a planned release-chain change (HACS installing the attested release zip directly) narrows the HACS half and is not yet landed; the HA-loader half is accepted as an upstream ceiling. Amend this row when the release-chain work merges. | On HACS/HA capability change |
+| RA-08 | No CLIENT-SIDE admission control on the install path: HACS performs no attestation verification, and HA loads `custom_components/` without integrity checks (upstream capability gap). | HACS installs the attested `haggle.zip` itself (the deployed bytes ARE the Sigstore-attested bytes, releases from 2026-07 onward); fail-closed ancestry + tag-signature release gates; tag-integrity ruleset; documented `gh attestation verify` path. | Accepted — @naanyabiz, 2026-07-14. Residual: no consumer-side verification exists in HACS/HA; users who want proof run the documented verify commands. | On HACS/HA capability change |
 | RA-09 | GitHub personal-account plane: no audit log of settings/ruleset changes; the sole admin can alter protections (enforcement-against-the-enforcer is impossible). | Settings-as-code baseline in `.github/settings/` + weekly drift workflow (detects, cannot prevent); weekly Scorecard re-measures branch protection; quarterly access-review script asserts the surface; ruleset readable by any workflow token. | Accepted — @naanyabiz, 2026-07-13 | Annually / on org migration |
 | RA-10 | Historical evidence gaps: Actions run logs expire at 90 days; history before 2026-07-12 predates the zero-bypass ruleset; releases ≤ v0.4.0-beta.4 are unattested; 19 early direct-push commits are unsigned; tags cut before 2026-07-13 predate the registered signing identity and render as Unverified. | Durable evidence (attestations, signed tags, PR trail) covers everything going forward; superseded releases are out of support. | Accepted — @naanyabiz, 2026-07-13 | Never (historical facts) |
 | RA-11 | AI IP-contamination: no verbatim-training-data detector or licence-similarity scanner gates merges. | Provider-side (Anthropic) mitigations relied on; purpose-built code against an undocumented API — low verbatim likelihood. | Accepted — @naanyabiz, 2026-07-13 | Annually |

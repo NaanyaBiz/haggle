@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **HACS now installs the attested release zip itself** (`zip_release` +
+  fixed `haggle.zip` asset) instead of a source snapshot — the deployed
+  bytes are the Sigstore-attested bytes (SDLC remediation WP4).
+- **Release workflow hardened**: fail-closed gates refuse tags not on
+  `main` or not signed by the allowed release identity
+  (`.github/allowed_signers`); per-release SPDX + CycloneDX SBOMs are
+  generated (hash-verified syft), attested against the zip's digest, and
+  attached; a check-run conclusion snapshot ships as a release asset.
+
 - **Agent governance docs** (SDLC remediation WP6): the haggle-triage
   routine's authoritative spec is now committed at
   `docs/agents/triage-routine.md` under repo-first change control (edits land
