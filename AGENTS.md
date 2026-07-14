@@ -39,6 +39,9 @@ docker run --rm \
   --integration-path /github/workspace/custom_components/haggle
 ```
 
+Test strategy (what layer of testing a change needs, coverage floor,
+when live-HA manual testing is required): [docs/testing.md](docs/testing.md).
+
 ---
 
 ## Repo Map
@@ -64,12 +67,13 @@ custom_components/haggle/
 tests/
 ├── conftest.py                      # _auto_enable_custom_integrations fixture
 ├── fixtures/
+│   ├── PROVENANCE.md                 # fixture provenance + the solar capture consent note
 │   ├── hourly_response.json         # 30-min interval data (Current/Hourly)
 │   ├── overview_response.json       # /v3/overview with accounts + contracts
 │   ├── plan_response.json           # /v2/plan/energy with gstInclusiveRates (flat rate)
 │   ├── tou_plan_response.json       # Time-of-Use plan — per-band gstInclusiveRates
 │   ├── tou_hourly_response.json     # mixed peak/offpeak/shoulder/normal intervals
-│   ├── solar_hourly_response.json   # REAL full-day ElectricitySolar capture (2026-07-01, app-reconciled)
+│   ├── solar_hourly_response.json   # REAL full-day ElectricitySolar capture (2026-07-01, app-reconciled) — provenance + consent: fixtures/PROVENANCE.md
 │   ├── solar_plan_response.json     # solar plan — feed-in rate in gstExclusiveRates
 │   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
 │   └── bill_period_response.json    # usage summary
@@ -83,11 +87,13 @@ tests/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition classes
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 └── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
 
 docs/
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
+├── testing.md           # test strategy — four layers, coverage floor, when live-HA manual testing is required
 ├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
 ├── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
 └── agents/
