@@ -35,9 +35,6 @@ over-complexity function
 Scorecard posture verified ([#179](https://github.com/NaanyaBiz/haggle/issues/179)),
 and maintain the secure-SDLC conformance record as control surfaces change.
 
-**Reach more users.** Once v0.4.0 has soaked, evaluate submitting `haggle` to
-the HACS default store so it is installable without adding a custom repository.
-
 ## Non-goals (what `haggle` will *not* do)
 
 These are deliberate scope boundaries, not backlog items:
