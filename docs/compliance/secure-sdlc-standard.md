@@ -12,21 +12,13 @@ This standard sets the mandatory control objectives and control statements gover
 
 It does **not** restate controls owned by sibling standards; it defines the seams (Section 4).
 
+**Interpretation — role terms are functions, not organisational structures.** Every role named in this standard — *accountable owner*, *independent risk oversight*, *independent assurance*, *technology-risk governance*, *the risk-governance function* — denotes a **function** (a separation of accountability), not a department, committee, or reporting line. In a large organisation these functions are typically held by distinct bodies; in a minimal one they may all collapse into the named accountable owner, who then carries the corresponding accountability personally. First-line risk accountability always sits with the accountable owner: acceptances are owner-signed. Where a statement requires a function *independent of* the owner and no such separation exists, the statement is not reinterpreted — it is governed as a recorded exception (CO-1.3) and revisited when the separation becomes possible.
+
+**This copy is a tailored adoption.** This edition is adopted by, and tailored to, this repository: single accountable owner-maintainer; authoring stratum S1 with the S5 agentic overlay; declared Tier 3; no UDA estate; no prescriptive regulatory regime. Sections and statements whose governed population has no referent here are **compacted to indexed stubs** — heading, intent, and one line per statement, numbering preserved — per the Tailoring record at the end of this document. **Compaction is not waiver**: a compacted statement binds in full from the moment its population appears.
+
 ## 2. Position in the standards hierarchy
 
-```
-Technology Lifecycle Standard (or equivalent policy root)
-├── SDLC Standard ........................... (this document)
-├── Change & Release Management Standard
-├── Cloud & Infrastructure Standard
-├── Identity & Access Management Standard
-├── Vulnerability & Threat Management Standard
-├── Third-Party / Supplier Risk Standard
-├── Data Management & Classification Standard
-└── Model Risk Management Standard
-```
-
-This hierarchy is a **reference architecture**, not a mandated document count: smaller organisations may collapse the sibling standards into brief policy statements — a paragraph can stand where an enterprise needs a volume — but each seam in Section 4 still needs an answer, however lightweight.
+In an enterprise this standard sits under a Technology Lifecycle Standard (or equivalent policy root) beside sibling standards for change & release management, cloud & infrastructure, identity & access, vulnerability & threat management, third-party/supplier risk, data management, and model risk. That hierarchy is a **reference architecture**, not a mandated document count: each Section 4 seam needs an answer, however lightweight. *(Compacted — in this adoption the siblings collapse into the repository's committed policy artifacts; see Section 4.)*
 
 ## 3. Design philosophy (why this differs from a legacy SDLC standard)
 
@@ -64,12 +56,7 @@ The strategic default is **DevSecOps / continuous delivery** (the pipeline as co
 
 ## 4. Interfaces to sibling standards (where this standard stops)
 
-- **Model Risk Management.** This standard owns the *engineering* of AI/ML systems — how the code, data plumbing, pipelines, and inference services are built and secured, and the integrity of the model artifact as a supply-chain object. MRM owns model *validation, performance, fairness/bias, explainability, and behavioural monitoring*. **Seam:** the SDLC must emit the lineage and evaluation artifacts MRM requires (versioned model + data lineage, eval harness running in CI), and must block promotion of an in-scope model-bearing system to production without MRM disposition.
-- **Change & Release Management.** This standard governs how a change is built and *technically* deployed; the enterprise change standard governs approval authority, risk acceptance, scheduling, and stakeholder communication. **Seam:** changes that demonstrably conform to an approved pipeline pattern are pre-authorised as standard changes — the pipeline record *is* the change record.
-- **Third-Party / Supplier Risk.** TPRM owns supplier due diligence and contractual controls. This standard owns the technical supply-chain integrity controls for any third-party or open-source software ingested into a build, and the integration-security controls for SaaS/COTS. Build-time controls (PW) do not apply to unmodified COTS/SaaS; configuration, integration, and data-egress controls do.
-- **IAM / Cloud / Vulnerability Management / Data.** Workload identity, secrets infrastructure, network and runtime hardening, vulnerability SLAs, and data classification are *consumed* by this standard but *defined* in those standards. Control statements here reference, not redefine, them.
-- **Sector-Specific Runtime Controls (prescriptive regulatory regimes).** Owns the *runtime* control framework mandated by a prescriptive sector regime where one applies — for example, under MiFID II RTS 6: immediate order-cancellation ("kill") functionality, pre- and post-trade limits, real-time monitoring/surveillance, and the RTS 6 governance and annual self-assessment regime; analogous runtime obligations arise under IEC 62304 (medical devices), ISO 26262 (automotive), and DO-178C (aviation). **Seam:** this SDLC standard delivers the development, testing, controlled-deployment, change-authorisation, and record-keeping obligations such regimes place on the build lifecycle (CO-19) and ensures in-scope systems are engineered to expose and support those runtime controls; the sector-specific standard specifies and governs the runtime controls in operation.
-- **Enterprise AI Policy & Standard.** The AI standard establishes and governs the AI asset taxonomy — **models, platforms, solutions, and features** — and owns use-case authorisation, the approved model/tool registry, responsible-AI requirements, and runtime guardrail policy. This standard owns the **engineering lifecycle of the artifacts** that compose AI solutions and agentic systems: how prompts, skills, tool/connector definitions, evaluation suites, and orchestration code are versioned, reviewed, tested, promoted, and rolled back (CO-12). **Seam (double-key):** AI-standard disposition gates *existence and use* — no in-scope solution is promoted to production, or has its use materially changed, without it; this standard gates *change* — every modification to an agentic artifact passes SDLC change control, without re-authorisation of the use case unless tool scope or use changes. **Agency is a cross-cutting attribute, not a category:** the capability to act through tools may attach to a model, a platform, a solution, or a vendor **feature**; the agency flag, CO-12 controls, and scope-derived tiering apply wherever it attaches. Feature-class agency arriving in vendor software is assessed at vendor-change through the Third-Party seam. User-built agents with persistent prompt, tool grants, and trigger are **solutions**, however small — inventoried, tiered, and ceiling-enforced by the platform.
+The full edition defines six seams: model risk management, change & release management, third-party/supplier risk, IAM/cloud/vulnerability/data, sector-specific runtime controls, and AI governance. *(Compacted — in this adoption they collapse into this repository's committed artifacts:)* change control **is** the PR + ruleset flow; third-party and supply-chain integrity is CO-5's dependency gating; identity, secrets, and vulnerability response are CO-8/CO-11; data classification and handling resolve to SECURITY.md's data-handling posture and the diagnostics privacy contract (docs/diagnostics.md); AI governance of the agent toolchain is AGENTS.md § AI toolchain together with CO-12 — sibling-standard names appearing in CO text (e.g. "the Third-Party standard", "the organisation's AI governance standard") resolve to those artifacts. No model-risk or sector runtime-control seam has a referent here.
 
 ## 5. Criticality tiering (proportionality basis)
 
@@ -90,28 +77,24 @@ Strata are cut by **control surface, not author** — an analyst's Python and an
 | Stratum | Control surface | Canonical examples |
 |---|---|---|
 | **S1 Engineered** | Full toolchain: VCS, CI/CD pipeline, automated gates | Professional SDLC; user-authored code that adopts the paved road |
-| **S2 Code-class UDA** | Versionable and testable with modest uplift | Analyst / data-science Python, R, SQL, notebooks, scripts outside the professional toolchain |
-| **S3 Platform-constrained** | The platform's: segregated environments, governed connectors, promotion gates | Low-code/no-code apps; governed BI with promotion gates |
-| **S4 Document-embedded / EUC** | Minimal: logic and data entangled; no VCS semantics, no test harness | Spreadsheets, Access databases, macros/Office Scripts, artifact-embedded BI |
 | **S5 Agentic** | Configuration-as-code + non-deterministic behaviour + tool-scoped blast radius | Agents, prompts, skills, connectors/MCP configs, scheduled AI automations — professional and user-developed |
 
-**Eligibility matrix.** Tier (Section 5) sets control *intensity*; stratum sets control *expression*; this matrix is where they meet. "Native" = the stratum's standard expression suffices; "uplift" = the stratum's elevated expression set applies; "prohibited (new)" binds new builds from commencement, with legacy stock governed under Section 7.
+*(Compacted — S2 code-class UDA, S3 platform-constrained, and S4 document-embedded/EUC are defined in the full edition; no referent in this adoption — see the Tailoring record and CO-13.)*
 
-| Stratum | Tier 1 | Tier 2 | Tier 3 | Tier 4 |
-|---|---|---|---|---|
-| **S1** | Native | Native | Native | Native |
-| **S2** | Ineligible as S2 — **S1 expression required** (adopt the paved road) | Eligible with S2 uplift | Native | Native |
-| **S3** | Eligible **only under professional governance** — the platform is a toolchain choice, not a governance relief | Eligible with S3 expression under professional oversight | Native | Native |
-| **S4** | **Prohibited (new)**; legacy via §7 pipeline | **Prohibited (new)**; legacy via compensating set + migration clock | Eligible with the EUC compensating set (CO-13.5) | Native |
-| **S5 — professional** | Eligible with full Tier-1 agentic expression incl. human gate (CO-12.6) | Eligible | Eligible | Eligible |
-| **S5 — user-developed** | Prohibited | Prohibited — graduate to professional governance | Eligible on the governed agent platform; reversible/read-only tool scopes by default | Eligible on the governed agent platform |
+**Eligibility matrix.** Tier (Section 5) sets control *intensity*; stratum sets control *expression*; the matrix is where they meet. "Native" = the stratum's standard expression suffices. The binding rule: where a stratum's maximum achievable assurance falls below what the tier demands, the objective is not relaxed — the asset is **ineligible at that tier** and must migrate strata. Rows for strata with no referent here (S2–S4) are compacted (Tailoring record).
+
+| Stratum | Tier 1 | Tier 2 | Tier 3 |
+|---|---|---|---|
+| **S1** | Native | Native | Native |
+| **S5 — professional** | Eligible with full Tier-1 agentic expression incl. human gate (CO-12.6) | Eligible | Eligible |
+| **S5 — user-developed** | Prohibited | Prohibited — graduate to professional governance | Eligible on the governed agent platform; reversible/read-only tool scopes by default |
 
 ## 7. Transitional provisions — commencement, flow and stock
 
-- **7.1 Flow binds at commencement.** All controls, prohibitions, and eligibility ceilings apply to net-new assets from the standard's effective date. The **preventative mechanisms must be operational at commencement** — platform registration-at-creation, default-deny high-risk connectors, the lightweight S2 paved road, and tenant-level discovery scanning — because a prohibition without prevention manufactures undiscovered debt.
+- **7.1 Flow binds at commencement.** All controls, prohibitions, and eligibility ceilings apply to net-new assets from the standard's effective date, with the preventative mechanisms operational at commencement — a prohibition without prevention manufactures undiscovered debt. *(Compacted — the full edition enumerates the estate-scale mechanisms; this adoption has one governed repository.)*
 - **7.2 Date-stamp rule.** Assets created on or after commencement outside the required controls are **non-compliant** (exception or breach under CO-1.3) — never "legacy". Pre-commencement assets enter the remediation portfolio. This distinction prevents the stock pipeline becoming an amnesty for new debt.
-- **7.3 Stock pipeline.** Commencement triggers **discovery → triage → disposition** for the existing estate: discovery via tenant scanning (file stores, macro inventories, BI estates, automation/agent inventories); triage to tier × stratum, highest-consequence first; disposition to one of **migrate / retire / remediate-with-compensating-controls / formally accept**. Clocks *(calibrate)*: discovery complete within [n] months; Tier-1/2-consequence assets dispositioned within [n]; full estate within [n].
-- **7.4 Debt governance.** The remediation portfolio is managed as a **tier-weighted backlog** under CO-17/CO-18, with burn-down, discovery-rate trend, and — the headline metric — **new-debt-creation rate, which must trend to zero**, reported to technology-risk governance.
+- **7.3 Stock pipeline** *(compacted — no pre-existing estate here)*: discovery → triage (tier × stratum, highest-consequence first) → disposition (**migrate / retire / remediate-with-compensating-controls / formally accept**), on defined clocks.
+- **7.4 Debt governance** *(compacted)*: the remediation portfolio is a tier-weighted backlog under CO-17/CO-18; headline metric: **new-debt-creation rate trending to zero**, reported to technology-risk governance.
 
 ---
 
@@ -126,8 +109,8 @@ Strata are cut by **control surface, not author** — an analyst's Python and an
 
 - **CO-1.1 [All]** Every software asset shall have a single accountable owner (the accountable first-line owner) recorded in the organisation's application register, and shall be assigned a criticality tier per Section 5 at inception and re-validated on material change.
 - **CO-1.2 [All]** Compliance with this standard shall be demonstrable from system-generated evidence (Section CO-14), not attestation alone.
-- **CO-1.3 [All]** Any deviation from a mandatory control statement shall be governed by a time-bound, risk-accepted exception with a remediation plan; Tier-1 exceptions require independent risk-oversight review and named senior-executive acceptance.
-- **CO-1.4 [T1–2]** Control coverage and exception posture shall be reported to technology-risk governance on a defined cadence, with thematic trends (not just counts) surfaced to the relevant risk committee.
+- **CO-1.3 [All]** Any deviation from a mandatory control statement shall be governed by a time-bound, risk-accepted exception with a remediation plan; Tier-1 exceptions require review by the independent risk-oversight function and recorded acceptance by the named accountable owner at the level of authority that owns the consequence (Interpretation, Section 1).
+- **CO-1.4 [T1–2]** Control coverage and exception posture shall be reported to technology-risk governance on a defined cadence, with thematic trends (not just counts) surfaced to the risk-governance function, however constituted.
 - **CO-1.5 [All]** This standard shall be governed as a controlled management-system artifact — version-controlled, reviewed on a defined cadence, and subject to periodic independent assurance of its operation, with findings driving corrective action and improvement (ISO 9001 principles). Organisational maturity in applying the standard shall be assessed against an approved maturity model — CMMI for process maturity, BSIMM / OWASP SAMM for software-security-program maturity — with results informing the improvement roadmap.
 
 *Mapping: CSF GV.OC, GV.RR, GV.RM, GV.OV · SSDF PO.1, PO.2 · ISO 9001 (management review, internal audit) · CMMI / BSIMM / SAMM (maturity)*
@@ -304,27 +287,31 @@ Strata are cut by **control surface, not author** — an analyst's Python and an
 *Mapping: CSF GV.SC, PR.AC, ID.RA, DE.CM · SSDF SP 800-218A (PO/PS/PW for GenAI), PS.3, PW.4*
 
 ### CO-13 · User-developed applications (UDAs) — stratified governance (S2–S4)
-**Intent:** Formalise rather than prohibit user development across the organisation's full estate — code-class artifacts, platform apps, and document-embedded/EUC solutions — with control expression set by stratum, tier eligibility enforced, and shadow IT prevented from reaching systems of record. (Agentic UDAs are governed under CO-12 as S5.)
+**Intent:** Formalise rather than prohibit user development — control expression set by stratum, tier eligibility enforced, shadow IT prevented from reaching systems of record. (Agentic UDAs are governed under CO-12 as S5.)
 
-- **CO-13.1 [All]** UDAs shall be **inventoried** in the enterprise application register with an accountable business owner and classified by tier (CO-1). For S4 and other populations with no creation chokepoint, inventory shall be **discovery-based** — periodic tenant scanning of file stores, macro estates, and BI artifacts — not registration-only, with discovered unregistered assets triaged under Section 7.
-- **CO-13.2 [All]** Every UDA shall be **assigned an authoring stratum** (S2/S3/S4; S5 → CO-12) at registration or discovery, with the Section 6 **eligibility matrix enforced**: assets ineligible at their tier shall migrate strata, be retired, or (legacy stock only) operate under Section 7 compensating controls with explicit acceptance.
-- **CO-13.3 [All] — S3 expression.** Low-code/no-code platforms shall enforce **segregated environments** with a governed promotion gate (direct authoring in production prohibited) and shall **prevent UDAs from connecting to Tier-1 systems of record or egressing Confidential data** without an exception approved by independent risk oversight; connectors and data flows are governed centrally. Platform updates are vendor changes assessed via the Third-Party seam.
-- **CO-13.4 [All] — S2 expression.** Code-class UDAs shall reside in approved version control with peer review (independent review at Tier 2), dependencies sourced per CO-5, and blocking secret scanning (invariant, CO-8). The organisation shall provide a **lightweight paved road** making S2→S1 adoption near-zero-cost; at Tier 2 its use is the uplift requirement.
-- **CO-13.5 [T3, legacy T2] — S4 expression (EUC compensating set).** Materially-consequential document-embedded UDAs shall carry, proportionate to tier: **independent logic review; input/output and reconciliation controls; master-copy version and access discipline** (protected master, change log); key-logic protection (locked/protected formulas); no embedded credentials (invariant, CO-8); macro execution restricted to signed/approved code; **periodic revalidation**; and documented purpose and owner.
-- **CO-13.6 [All]** UDAs exceeding defined criticality, data-sensitivity, user-scale, or **complexity** thresholds shall be **graduated** to a higher stratum or into the professional SDLC (CO-2 through CO-11) rather than remaining under UDA governance; threshold breaches shall be detected from the CO-13.1 inventory, not self-declared.
-- **CO-13.7 [All]** User developers shall be authorised, trained (CO-3.3), and their build capability reviewed; orphaned or unowned applications shall be quarantined or decommissioned.
-- **CO-13.8 [All]** **New builds of S4 UDAs carrying Tier-1 or Tier-2 consequence are prohibited** from commencement; the pre-existing estate is governed exclusively through the Section 7 pipeline. Post-commencement creation outside these controls is a breach under the 7.2 date-stamp rule, not legacy.
+**Compacted — no UDA estate exists in this adoption** (Tailoring record; each statement binds in full if one appears):
+
+- **CO-13.1 [All]** UDAs inventoried with an accountable owner and tier; discovery-based inventory for populations without a creation chokepoint.
+- **CO-13.2 [All]** Every UDA assigned an authoring stratum, with the Section 6 eligibility ceiling enforced (migrate / retire / — legacy stock only — compensating controls with explicit acceptance).
+- **CO-13.3 [All]** S3 platforms: segregated environments with a governed promotion gate; central connector/data-flow governance; no Tier-1 system-of-record connections or Confidential-data egress without an exception approved by independent risk oversight.
+- **CO-13.4 [All]** S2 code-class UDAs: approved version control, review (independent at Tier 2), CO-5 dependency sourcing, blocking secret scanning; a lightweight paved road makes S2→S1 adoption near-zero-cost (at Tier 2 its use is the uplift requirement).
+- **CO-13.5 [T3, legacy T2]** S4/EUC compensating set: independent logic review, input/output reconciliation, master-copy version and access discipline, protection of critical logic (locked formulas), no embedded secrets (invariant, CO-8), macro execution restricted to approved code, periodic revalidation, documented purpose and owner.
+- **CO-13.6 [All]** UDAs exceeding criticality, data-sensitivity, user-scale, or complexity thresholds graduate to a higher stratum or the professional SDLC; breaches detected from inventory, not self-declared.
+- **CO-13.7 [All]** User developers authorised, trained (CO-3.3), capability reviewed; orphaned applications quarantined or decommissioned.
+- **CO-13.8 [All]** New S4 builds at Tier-1/2 consequence prohibited; pre-existing estate governed via Section 7; post-commencement creation outside controls is a breach (7.2), not legacy.
 
 *Mapping: CSF GV.OC, ID.AM, PR.AC, PR.DS, GV.SC · SSDF PO.1, PO.2, PS.1 · interfaces Section 6 (eligibility), Section 7 (transition), CO-12 (S5)*
 
 ### CO-19 · Regulated and high-consequence workloads
-**Intent:** Workloads under prescriptive regulatory development regimes — IEC 62304 (medical device software), ISO 26262 (automotive), DO-178C (aviation), and MiFID II RTS 6 (algorithmic/electronic trading) among them — meet those obligations through the SDLC, with regime-mandated runtime controls owned by the applicable runtime-controls standard (Section 4 seam).
+**Intent:** Workloads under prescriptive regulatory development regimes (e.g. IEC 62304 medical devices, ISO 26262 automotive, DO-178C aviation, MiFID II RTS 6 algorithmic trading) meet those obligations through the SDLC; regime-mandated runtime controls are owned by the applicable runtime-controls standard (Section 4 seam).
 
-- **CO-19.1 [All applicable]** Workloads subject to prescriptive regulatory development obligations (e.g. IEC 62304 medical devices, ISO 26262 automotive, DO-178C aviation, MiFID II RTS 6 algorithmic trading) shall be identified and registered, and shall satisfy the applicable obligations through the controls in this standard, with conformance evidenced.
-- **CO-19.2 [Where prescribed]** Regulated workloads shall be developed and tested under a documented methodology before deployment and after material change, including **conformance testing** with relevant counterparties, venues, or ecosystems and **testing against adverse or disorderly operating conditions** and stressed volumes where the regime prescribes it (e.g. RTS 6 trading-venue conformance testing and disorderly-market/stressed-message-volume testing), in environments segregated from production (extends CO-15, CO-16).
-- **CO-19.3 [Where prescribed]** Deployment of regulated workloads shall be controlled and staged; material code and **parameter** changes shall be subject to recorded authorisation with a complete audit trail of who changed what and when (e.g. RTS 6 controls over algorithm deployment and parameter changes) (extends CO-4.4, CO-10).
-- **CO-19.4 [Where prescribed]** Complete records of regulated systems, versions, parameters, and changes shall be retained to the regulatory requirement, and a **periodic self-assessment and validation** of the regulated systems and controls shall be performed and evidenced where the regime requires it (e.g. the RTS 6 annual self-assessment of algorithmic-trading systems and controls).
-- **CO-19.5 [Interface]** Runtime controls mandated by a prescriptive regime — e.g. RTS 6's immediate order-cancellation ("kill") functionality, pre-/post-trade limits, and real-time surveillance — are owned and specified by the applicable **runtime-controls standard** (for trading, an Algorithmic / Electronic Trading Controls standard); this standard requires only that systems are *built to expose and support* those controls and that their presence is validated under CO-15/CO-16.
+**Compacted — no prescriptive regulatory regime applies to this adoption** (Tailoring record; binds in full if one ever does):
+
+- **CO-19.1 [All applicable]** Regulated workloads identified and registered; applicable obligations satisfied through this standard, with conformance evidenced.
+- **CO-19.2 [Where prescribed]** Documented development-and-testing methodology, including counterparty/venue/ecosystem conformance testing and testing against adverse or disorderly operating conditions and stressed volumes, in environments segregated from production (extends CO-15, CO-16).
+- **CO-19.3 [Where prescribed]** Controlled, staged deployment; recorded authorisation and complete audit trail of material code **and parameter** changes (extends CO-4.4, CO-10).
+- **CO-19.4 [Where prescribed]** Regulatory-grade records of systems, versions, parameters, and changes; periodic self-assessment and validation evidenced where the regime requires it.
+- **CO-19.5 [Interface]** Regime-mandated runtime controls are owned and specified by the applicable runtime-controls standard; systems are built to expose and support them, with presence validated under CO-15/CO-16.
 
 *Mapping: CSF GV.OC, GV.SC, PR.IP, DE.CM · prescriptive regimes e.g. IEC 62304, ISO 26262, DO-178C, MiFID II RTS 6 (Reg. (EU) 2017/589) · interfaces the applicable runtime-controls standard (e.g. Algorithmic/Electronic Trading Controls)*
 
@@ -364,3 +351,26 @@ Strata are cut by **control surface, not author** — an analyst's Python and an
 | CO-17 | Code quality, maintainability & technical debt | GV, PR, ID | PW |
 | CO-18 | Defect, problem & continuous improvement | ID, RS, RC, GV | RV |
 | CO-19 | Regulated & high-consequence workloads | GV, PR, DE | — (RTS 6) |
+
+---
+
+## Tailoring record (this adoption)
+
+Tailored under the rule **compaction is not waiver**: a compacted section or
+statement keeps its number, its intent, and its binding force — it is
+compacted because its governed population has no referent in this repository,
+and it re-binds in full the moment one appears. Reactivation = a PR restoring
+the full text from the standard's master edition (held by the standard's
+author).
+
+| Compacted | Why (no referent) | Reactivation trigger |
+|---|---|---|
+| Section 2 hierarchy detail · Section 4 seam detail | Sibling standards collapse into this repository's committed artifacts | Adoption by a multi-standard organisation |
+| Section 6 S2–S4 strata definitions + eligibility rows | Single S1 codebase + S5 agent artifacts | Any S2/S3/S4 artifact entering scope |
+| Section 7.1/7.3/7.4 estate machinery | No pre-existing stock; one governed repository | Estate growth beyond this repository |
+| CO-13 (8 statements) | No UDA estate | First UDA |
+| CO-19 (5 statements) | No prescriptive regulatory regime | A regulated workload or regime applicability |
+
+Erratum corrected against the master edition: the Section 6 eligibility
+matrix carried an undefined **Tier 4** column (Section 5 defines three
+tiers); the column is removed in this edition.
