@@ -33,5 +33,5 @@ The `release-manager` subagent, providing it:
 
 ## After completion
 
-Print the GitHub Release URL and confirm the attested assets exist
+Print the GitHub Release URL and confirm the seven attested assets exist (haggle.zip + provenance/SBOM sigstore bundles + SBOMs + check-runs.json)
 (`haggle-<ver>.zip` + `.zip.sigstore`; verify with `gh attestation verify`).

@@ -112,7 +112,7 @@ scripts/
 │   ├── ci.yml           # ruff + mypy + pytest (Python 3.14, coverage floor 89) + gitleaks full-history scan + dependency-review + shellcheck/actionlint/zizmor
 │   ├── hacs.yml         # HACS validation
 │   ├── hassfest.yml     # Home Assistant integration manifest validation
-│   ├── release.yml      # tag-triggered GitHub Release (first-party gh CLI) + attested zip asset (Sigstore)
+│   ├── release.yml      # tag-triggered Release (first-party gh CLI): tag-on-main + tag-signature gates, HACS-installed attested zip (zip_release), SBOM attestations, check-run snapshot
 │   ├── codeql.yml       # weekly + per-PR CodeQL Python scan
 │   ├── scorecard.yml    # weekly + on-push OpenSSF Scorecard self-assessment (feeds README badge)
 │   ├── fuzz.yml         # weekly deep run + unconditional 120s PR smoke; corpus cached across runs; crash artifacts uploaded
@@ -762,6 +762,13 @@ The HA Energy dashboard requires:
   heal record, stall spans) and a reload listener would bounce the entry on
   every rotation. Options are read LIVE each cycle
   (`OPT_SOLAR_STATISTICS_ENABLED` in const.py documents the pattern).
+- **Don't rename the `haggle.zip` release asset or the hacs.json
+  `"filename"` key independently.** HACS resolves
+  `releases/download/<tag>/<filename>` literally; a mismatch bricks HACS
+  installs for that release. hacs.json is read at the installed tag, so the
+  pair must be consistent within every tag. The tag-signature gate also
+  means `.github/allowed_signers` must be updated in the same PR as any
+  signing-key rotation, or releases stop cutting.
 - **Don't exact-pin `pytest-homeassistant-custom-component` to a single
   patch.** Upstream releases near-daily, so an exact pin manufactures a
   guaranteed weekly Dependabot PR and has caused resolver deadlocks

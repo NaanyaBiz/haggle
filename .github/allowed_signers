@@ -1,0 +1,6 @@
+# SSH allowed-signers file for release-tag verification (release.yml
+# 'Verify tag signature' gate). Principal = the release tagger identity;
+# the key is the maintainer's PUBLIC ed25519 signing key (also registered
+# on the GitHub account). Rotating the signing key means updating this
+# file in the same PR-first change.
+security@naanya.biz ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGIn+591XkBrBaN3AQJGUczifcUlJsy3LM8NLWjFDsYZ
