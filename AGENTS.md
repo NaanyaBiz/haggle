@@ -226,6 +226,11 @@ invisible to anyone who doesn't already know to look.
 GitHub auto-closes on merge. If a PR partially addresses an issue,
 comment on the issue rather than closing it.
 
+Non-trivial feature issues state acceptance criteria up front (the
+feature template has an optional field; if it is left empty the
+maintainer states them on the issue before implementation); the closing
+PR's test plan references them.
+
 When mid-sprint code-review or audit work surfaces a tail of items,
 spawn issues for each one and label-and-prioritise them rather than
 trying to fold everything into the current PR.
