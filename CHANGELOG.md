@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **New Configure option to freeze solar statistics writes** (SDLC remediation
+  WP7, CO-10.3): backfill, self-heal, and give-up markers can be switched off
+  without uninstalling or downgrading — a deployment-vs-exposure control for
+  the integration's one semi-irreversible effect. Existing statistics are
+  untouched; takes effect from the next poll; consumption is unaffected.
 - **Removing the integration now best-effort revokes the AGL/Auth0
   refresh-token grant server-side** (SDLC remediation WP7, CO-11.4) — the one
   piece of user data this integration controls that would otherwise outlive

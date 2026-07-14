@@ -48,7 +48,7 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract; options flow (solar statistics-writes toggle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
@@ -757,6 +757,11 @@ The HA Energy dashboard requires:
   security toggles, Actions policy + selected-actions allowlist) are
   snapshot-only — refresh `repo-admin-snapshot.json` in the same PR whenever
   they change.
+- **Don't add an options `update_listener`/reload-on-options to this
+  integration.** The coordinator writes entry.data mid-cycle (token rotation,
+  heal record, stall spans) and a reload listener would bounce the entry on
+  every rotation. Options are read LIVE each cycle
+  (`OPT_SOLAR_STATISTICS_ENABLED` in const.py documents the pattern).
 - **Don't exact-pin `pytest-homeassistant-custom-component` to a single
   patch.** Upstream releases near-daily, so an exact pin manufactures a
   guaranteed weekly Dependabot PR and has caused resolver deadlocks

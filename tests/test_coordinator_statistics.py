@@ -29,6 +29,7 @@ from custom_components.haggle.const import (
     DOMAIN,
     MAX_SOLAR_HEAL_ATTEMPTS,
     MAX_STALL_SPAN_RECORDS,
+    OPT_SOLAR_STATISTICS_ENABLED,
     REWINDOW_DAYS,
     SOLAR_HEAL_DONE,
     SOLAR_HEAL_PENDING,
@@ -85,12 +86,14 @@ def _empty_plan() -> PlanRates:
 def _make_coordinator(
     hass: HomeAssistant,
     client: MagicMock | None = None,
+    options: dict | None = None,
 ) -> HaggleCoordinator:
     """Create a HaggleCoordinator without running setup."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=_ENTRY_DATA,
         unique_id="1234567890_9999999999",
+        options=options or {},
     )
     entry.add_to_hass(hass)
     if client is None:
@@ -2439,6 +2442,92 @@ class TestGenerationHealState:
 
         registry = ir.async_get(hass)
         assert not [i for i in registry.issues.values() if i.domain == DOMAIN]
+
+    async def test_option_disables_solar_writes(self, hass: HomeAssistant) -> None:
+        """OPT_SOLAR_STATISTICS_ENABLED=False: no solar planning, no heal
+        arming, cumulative solar sensors keep stored values (CO-10.3 freeze
+        semantics)."""
+        coord = _make_coordinator(
+            hass,
+            client=self._solar_client(),
+            options={OPT_SOLAR_STATISTICS_ENABLED: False},
+        )
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, today - timedelta(days=8))
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord, "_plan_solar_fetch", new_callable=AsyncMock
+            ) as mock_plan,
+            patch.object(
+                coord, "_fetch_range", new_callable=AsyncMock, return_value=True
+            ) as mock_range,
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+        ):
+            data = await coord._fetch_and_import()
+        mock_plan.assert_not_awaited()
+        assert mock_range.call_args[0][1] is None  # no solar range
+        assert CONF_SOLAR_HEAL not in coord.config_entry.data
+        assert data.latest_generation_kwh == 12.3  # stored value preserved
+
+    async def test_option_default_keeps_solar_writes(self, hass: HomeAssistant) -> None:
+        """Options absent -> solar planning runs (pins the default)."""
+        coord = _make_coordinator(hass, client=self._solar_client())
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            if stat_id == stat_id_cons:
+                return (500.0, yesterday)
+            return (12.3, today - timedelta(days=8))
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_plan_solar_fetch",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ) as mock_plan,
+            patch.object(
+                coord, "_fetch_range", new_callable=AsyncMock, return_value=True
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None),
+            ),
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+        ):
+            await coord._fetch_and_import()
+        mock_plan.assert_awaited_once()
 
     async def test_done_never_rearms(self, hass: HomeAssistant) -> None:
         """Once DONE, a still-present leading gap (needs_heal True) is NOT

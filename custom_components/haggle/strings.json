@@ -84,5 +84,18 @@
       "title": "Solar backfill skipped {start} to {end}",
       "description": "For entry {entry}: AGL returned errors for every day in {start}..{end} for {cycles} consecutive polls, so Haggle marked the span as covered and moved on. These days are recorded as zero export and will not be retried automatically — a permanent gap in the solar statistics. If the AGL app shows data for these dates, see the diagnostics guide (Learn more) for recovery options."
     }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Haggle options",
+        "data": {
+          "solar_statistics_enabled": "Write solar statistics (backfill and self-heal)"
+        },
+        "data_description": {
+          "solar_statistics_enabled": "Turn off to freeze all solar statistics writes (backfill, self-heal, give-up markers) without uninstalling or downgrading. Existing statistics are untouched; solar sensors stop updating and eventually show 'unknown'. Takes effect from the next poll. Consumption statistics are unaffected."
+        }
+      }
+    }
   }
 }
