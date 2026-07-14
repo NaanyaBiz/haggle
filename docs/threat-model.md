@@ -114,9 +114,13 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
     on GitHub — tags cut before 2026-07-13 remain Unverified under the old
     tagger identity, accepted as historical fact); frozen-SHA pre-commit
     hooks.
-- **Pending hardening (planned, not yet landed)**: zip-release-only HACS
-  install path (`hacs.json` `zip_release`), per-release SBOM, SLSA level
-  uplift. Do not cite these as in force until they merge.
+- **In force since 2026-07** (previously pending): zip-release HACS
+  install path (the deployed bytes are the Sigstore-attested `haggle.zip`),
+  per-release attested SPDX + CycloneDX SBOMs, and fail-closed release
+  gates (tag ancestry to `main` + tag-signature verification against the
+  committed allowed-signers file, with server-side `required_signatures`
+  on the `v*` tag ruleset). SLSA remains at Build L2 by recorded
+  acceptance (SECURITY.md).
 
 ### TB-5: HA diagnostics JSON → public GitHub issue → AI triage routine
 - **From**: a user's HA instance (diagnostics download), attached by the

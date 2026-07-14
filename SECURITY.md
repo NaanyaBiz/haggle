@@ -414,7 +414,12 @@ workflow refuses a tag whose commit is not an ancestor of `origin/main`
 (`git merge-base --is-ancestor`) and a tag whose SSH signature does not
 verify against the committed `.github/allowed_signers` (the maintainer's
 release identity) — an unchecked commit or an unsigned/foreign tag cannot
-build or attest.
+build or attest. Known residual: tag-push workflows execute the workflow
+file at the tag's own ref, so a tag pointing at a commit that predates
+these gates would run the old, ungated workflow — inherent to tag
+triggers, bounded by tag creation being a maintainer-only, signed action:
+the `protect-release-tags` ruleset additionally requires signed tags
+server-side (enforced at creation, independent of workflow age).
 
 **The control plane itself is versioned**: rulesets, public repo
 settings, and the Actions policy snapshot live in `.github/settings/`;
