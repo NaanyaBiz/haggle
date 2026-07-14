@@ -27,8 +27,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   papers remain the maintainer's private material (now gitignored);
   threat-register count corrected 19 → 18 in two docs (review finding).
 
-### Added
-
 - **Recorder-backed sum-chain regression tests**
   (`tests/test_recorder_statistics.py`, CO-15.6): the three defect classes
   that previously escaped through the mocked recorder seam — the v0.3.0
