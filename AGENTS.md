@@ -93,6 +93,7 @@ tests/
 
 docs/
 ├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
+├── delivery-metrics.md  # quarterly delivery-metrics process + recorded time-to-restore exception (CO-18.3)
 ├── releasing.md         # release acceptance policy — beta-soak rule, hotfix evidence rule, downgrade test, acceptance record
 ├── testing.md           # test strategy — four layers, coverage floor, when live-HA manual testing is required
 ├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
@@ -102,6 +103,7 @@ docs/
     └── injection-corpus.md  # canned hostile payloads + manual replay procedure — run before ANY triage-prompt change
 
 scripts/
+├── delivery_metrics.py  # quarterly CO-18.3 delivery metrics + CHANGELOG/tag/release reconciliation (docs/delivery-metrics.md)
 ├── wt                   # bash worktree helper (new / list / rm)
 ├── access-review.sh     # quarterly access review (SECURITY.md "Access Review") — asserts the expected access surface + prints the manual checklist; read-only, maintainer-run with local gh auth, deliberately not CI
 ├── export-settings.sh   # admin-run: re-export control-plane baselines into .github/settings/ (PR-first on any settings change)
@@ -242,6 +244,25 @@ PR's test plan references them.
 When mid-sprint code-review or audit work surfaces a tail of items,
 spawn issues for each one and label-and-prioritise them rather than
 trying to fold everything into the current PR.
+
+**Label taxonomy (applied at triage, kept current).** Every open issue
+carries exactly one priority label from the moment it is triaged:
+
+- `P1` — next release / blocks the next milestone
+- `P2` — within the next few releases
+- `P3` — opportunistic; pick up when the area is next touched
+
+Priority records *consequence to users*, not effort. Defects additionally
+carry exactly one severity label — `sev:high` (wrong energy/cost data
+written to statistics, auth lockout, or integration down), `sev:med`
+(feature degraded or misleading; workaround exists), `sev:low` (cosmetic)
+— plus `escaped` if the defect existed in a published release (the bug
+form's required "Haggle version" field answers this; anything a user hit
+in the wild is escaped). Known shortcuts and unvalidated assumptions get
+`debt`. Two consumers depend on these labels being accurate: the
+`/release` flow counts closed `escaped` issues into each release's
+CHANGELOG section, and `scripts/delivery_metrics.py` computes the
+quarterly delivery metrics (see `docs/delivery-metrics.md`).
 
 ---
 

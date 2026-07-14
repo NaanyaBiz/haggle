@@ -42,6 +42,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaving a version whose release notes say it corrupted sums), and
   downgrading below v0.4.0 merely freezes the solar series until
   re-upgrade. Cross-linked from the Energy-dashboard troubleshooting doc.
+- **Issue taxonomy + quarterly delivery metrics** (CO-17.3/18.1/18.3):
+  severity (`sev:high/med/low`), priority (`P1/P2/P3`), `debt` and
+  `escaped` labels with the triage rule in AGENTS.md;
+  `scripts/delivery_metrics.py` + `docs/delivery-metrics.md` (change-failure
+  proxy, bug→fix-release latency, CHANGELOG/tag/release reconciliation, and
+  the recorded time-to-restore exception); the `/release` flow now records
+  a per-release escaped-defect count in the CHANGELOG. CHANGELOG `[0.3.2]`
+  annotated `[NEVER RELEASED]` — it was never tagged; its changes shipped
+  in v0.4.0-beta.1.
 
 ## [0.4.0-beta.6] — 2026-07-14
 
@@ -477,7 +486,13 @@ user-facing impact — the integration still ships zero pip requirements):
 
 ---
 
-## [0.3.2] — 2026-06-24
+## [0.3.2] — 2026-06-24 [NEVER RELEASED]
+
+> **Never tagged or published.** The 0.3.2 version bump merged to `main`
+> (PR #119) and `manifest.json` briefly read 0.3.2, but no `v0.3.2` tag or
+> GitHub Release was ever created — HACS users could never install this
+> version. Everything below first shipped in **v0.4.0-beta.1**
+> (2026-07-05).
 
 ### Fixed
 
