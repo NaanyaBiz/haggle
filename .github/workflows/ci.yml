@@ -35,6 +35,13 @@ jobs:
         with:
           enable-cache: true
 
+      - name: Verify uv.lock is in sync with pyproject.toml
+        # Must run BEFORE `uv sync`: a non-frozen sync silently rewrites a
+        # stale lock on disk and would mask the drift (this is exactly how a
+        # Dependabot pyproject-only floor bump slipped a stale lock past CI,
+        # #185). `uv lock --check` errors if uv.lock and pyproject.toml disagree.
+        run: uv lock --check
+
       - name: Install dependencies
         run: uv sync --extra dev
 
