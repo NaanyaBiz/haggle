@@ -1026,7 +1026,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     # per-series-range logic is deliberately in one place. Decomposition is
     # tracked in the debt issue created with this change; do not grow this
     # function further.
-    async def _fetch_range(  # noqa: C901
+    async def _fetch_range(
         self,
         cons_range: tuple[date, date] | None,
         solar_range: tuple[date, date] | None,
@@ -1078,41 +1078,21 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         first = True
         rate_limited = False
         solar_skipped = False
-        while current <= loop_end and not rate_limited:
-            fetch_cons = cons_range is not None and (
-                cons_range[0] <= current <= cons_range[1]
+        while current <= loop_end:
+            first, day_rate_limited, day_skipped = await self._fetch_sweep_day(
+                current,
+                cons_range,
+                solar_range,
+                bill_start,
+                first=first,
+                all_intervals=all_intervals,
+                solar_intervals=solar_intervals,
+                fetched_solar_days=fetched_solar_days,
             )
-            fetch_solar = solar_range is not None and (
-                solar_range[0] <= current <= solar_range[1]
-            )
-            previous = bill_start is not None and current < bill_start
-            if fetch_cons:
-                if not first:
-                    await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
-                first = False
-                readings = await self._fetch_day_consumption(current, previous)
-                if readings is None:  # rate-limited
-                    rate_limited = True
-                    break
-                all_intervals.extend(readings)
-            if fetch_solar:
-                if not first:
-                    await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
-                first = False
-                status = await self._fetch_solar_day_into(
-                    current, previous, solar_intervals, fetched_solar_days
-                )
-                if status == "halt":
-                    # 429 or transport failure — endpoint-wide, not per-day;
-                    # halt and retry the whole chunk next cycle.
-                    rate_limited = True
-                elif status == "skip":
-                    # Per-day AGL HTTP error on this solar day: unmarked, and
-                    # the sweep is flagged incomplete so a heal retries it
-                    # rather than declaring done with a hole. On normal cycles
-                    # the return is ignored and the trailing rewindow
-                    # re-fetches it next cycle.
-                    solar_skipped = True
+            solar_skipped = solar_skipped or day_skipped
+            if day_rate_limited:
+                rate_limited = True
+                break
             current += timedelta(days=1)
 
         if all_intervals:
@@ -1141,6 +1121,64 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # in 30 minutes — the rewindow/heal machinery owns those.
         self._sweep_halted = rate_limited
         return not rate_limited and not solar_skipped
+
+    async def _fetch_sweep_day(
+        self,
+        current: date,
+        cons_range: tuple[date, date] | None,
+        solar_range: tuple[date, date] | None,
+        bill_start: date | None,
+        *,
+        first: bool,
+        all_intervals: list[IntervalReading],
+        solar_intervals: list[IntervalReading],
+        fetched_solar_days: list[date],
+    ) -> tuple[bool, bool, bool]:
+        """Fetch one sweep day for whichever series cover it, into the batches.
+
+        Extends ``all_intervals`` / ``solar_intervals`` / ``fetched_solar_days``
+        in place and returns ``(first, rate_limited, solar_skipped)``: ``first``
+        threads the inter-request sleep bookkeeping back to the caller (no sleep
+        before the very first request of the sweep); ``rate_limited`` is True if
+        either endpoint returned a 429/transport halt (the caller stops the
+        sweep); ``solar_skipped`` is True if a per-day AGL HTTP error skipped
+        this solar day (the sweep is incomplete so a heal retries it). Extracted
+        verbatim from the ``_fetch_range`` loop body — behaviour is unchanged
+        (#187).
+        """
+        fetch_cons = cons_range is not None and (
+            cons_range[0] <= current <= cons_range[1]
+        )
+        fetch_solar = solar_range is not None and (
+            solar_range[0] <= current <= solar_range[1]
+        )
+        previous = bill_start is not None and current < bill_start
+        if fetch_cons:
+            if not first:
+                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+            first = False
+            readings = await self._fetch_day_consumption(current, previous)
+            if readings is None:  # rate-limited — halt without touching solar
+                return first, True, False
+            all_intervals.extend(readings)
+        if fetch_solar:
+            if not first:
+                await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
+            first = False
+            status = await self._fetch_solar_day_into(
+                current, previous, solar_intervals, fetched_solar_days
+            )
+            if status == "halt":
+                # 429 or transport failure — endpoint-wide, not per-day;
+                # halt and retry the whole chunk next cycle.
+                return first, True, False
+            if status == "skip":
+                # Per-day AGL HTTP error on this solar day: unmarked, and the
+                # sweep is flagged incomplete so a heal retries it rather than
+                # declaring done with a hole. On normal cycles the return is
+                # ignored and the trailing rewindow re-fetches it next cycle.
+                return first, False, True
+        return first, False, False
 
     async def _track_solar_stall(
         self, solar_range: tuple[date, date], progressed: bool, skipped: bool
