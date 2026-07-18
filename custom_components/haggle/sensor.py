@@ -56,14 +56,19 @@ if TYPE_CHECKING:
     from . import HaggleConfigEntry
 
 SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
-    # --- Energy dashboard sensor (total_increasing) ---
-    # The cumulative kWh total (all-time from start of integration) is fed
-    # via import_statistics(); this entity reflects the latest known value.
+    # --- Cumulative kWh total (device-card value, NOT an Energy source) ---
+    # The all-time cumulative total is fed to the Energy dashboard via
+    # import_statistics() (haggle:consumption_<contract>), which places every
+    # kWh in its true hour. This entity is only the latest known value for the
+    # device card. It carries NO device_class/state_class ON PURPOSE so it
+    # cannot be picked as an Energy-dashboard source: its state moves once per
+    # 24 h poll, so HA would attribute a whole day's kWh to the poll hour on the
+    # wrong day (#147, #137). De-listing also stops it emitting long-term
+    # statistics — existing installs see a one-time HA `state_class_removed`
+    # repair that is safe to dismiss.
     SensorEntityDescription(
         key=DATA_CONSUMPTION_KWH,
         translation_key="consumption",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),
@@ -123,11 +128,16 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
 # sensors. Cumulative values are fed via import_statistics like consumption;
 # these entities mirror the latest known sums.
 SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+    # Cumulative generation total — device-card value, NOT an Energy source.
+    # Same rationale as the consumption sensor above: fed to the Energy
+    # dashboard via import_statistics() (haggle:generation_<contract>) with
+    # true hourly placement, so this entity carries NO device_class/state_class
+    # to keep it out of the "Return to grid" source picker (its once-per-poll
+    # state would mis-place a whole day's export). De-listing stops long-term
+    # statistics — one-time `state_class_removed` repair, safe to dismiss (#147).
     SensorEntityDescription(
         key=DATA_GENERATION_KWH,
         translation_key="generation",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),

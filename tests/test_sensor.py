@@ -220,6 +220,31 @@ class TestSolarDescriptions:
         assert desc.state_class is SensorStateClass.MEASUREMENT
         assert desc.native_unit_of_measurement == "AUD/kWh"
 
+    def test_cumulative_kwh_sensors_are_not_energy_sources(self) -> None:
+        """#147: the cumulative consumption / solar-generation totals must NOT
+        carry device_class/state_class. With them, HA lists these once-per-poll
+        entities as Energy-dashboard sources and attributes a whole day's kWh to
+        the poll hour (wrong day, AGL lag). The real sources are the
+        import_statistics() series; these entities are device-card values only.
+        """
+        from homeassistant.const import UnitOfEnergy
+
+        from custom_components.haggle.const import (
+            DATA_CONSUMPTION_KWH,
+            DATA_GENERATION_KWH,
+        )
+        from custom_components.haggle.sensor import (
+            SENSOR_DESCRIPTIONS,
+            SOLAR_DESCRIPTIONS,
+        )
+
+        cons = {d.key: d for d in SENSOR_DESCRIPTIONS}[DATA_CONSUMPTION_KWH]
+        gen = {d.key: d for d in SOLAR_DESCRIPTIONS}[DATA_GENERATION_KWH]
+        for desc in (cons, gen):
+            assert desc.device_class is None
+            assert desc.state_class is None
+            assert desc.native_unit_of_measurement == UnitOfEnergy.KILO_WATT_HOUR
+
     async def test_period_sensor_unknown_until_backfill_caught_up(
         self, hass: HomeAssistant
     ) -> None:

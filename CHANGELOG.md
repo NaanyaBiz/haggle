@@ -74,7 +74,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   annotated `[NEVER RELEASED]` — it was never tagged; its changes shipped
   in v0.4.0-beta.1.
 
-### Security
+### Changed
+
+- **The cumulative `Consumption` and `Solar generation` sensors are no longer
+  selectable as Energy-dashboard sources** (#147, #137). They carried
+  `device_class=energy` + `state_class=total_increasing`, so Home Assistant
+  offered them in the source picker — but their state only moves once per daily
+  poll, so the dashboard attributed a whole day's kWh to the poll hour, on the
+  wrong day (AGL data lags 24–48 h). The correct sources are the `haggle:…`
+  statistics, which place every kWh in its true hour; these sensors remain as
+  at-a-glance totals on the device card. **One-time note:** on installs where
+  these sensors had recorded long-term statistics, HA shows a
+  `state class removed` repair — it is expected and safe to dismiss.
 
 - **Continuity & succession plan** (`SECURITY.md`): documents that, on the
   maintainer's death or permanent departure, project ownership (the GitHub
