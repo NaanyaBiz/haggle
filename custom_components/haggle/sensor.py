@@ -65,7 +65,8 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
     # 24 h poll, so HA would attribute a whole day's kWh to the poll hour on the
     # wrong day (#147, #137). De-listing also stops it emitting long-term
     # statistics — existing installs see a one-time HA `state_class_removed`
-    # repair that is safe to dismiss.
+    # repair; resolving it (not merely dismissing) clears the now-stale
+    # statistic from the Energy picker (see CHANGELOG / docs/energy-dashboard.md).
     SensorEntityDescription(
         key=DATA_CONSUMPTION_KWH,
         translation_key="consumption",
@@ -137,7 +138,8 @@ SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
     # true hourly placement, so this entity carries NO device_class/state_class
     # to keep it out of the "Return to grid" source picker (its once-per-poll
     # state would mis-place a whole day's export). De-listing stops long-term
-    # statistics — one-time `state_class_removed` repair, safe to dismiss (#147).
+    # statistics — one-time `state_class_removed` repair to resolve (not just
+    # dismiss) so the stale statistic leaves the Energy picker (#147).
     SensorEntityDescription(
         key=DATA_GENERATION_KWH,
         translation_key="generation",
