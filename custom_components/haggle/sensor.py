@@ -56,23 +56,32 @@ if TYPE_CHECKING:
     from . import HaggleConfigEntry
 
 SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
-    # --- Energy dashboard sensor (total_increasing) ---
-    # The cumulative kWh total (all-time from start of integration) is fed
-    # via import_statistics(); this entity reflects the latest known value.
+    # --- Cumulative kWh total (device-card value, NOT an Energy source) ---
+    # The all-time cumulative total is fed to the Energy dashboard via
+    # import_statistics() (haggle:consumption_<contract>), which places every
+    # kWh in its true hour. This entity is only the latest known value for the
+    # device card. It carries NO device_class/state_class ON PURPOSE so it
+    # cannot be picked as an Energy-dashboard source: its state moves once per
+    # 24 h poll, so HA would attribute a whole day's kWh to the poll hour on the
+    # wrong day (#147, #137). De-listing also stops it emitting long-term
+    # statistics — existing installs see a one-time HA `state_class_removed`
+    # repair; resolving it (not merely dismissing) clears the now-stale
+    # statistic from the Energy picker (see CHANGELOG / docs/energy-dashboard.md).
     SensorEntityDescription(
         key=DATA_CONSUMPTION_KWH,
         translation_key="consumption",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),
-    # --- Sub-period sensors (reset at billing boundary) ---
+    # --- Sub-period kWh total (device-card value, NOT an Energy source) ---
+    # "This period" total, reset at the billing boundary. Like the cumulative
+    # total above, it carries NO device_class/state_class: it also advances
+    # only once per daily poll, so as an Energy source it would mis-place a
+    # whole day's kWh on the poll hour (#147). The Energy-dashboard source is
+    # always the haggle:… statistics.
     SensorEntityDescription(
         key=DATA_CONSUMPTION_PERIOD,
         translation_key="consumption_period",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
     ),
@@ -123,11 +132,17 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
 # sensors. Cumulative values are fed via import_statistics like consumption;
 # these entities mirror the latest known sums.
 SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
+    # Cumulative generation total — device-card value, NOT an Energy source.
+    # Same rationale as the consumption sensor above: fed to the Energy
+    # dashboard via import_statistics() (haggle:generation_<contract>) with
+    # true hourly placement, so this entity carries NO device_class/state_class
+    # to keep it out of the "Return to grid" source picker (its once-per-poll
+    # state would mis-place a whole day's export). De-listing stops long-term
+    # statistics — one-time `state_class_removed` repair to resolve (not just
+    # dismiss) so the stale statistic leaves the Energy picker (#147).
     SensorEntityDescription(
         key=DATA_GENERATION_KWH,
         translation_key="generation",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL_INCREASING,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),
@@ -141,16 +156,16 @@ SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement="AUD",
         suggested_display_precision=2,
     ),
-    # --- Bill-period solar totals (mirror the consumption period sensors) ---
-    # TOTAL without last_reset: HA treats a decrease as a reset, which is
-    # exactly the bill-rollover behaviour. `unknown` until the generation
-    # series has backfilled to the trailing rewindow — a mid-backfill partial
-    # could never match the AGL app's "Sold To Grid" tile (#128).
+    # --- Bill-period solar total (device-card value, NOT an Energy source) ---
+    # "Sold this period", reset at the billing boundary. Like the other kWh
+    # totals it carries NO device_class/state_class so it can't be picked as a
+    # "Return to grid" source (its once-per-poll state would mis-place a day's
+    # export — #147). `unknown` until the generation series has backfilled to
+    # the trailing rewindow — a mid-backfill partial could never match the AGL
+    # app's "Sold To Grid" tile (#128).
     SensorEntityDescription(
         key=DATA_GENERATION_PERIOD,
         translation_key="generation_period",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
     ),
