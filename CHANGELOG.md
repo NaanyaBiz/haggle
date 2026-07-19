@@ -76,16 +76,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **The cumulative `Consumption` and `Solar generation` sensors are no longer
-  selectable as Energy-dashboard sources** (#147, #137). They carried
-  `device_class=energy` + `state_class=total_increasing`, so Home Assistant
-  offered them in the source picker — but their state only moves once per daily
-  poll, so the dashboard attributed a whole day's kWh to the poll hour, on the
-  wrong day (AGL data lags 24–48 h). The correct sources are the `haggle:…`
-  statistics, which place every kWh in its true hour; these sensors remain as
-  at-a-glance totals on the device card. **One-time note:** on installs where
-  these sensors had recorded long-term statistics, HA shows a
-  `state class removed` repair — it is expected and safe to dismiss.
+- **The kWh total sensors are no longer selectable as Energy-dashboard
+  sources** (#147, #137): the cumulative `Consumption` / `Solar generation`
+  totals *and* their `… this period` counterparts. They carried
+  `device_class=energy` + a total `state_class`, so Home Assistant offered them
+  in the source picker — but their state only moves once per daily poll, so the
+  dashboard attributed a whole day's kWh to the poll hour, on the wrong day
+  (AGL data lags 24–48 h). The correct sources are the `haggle:…` statistics,
+  which place every kWh in its true hour; these sensors remain as at-a-glance
+  totals on the device card. **Upgrading:** new installs are unaffected; on an
+  install where one of these sensors had already recorded long-term statistics,
+  HA raises a one-time `state class removed` repair — **resolve** it (or delete
+  that sensor's statistics under Developer Tools → Statistics) to remove the
+  now-stale source from the picker; dismissing the repair alone leaves the old
+  statistic selectable.
 
 - **Continuity & succession plan** (`SECURITY.md`): documents that, on the
   maintainer's death or permanent departure, project ownership (the GitHub

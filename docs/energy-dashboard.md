@@ -33,13 +33,13 @@ not for the Energy dashboard:
 | Sensor | What it shows |
 |---|---|
 | **Consumption** | Cumulative kWh ever imported by the integration. Mirrors the statistics total; moves once per daily poll. Not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |
-| **Consumption this period** | kWh so far in the current AGL billing period (matches the app's "Usage So Far"). |
+| **Consumption this period** | kWh so far in the current AGL billing period (matches the app's "Usage So Far"). Not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |
 | **Consumption cost** | AUD so far in the current billing period. |
 | **Bill projection** | AGL's own forecast for the current bill. |
 | **Unit rate / Supply charge** | Your plan's c/kWh (as AUD/kWh) and daily supply charge. |
 | **Unit rate (peak / off-peak / shoulder)** | Per-band rates — ToU contracts only. |
 | **Solar generation / Solar feed-in credit** | Cumulative exported kWh / credited AUD ever imported — solar contracts only. Like **Consumption**, these are running totals: do not compare them to the app's billing-period tile. **Solar generation** is not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |
-| **Solar sold this period / Solar feed-in credit this period** | Exported kWh / credited AUD in the current billing period — these are the numbers that match the AGL app's "Sold To Grid" tile. Caveat: on **quarterly billing**, a period that started more than 30 days ago predates the backfill window, so these cover only the stored 30-day history and will read lower than the app until a new period starts. |
+| **Solar sold this period / Solar feed-in credit this period** | Exported kWh / credited AUD in the current billing period — these are the numbers that match the AGL app's "Sold To Grid" tile. **Solar sold this period** is not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). Caveat: on **quarterly billing**, a period that started more than 30 days ago predates the backfill window, so these cover only the stored 30-day history and will read lower than the app until a new period starts. |
 | **Solar feed-in rate** | Your feed-in tariff in AUD/kWh. |
 
 ## Data timing — what "normal" looks like
@@ -64,11 +64,15 @@ config? Any prior release can be reinstalled safely — see
 The dashboard is charting a `sensor.…` entity instead of the `haggle:…`
 statistic. Remove the sensor from the dashboard's sources and add the
 statistic (see the table above). Past days re-render correctly immediately —
-the statistic already holds the hourly history. The cumulative **Consumption**
-and **Solar generation** sensors are no longer offered in the source picker
-([#147](https://github.com/NaanyaBiz/haggle/issues/147)), closing the most
-common form of this trap for new setups; the rule above still applies to the
-remaining energy-typed sensors (the *this period* totals). (Reported as
+the statistic already holds the hourly history. The kWh total sensors
+(cumulative **and** *this period*, consumption **and** solar) are no longer
+offered in the Energy source picker
+([#147](https://github.com/NaanyaBiz/haggle/issues/147)), so new setups can't
+hit this. On an install that had *already* charted one of these sensors, Home
+Assistant raises a one-time **"state class removed"** repair — **resolve** it
+(or delete that sensor's statistics under *Developer Tools → Statistics*) to
+clear the now-stale source from the picker; dismissing the repair alone leaves
+the old statistic selectable. (Reported as
 [#137](https://github.com/NaanyaBiz/haggle/issues/137).)
 
 **My daily kWh is exactly double the AGL app.**

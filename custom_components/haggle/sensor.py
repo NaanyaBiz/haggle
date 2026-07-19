@@ -72,12 +72,15 @@ SENSOR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=3,
     ),
-    # --- Sub-period sensors (reset at billing boundary) ---
+    # --- Sub-period kWh total (device-card value, NOT an Energy source) ---
+    # "This period" total, reset at the billing boundary. Like the cumulative
+    # total above, it carries NO device_class/state_class: it also advances
+    # only once per daily poll, so as an Energy source it would mis-place a
+    # whole day's kWh on the poll hour (#147). The Energy-dashboard source is
+    # always the haggle:… statistics.
     SensorEntityDescription(
         key=DATA_CONSUMPTION_PERIOD,
         translation_key="consumption_period",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
     ),
@@ -151,16 +154,16 @@ SOLAR_DESCRIPTIONS: tuple[SensorEntityDescription, ...] = (
         native_unit_of_measurement="AUD",
         suggested_display_precision=2,
     ),
-    # --- Bill-period solar totals (mirror the consumption period sensors) ---
-    # TOTAL without last_reset: HA treats a decrease as a reset, which is
-    # exactly the bill-rollover behaviour. `unknown` until the generation
-    # series has backfilled to the trailing rewindow — a mid-backfill partial
-    # could never match the AGL app's "Sold To Grid" tile (#128).
+    # --- Bill-period solar total (device-card value, NOT an Energy source) ---
+    # "Sold this period", reset at the billing boundary. Like the other kWh
+    # totals it carries NO device_class/state_class so it can't be picked as a
+    # "Return to grid" source (its once-per-poll state would mis-place a day's
+    # export — #147). `unknown` until the generation series has backfilled to
+    # the trailing rewindow — a mid-backfill partial could never match the AGL
+    # app's "Sold To Grid" tile (#128).
     SensorEntityDescription(
         key=DATA_GENERATION_PERIOD,
         translation_key="generation_period",
-        device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         suggested_display_precision=2,
     ),
