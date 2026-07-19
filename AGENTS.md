@@ -800,8 +800,9 @@ The HA Energy dashboard requires:
   raise `max-complexity` to absorb a new C901 offender.** Both floors are
   deliberate ratchet gates (secure-SDLC standard CO-17.2): coverage ratchets UP as the
   total rises; a new over-complexity function gets decomposed, not legalized.
-  The single sanctioned exemption is `coordinator._fetch_range` (noqa'd with
-  rationale + debt issue).
+  As of #187 the tree carries **no `C901` `noqa` exemptions** — the former
+  `coordinator._fetch_range` exemption was retired by extracting its per-day
+  loop body into `_fetch_sweep_day`. Keep it that way: decompose, don't noqa.
 - **Don't change GitHub repo settings, rulesets, or Actions policy without a
   PR updating `.github/settings/` first.** The control plane is settings-as-code
   (secure-SDLC standard CO-9): PR the intended state into `.github/settings/`, merge,
