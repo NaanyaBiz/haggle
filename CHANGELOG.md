@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Release/test acceptance posture updated for the maintainer's AGL →
+  Amber retailer migration** (2026-07-28, `SECURITY.md` RA-16,
+  `docs/releasing.md`, `docs/testing.md`, `docs/compliance/conformance.md`):
+  the maintainer no longer holds a live AGL account and cannot
+  personally exercise any AGL-authenticated flow. Beta-soak acceptance,
+  reconciliation, the downgrade test, and diagnostics E2E verification
+  now depend entirely on volunteer beta testers reporting on GitHub
+  issues; a release requiring live-AGL verification is held, not
+  shipped, until a volunteer confirms it. The pre-merge live-HA manual
+  test requirement for config-flow/sensor changes is dropped — merge
+  proceeds on green CI, with real-world validation happening at the
+  beta-soak stage.
+
 ### Added
 
 - **Agent-side release/merge gates** (`.claude/`): the `/pr` command now

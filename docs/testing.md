@@ -12,7 +12,7 @@ without recorded acceptance on a live HA instance.
 | 1. Unit | Parsers, client, models, const — pure Python against anonymised fixtures | `tests/test_parser.py`, `test_agl_client.py`, `test_const.py`, `test_pinning.py` | Every PR + push (CI required check) |
 | 2. Harness integration | Real HA core via `pytest-homeassistant-custom-component`: setup/unload, config flow, coordinator, sensors, diagnostics — recorder mocked at the boundary; PLUS `tests/test_recorder_statistics.py`, which runs the sum-chain scenarios against a **real** recorder (`recorder_mock`) because the mocked seam is where the v0.3.0 spike and #114 escaped | `tests/test_*.py` | Every PR + push (CI required check) |
 | 3. Fuzz | Atheris totality fuzzing of `agl/parser.py` — the trust boundary for attacker-influenceable JSON (TLS pinning is warn-only) | `tests/fuzz/`, `fuzz.yml` | Weekly deep run + 120 s smoke on every PR (required check) |
-| 4. Acceptance (beta dogfood) | Beta prerelease soaks on the maintainer's live HA + volunteer testers validating against AGL-app ground truth on GitHub issues | HACS beta channel; recorded per `docs/releasing.md` | Every beta → stable promotion |
+| 4. Acceptance (beta soak) | Beta prerelease soaks entirely on volunteer beta testers' live HA instances, validating against AGL-app ground truth on GitHub issues — the maintainer no longer holds a live AGL account (RA-16, SECURITY.md) and cannot dogfood this himself | HACS beta channel; recorded per `docs/releasing.md` | Every beta → stable promotion |
 
 A weekly `compat.yml` run additionally executes layer 1+2 against the
 latest phcc/HA (including beta) for early upstream-breakage warning —
@@ -54,12 +54,18 @@ not to be a target.
 
 ## When live-HA manual testing is required
 
-Before merge (PR checklist): any change to the config flow, sensor
-definitions, or entity registry behaviour.
+Before merge: no live AGL-authenticated manual test is required —
+the maintainer no longer holds a live AGL account and cannot complete a
+real login, so merge proceeds on green CI as usual (RA-16, SECURITY.md).
+Real-world AGL-auth validation for config-flow/sensor/entity-registry
+changes happens entirely at the beta-soak stage below.
 Before beta→stable promotion (always): soak per `docs/releasing.md`,
-including Energy-dashboard-vs-AGL-app reconciliation.
+including Energy-dashboard-vs-AGL-app reconciliation, performed by
+volunteer beta testers.
 Never required for: parser-only changes fully covered by fixtures,
-docs, CI plumbing.
+docs, CI plumbing, or anything not touching AGL auth/data (e.g. restart
+behaviour, entry-storage inspection) — the maintainer's own HA instance
+still exists for that, just without an AGL contract.
 
 ## Fixtures
 

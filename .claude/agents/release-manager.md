@@ -92,8 +92,9 @@ keep the plain one-line body above):
     Version bump for v$VERSION.
 
     ## Acceptance evidence
-    - Beta soak: v$VERSION-beta.N published <date> → <N> days on the
-      maintainer's live HA, zero regressions
+    - Beta soak: v$VERSION-beta.N published <date> → <N> days in the
+      wild, zero regressions reported by volunteer beta testers (RA-16 —
+      the maintainer no longer holds a live AGL account)
       (or: HOTFIX — validation: <evidence supplied by Dave>)
     - App reconciliation: <date> — dashboard <X.XX> kWh vs app <X.XX> kWh
     - Beta blockers: 0 open (`beta-blocker` label)
