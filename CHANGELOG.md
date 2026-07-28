@@ -30,9 +30,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **App reconciliation**: 2026-07-01 capture, confirmed 2026-07-06 by
   @kaizersoje on issue #128 — outer `feedIn.quantity` sum = 8.019 kWh vs the
   AGL app's "Sold to Grid 8.02 kWh" tile (delta 0.001 kWh, well within the
-  ≤0.05 kWh threshold). This is the existing documented reconciliation record
-  (see AGENTS.md "Solar Generation" section) — cite it, don't re-derive a new
-  number.
+  ≤0.05 kWh threshold). See AGENTS.md "Solar Generation" for the full record.
 - **Beta blockers**: 0 open (`beta-blocker` label) — #159 closed 2026-07-28/29
   after @kaizersoje's full diagnostics E2E confirmation (contract/account/
   refresh-token grep zero hits, statistics coverage matches Developer Tools,
