@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Release/test acceptance posture updated for the maintainer's AGL →
+  Amber retailer migration** (2026-07-28, `SECURITY.md` RA-16,
+  `docs/releasing.md`, `docs/testing.md`, `docs/compliance/conformance.md`):
+  the maintainer no longer holds a live AGL account and cannot
+  personally exercise any AGL-authenticated flow. Beta-soak acceptance,
+  reconciliation, the downgrade test, and diagnostics E2E verification
+  now depend entirely on volunteer beta testers reporting on GitHub
+  issues; a release requiring live-AGL verification is held, not
+  shipped, until a volunteer confirms it. The pre-merge live-HA manual
+  test requirement for config-flow/sensor changes is dropped — merge
+  proceeds on green CI, with real-world validation happening at the
+  beta-soak stage.
+
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+---
+
+## [0.4.0] - 2026-07-29
+
+**Escaped defects closed this release:** 1 (0 sev:high) — #147.
+
+### Acceptance evidence
+
+- **Beta soak**: v0.4.0-beta.6 published 2026-07-14 → 14 days in the wild,
+  zero regressions reported by volunteer beta testers (RA-16 — the maintainer
+  no longer holds a live AGL account; see SECURITY.md).
+- **App reconciliation**: 2026-07-01 capture, confirmed 2026-07-06 by
+  @kaizersoje on issue #128 — outer `feedIn.quantity` sum = 8.019 kWh vs the
+  AGL app's "Sold to Grid 8.02 kWh" tile (delta 0.001 kWh, well within the
+  ≤0.05 kWh threshold). See AGENTS.md "Solar Generation" for the full record.
+- **Beta blockers**: 0 open (`beta-blocker` label) — #159 closed 2026-07-28/29
+  after @kaizersoje's full diagnostics E2E confirmation (contract/account/
+  refresh-token grep zero hits, statistics coverage matches Developer Tools,
+  solar_heal/bill_period_start/last_exception all sane).
+- **Downgrade test**: not performed for the 0.4.0 line — the maintainer no
+  longer holds a live AGL account (RA-16) and no volunteer has run it yet.
+  Recorded as an explicit gap per Dave's explicit decision to proceed without
+  it this cycle, rather than blocking the release or fabricating a result.
+  Follow-up: ask a volunteer beta tester to run it post-release and record
+  the result retroactively.
+
 ### Added
 
 - **Project roadmap** (`ROADMAP.md`): the direction for roughly the next
@@ -212,15 +262,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `release-manager`): the version bump now goes via a short-lived PR;
   the signed tag is created on the squash-merge commit and pushed
   separately. The old direct-commit-to-main flow bounces off the ruleset.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 

@@ -443,10 +443,15 @@ belong to — never applied silently.
 
 ### Pre-release canary
 
-Every release runs as a beta on the maintainer's own production HA
-instance against the live AGL API before a stable tag is cut. That
-dogfood instance is the project's dynamic-testing analogue; the
-hostile-input analogue runs continuously as atheris fuzzing of the parser
+Every release runs as a beta against the live AGL API before a stable
+tag is cut. Since 2026-07-28 the maintainer no longer holds a live AGL
+account (he migrated his own household to a different retailer, Amber)
+and cannot personally exercise any AGL-authenticated flow — login,
+polling, statistics reconciliation, diagnostics content — end-to-end.
+The dynamic-testing analogue is therefore now entirely a volunteer beta
+tester's live install, validated on the release-tracking GitHub issue
+(RA-16). The hostile-input analogue is unaffected — it runs continuously
+maintainer-side and needs no AGL account: atheris fuzzing of the parser
 boundary (`fuzz.yml` — an unconditional smoke run on every PR plus a
 weekly deep run with a persisted corpus).
 
@@ -571,6 +576,7 @@ its own rows.
 | RA-13 | No formal secure-development training regime for the maintainer. | OpenSSF Best Practices attestations; the AGENTS.md footgun corpus (recurring by construction — every PR appends new footguns); annual badge re-validation + HA security-guidance re-read. | Accepted — @naanyabiz, 2026-07-13 | Annually |
 | RA-14 | Residual STRIDE threats accepted per the threat-model register: I-3 (service address as entry title), R-1 (no token-rotation audit trail), D-2 residual (no two-phase persist), E-3 (borrowed client_id supports elevated scopes), S-3 (no callback-host check). | Per-threat rationale + tripwires in [docs/threat-model.md](docs/threat-model.md) §4–5. | Accepted — @naanyabiz, 2026-07-13 | Annually / on trigger |
 | RA-15 | (Pointer) The dated acceptances embedded elsewhere in this file — Scorecard "Accepted at N" scores, the scorecard-action mutable container tag, hacs/hassfest branch-SHA pins, the phcc range pin and HA transitive tree, warn-only SPKI pin mismatch — are standing acceptances on the same terms as this register. | See the respective sections. | Accepted — @naanyabiz, 2026-07-13 | Annually |
+| RA-16 | Maintainer no longer holds a live AGL account (migrated his own household to Amber, 2026-07-28): cannot personally validate any AGL-authenticated flow — login, polling, statistics reconciliation, diagnostics content — end-to-end, pre-merge or pre-release. | Beta-soak acceptance, the downgrade test, and diagnostics E2E verification (docs/releasing.md, docs/testing.md) now depend entirely on volunteer beta testers reporting on GitHub issues; a release or change requiring live-AGL verification is held, not shipped, if no volunteer confirms it within a reasonable window. | Accepted — @naanyabiz, 2026-07-28 | On regaining a live AGL account / on second maintainer |
 
 ## Coordinated Disclosure
 
