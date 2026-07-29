@@ -19,12 +19,13 @@ dashboard.
 
 > **Status** (current version: see the badge above or the
 > [releases page](https://github.com/NaanyaBiz/haggle/releases)): the
-> flat-rate consumption/cost path is stable and runs live in the maintainer's
-> Home Assistant. **Time-of-Use** support is in validation with real ToU
-> customers ([#126](https://github.com/NaanyaBiz/haggle/issues/126)), and
-> **solar feed-in** support is in beta validation
-> ([#128](https://github.com/NaanyaBiz/haggle/issues/128)) — enable
-> "Show beta versions" in HACS to try either. See
+> flat-rate consumption/cost path and **solar generation/feed-in** both
+> shipped in stable as of v0.4.0, validated against real installs and the
+> AGL app by volunteer beta testers
+> ([#128](https://github.com/NaanyaBiz/haggle/issues/128)). **Time-of-Use**
+> support is still in validation with real ToU customers
+> ([#126](https://github.com/NaanyaBiz/haggle/issues/126)) — enable
+> "Show beta versions" in HACS to try it. See
 > [`CHANGELOG.md`](./CHANGELOG.md) for milestone detail.
 
 ## Why
@@ -130,10 +131,10 @@ writes `haggle:generation_<contract>` (exported kWh — an Energy-dashboard
 credit). Sensors cover the current billing period (matching the AGL app's
 "Sold To Grid" tile), cumulative totals, and your feed-in rate.
 
-> Solar is in beta validation
+> Solar shipped in stable as of v0.4.0
 > ([#128](https://github.com/NaanyaBiz/haggle/issues/128)) — the field
-> mapping is confirmed against a real capture and the AGL app; install the
-> latest pre-release via HACS "Show beta versions" to try it.
+> mapping is confirmed against a real capture and the AGL app; no beta
+> channel needed.
 
 ## Develop
 
