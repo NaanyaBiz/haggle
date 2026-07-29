@@ -9,11 +9,15 @@ below. `release.yml` marks any tag containing `-` as a prerelease.
 
 A stable `vX.Y.0` may be tagged only when ALL of:
 
-1. **Soak**: the latest `vX.Y.0-beta.N` has run ≥ 7 days on the
-   maintainer's live HA instance with zero regressions attributable to it.
-2. **Reconciliation**: Energy dashboard daily kWh (and, on solar
-   contracts, sold-to-grid kWh) reconciles with the AGL app for at least
-   one complete recent day (delta ≤ 0.05 kWh — AGL rounds to 2 dp).
+1. **Soak**: the latest `vX.Y.0-beta.N` has run ≥ 7 days on a volunteer
+   beta tester's live HA instance, reported on the relevant GitHub issue,
+   with zero regressions attributable to it. The maintainer no longer
+   holds a live AGL account (RA-16, SECURITY.md) and cannot dogfood this
+   himself.
+2. **Reconciliation**: a volunteer beta tester's Energy dashboard daily
+   kWh (and, on solar contracts, sold-to-grid kWh) reconciles with the
+   AGL app for at least one complete recent day (delta ≤ 0.05 kWh — AGL
+   rounds to 2 dp), reported on the release-tracking issue.
 3. **Zero beta blockers**: `gh issue list --label beta-blocker --state
    open` is empty. Tag beta-user reports that must gate promotion with
    `beta-blocker` as they arrive.
@@ -39,7 +43,11 @@ acceptance sign-off record.
 
 Before or with each stable `vX.Y.z`, run one manual downgrade test from
 the new version to the previous stable and record the result in the
-release PR + CHANGELOG:
+release PR + CHANGELOG. This requires a live AGL-authenticated poll
+(step 3 below), which the maintainer can no longer perform himself
+(RA-16) — it is now done by or with a volunteer beta tester's install.
+If no volunteer is available for a given stable line, record that gap
+explicitly in the release PR rather than skip the test silently:
 
 1. On an HA instance running the new version: note the last poll time
    and current Energy-dashboard daily totals.
@@ -54,9 +62,12 @@ release PR + CHANGELOG:
 
 ## Risk acceptances (structural, not fixable by process)
 
-- **No second human acceptor.** Acceptance is the maintainer dogfooding
-  his own production instance plus volunteer beta testers on issues.
-  Accepted; the compensating control is the recorded evidence above.
+- **No second human acceptor.** Acceptance is the maintainer accepting
+  volunteer beta testers' reports on issues — since 2026-07-28 the
+  maintainer no longer dogfoods on his own AGL account at all (RA-16),
+  so acceptance now depends entirely on external volunteers rather than
+  just lacking a second reviewer. Accepted; the compensating control is
+  the recorded evidence above, held pending a volunteer if none confirm.
 - **No automated health-based rollback.** Pull-based, telemetry-free
   distribution cannot observe installed-base health or push a rollback.
   Building telemetry to satisfy this clause would be worse than the gap.
