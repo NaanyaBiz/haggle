@@ -187,24 +187,20 @@ class TestSolarRegistration:
 
 
 class TestSolarDescriptions:
-    def test_period_sensors_mirror_consumption_period_pattern(self) -> None:
-        """Bill-period totals reset at rollover: TOTAL, never TOTAL_INCREASING."""
+    def test_period_credit_is_monetary_total(self) -> None:
+        """The bill-period *credit* (money) stays MONETARY + TOTAL. Its sibling
+        kWh period total is de-listed (device_class/state_class None) — pinned
+        by test_kwh_sensors_are_not_energy_dashboard_sources — so it can't be an
+        Energy source (#147)."""
         from homeassistant.components.sensor import (
             SensorDeviceClass,
             SensorStateClass,
         )
 
-        from custom_components.haggle.const import (
-            DATA_GENERATION_PERIOD,
-            DATA_GENERATION_PERIOD_CREDIT,
-        )
+        from custom_components.haggle.const import DATA_GENERATION_PERIOD_CREDIT
         from custom_components.haggle.sensor import SOLAR_DESCRIPTIONS
 
-        by_key = {d.key: d for d in SOLAR_DESCRIPTIONS}
-        period = by_key[DATA_GENERATION_PERIOD]
-        assert period.state_class is SensorStateClass.TOTAL
-        assert period.device_class is SensorDeviceClass.ENERGY
-        credit = by_key[DATA_GENERATION_PERIOD_CREDIT]
+        credit = {d.key: d for d in SOLAR_DESCRIPTIONS}[DATA_GENERATION_PERIOD_CREDIT]
         assert credit.state_class is SensorStateClass.TOTAL
         assert credit.device_class is SensorDeviceClass.MONETARY
 
@@ -219,6 +215,39 @@ class TestSolarDescriptions:
         assert desc.device_class is None
         assert desc.state_class is SensorStateClass.MEASUREMENT
         assert desc.native_unit_of_measurement == "AUD/kWh"
+
+    def test_kwh_sensors_are_not_energy_dashboard_sources(self) -> None:
+        """#147: every kWh *total* sensor — cumulative AND bill-period,
+        consumption AND solar — must carry no device_class/state_class. With
+        them, HA lists these once-per-poll entities as Energy-dashboard sources
+        and attributes a whole day's kWh to the poll hour (wrong day, AGL lag).
+        The real sources are the import_statistics() series; these entities are
+        device-card values only. (Monetary cost/credit sensors are unaffected.)
+        """
+        from homeassistant.const import UnitOfEnergy
+
+        from custom_components.haggle.const import (
+            DATA_CONSUMPTION_KWH,
+            DATA_CONSUMPTION_PERIOD,
+            DATA_GENERATION_KWH,
+            DATA_GENERATION_PERIOD,
+        )
+        from custom_components.haggle.sensor import (
+            SENSOR_DESCRIPTIONS,
+            SOLAR_DESCRIPTIONS,
+        )
+
+        by_key = {d.key: d for d in (*SENSOR_DESCRIPTIONS, *SOLAR_DESCRIPTIONS)}
+        for key in (
+            DATA_CONSUMPTION_KWH,
+            DATA_CONSUMPTION_PERIOD,
+            DATA_GENERATION_KWH,
+            DATA_GENERATION_PERIOD,
+        ):
+            desc = by_key[key]
+            assert desc.device_class is None, key
+            assert desc.state_class is None, key
+            assert desc.native_unit_of_measurement == UnitOfEnergy.KILO_WATT_HOUR, key
 
     async def test_period_sensor_unknown_until_backfill_caught_up(
         self, hass: HomeAssistant
