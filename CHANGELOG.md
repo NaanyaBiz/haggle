@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Dev-dependency bump** (`homeassistant` 2026.7.4, `aiohttp` 3.14.3,
+  `ruff` 0.16.1, `pre-commit` 4.6.1, `zizmor` 1.28.0): `pytest-homeassistant-custom-component`
+  held at 0.13.347 rather than Dependabot's proposed 0.13.349, which pulls
+  in `homeassistant` 2026.8.0 prerelease builds — revisit once phcc tracks
+  a stable 2026.8.x. `ruff` 0.16 enabled `PLR0917` (too many positional
+  args); `coordinator._emit_series` and its six call sites moved to
+  keyword-only arguments — no behaviour change.
 - **Release/test acceptance posture updated for the maintainer's AGL →
   Amber retailer migration** (2026-07-28, `SECURITY.md` RA-16,
   `docs/releasing.md`, `docs/testing.md`, `docs/compliance/conformance.md`):

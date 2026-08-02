@@ -26,17 +26,16 @@ dependencies = [
     # HA 2026.4 closed the 13 CVEs v0.1.0 inherited (SCA-M01..M05, SCA-L01..L08,
     # SCA-H02) via aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6;
     # 2026.5.0 keeps those at-or-above. HA 2026.4+ also requires Python 3.14.2.
-    "homeassistant>=2026.7.3",
+    "homeassistant>=2026.7.4",
     # HA 2026.7.0 relaxed its exact aiohttp pin, so the resolver now lands
     # 3.14.1+ (closes the 2026-06/07 aiohttp advisory cluster; supersedes
     # Dependabot #106). Users always get aiohttp from HA core, not from us —
     # manifest.json ships no requirements; this floor is dev/editor tooling.
-    # Held at 3.14.1 (not bumped to 3.14.3, #215): homeassistant==2026.7.3
-    # itself pins aiohttp==3.14.1 exactly, so a >=3.14.3 floor here is
-    # unresolvable until HA's own pin moves — no CVE motivates the bump,
-    # it was a routine Dependabot "permit latest" grouped with unrelated
-    # updates. Revisit next time Dependabot proposes it.
-    "aiohttp>=3.14.1",
+    # Was briefly held at 3.14.1 (#215): homeassistant==2026.7.3 pinned
+    # aiohttp==3.14.1 exactly, making a >=3.14.3 floor unresolvable.
+    # homeassistant==2026.7.4 moved its own pin, so 3.14.3 resolves cleanly
+    # again as of this bump.
+    "aiohttp>=3.14.3",
 ]
 
 [project.optional-dependencies]
@@ -50,8 +49,12 @@ dev = [
     # exact pin manufactured a guaranteed weekly Dependabot PR and caused
     # two resolver deadlocks (#106, #120). uv.lock is the reproducibility
     # authority; this range just has to keep resolution satisfiable.
+    # Held at 0.13.347 (not bumped to Dependabot's proposed 0.13.349,
+    # 2026-08-02): phcc 0.13.349+ depends on homeassistant 2026.8.0 BETA
+    # builds, unresolvable without enabling prereleases. Revisit once phcc
+    # tracks a stable homeassistant 2026.8.x again.
     "pytest-homeassistant-custom-component>=0.13.347,<0.14",
-    "ruff>=0.15.22",
+    "ruff>=0.16.0",
     "mypy>=2.3.0",
     "pre-commit>=4.6.1",
     # Workflow security audit (CI step + pre-commit local hook). Rust binary

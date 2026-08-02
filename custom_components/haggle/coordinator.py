@@ -1467,20 +1467,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Aggregate series (always; consumption first, then cost).
         cons_sum = _emit_series(
-            f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}",
-            f"AGL Electricity Consumption ({contract})",
-            kwh,
-            "energy",
-            hour_cons,
-            initial_cons_sum,
+            stat_id=f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}",
+            name=f"AGL Electricity Consumption ({contract})",
+            unit=kwh,
+            unit_class="energy",
+            hourly=hour_cons,
+            initial_sum=initial_cons_sum,
         )
         _emit_series(
-            f"{DOMAIN}:{STAT_COST}_{contract}",
-            f"AGL Electricity Cost ({contract})",
-            "AUD",
-            None,
-            hour_cost,
-            initial_cost_sum,
+            stat_id=f"{DOMAIN}:{STAT_COST}_{contract}",
+            name=f"AGL Electricity Cost ({contract})",
+            unit="AUD",
+            unit_class=None,
+            hourly=hour_cost,
+            initial_sum=initial_cost_sum,
         )
 
         # Per-tariff series (ToU contracts only). tou_seen / band_ids were
@@ -1495,20 +1495,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 base_cost = band_sums.get(cost_id, 0.0)
                 label = TARIFF_LABELS.get(tariff, tariff.title())
                 _emit_series(
-                    cons_id,
-                    f"AGL Electricity Consumption {label} ({contract})",
-                    kwh,
-                    "energy",
-                    band_cons[tariff],
-                    base_cons,
+                    stat_id=cons_id,
+                    name=f"AGL Electricity Consumption {label} ({contract})",
+                    unit=kwh,
+                    unit_class="energy",
+                    hourly=band_cons[tariff],
+                    initial_sum=base_cons,
                 )
                 _emit_series(
-                    cost_id,
-                    f"AGL Electricity Cost {label} ({contract})",
-                    "AUD",
-                    None,
-                    band_cost[tariff],
-                    base_cost,
+                    stat_id=cost_id,
+                    name=f"AGL Electricity Cost {label} ({contract})",
+                    unit="AUD",
+                    unit_class=None,
+                    hourly=band_cost[tariff],
+                    initial_sum=base_cost,
                 )
 
         # Update the in-memory cumulative for the TOTAL_INCREASING sensor.
@@ -1517,6 +1517,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
     def _emit_series(
         self,
+        *,
         stat_id: str,
         name: str,
         unit: str,
@@ -1616,20 +1617,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         contract = self.contract_number
         gen_sum = self._emit_series(
-            stat_id_gen,
-            f"AGL Solar Generation ({contract})",
-            UnitOfEnergy.KILO_WATT_HOUR,
-            "energy",
-            hour_kwh,
-            base_gen,
+            stat_id=stat_id_gen,
+            name=f"AGL Solar Generation ({contract})",
+            unit=UnitOfEnergy.KILO_WATT_HOUR,
+            unit_class="energy",
+            hourly=hour_kwh,
+            initial_sum=base_gen,
         )
         credit_sum = self._emit_series(
-            stat_id_credit,
-            f"AGL Solar Feed-in Credit ({contract})",
-            "AUD",
-            None,
-            hour_credit,
-            base_credit,
+            stat_id=stat_id_credit,
+            name=f"AGL Solar Feed-in Credit ({contract})",
+            unit="AUD",
+            unit_class=None,
+            hourly=hour_credit,
+            initial_sum=base_credit,
         )
         self._latest_generation_kwh = gen_sum
         self._latest_generation_credit = credit_sum
