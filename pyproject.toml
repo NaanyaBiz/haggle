@@ -49,17 +49,17 @@ dev = [
     # exact pin manufactured a guaranteed weekly Dependabot PR and caused
     # two resolver deadlocks (#106, #120). uv.lock is the reproducibility
     # authority; this range just has to keep resolution satisfiable.
-    # Held at 0.13.347 (not bumped to Dependabot's proposed 0.13.349,
-    # 2026-08-02): phcc 0.13.349+ depends on homeassistant 2026.8.0 BETA
-    # builds, unresolvable without enabling prereleases. Revisit once phcc
-    # tracks a stable homeassistant 2026.8.x again.
-    "pytest-homeassistant-custom-component>=0.13.347,<0.14",
-    "ruff>=0.16.0",
+    # Was briefly held at 0.13.347 (2026-08-02): phcc 0.13.349+ depended on
+    # homeassistant 2026.8.0 BETA builds, unresolvable without enabling
+    # prereleases. homeassistant 2026.8.0 stable shipped shortly after, so
+    # this floor bump (2026-08-07) resolves cleanly again.
+    "pytest-homeassistant-custom-component>=0.13.351,<0.14",
+    "ruff>=0.16.1",
     "mypy>=2.3.0",
     "pre-commit>=4.6.1",
     # Workflow security audit (CI step + pre-commit local hook). Rust binary
     # wheels from PyPI; version governed by uv.lock like ruff/mypy.
-    "zizmor>=1.28.0",
+    "zizmor>=1.29.0",
 ]
 
 [project.urls]

@@ -16,6 +16,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a stable 2026.8.x. `ruff` 0.16 enabled `PLR0917` (too many positional
   args); `coordinator._emit_series` and its six call sites moved to
   keyword-only arguments — no behaviour change.
+- **Dev-dependency bump** (`homeassistant` 2026.8.0 stable — unblocks the
+  `pytest-homeassistant-custom-component` hold above, floor lifted to
+  0.13.351, `uv lock` resolved 0.13.354; `ruff` 0.16.1, `zizmor` 1.29.0):
+  bundled with a Dependabot **security** update for two transitive dev
+  dependencies — `pyjwt` 2.12.1 → 2.13.0 (5 GHSA fixes: JWK-as-HMAC-secret
+  algorithm confusion, `PyJWK`/`PyJWKClient` algorithm allow-list bypass,
+  detached-payload DoS, non-HTTP(S) URI SSRF, JWKS cache wipe on transient
+  fetch error) and `pillow` 12.2.0 → 12.3.0 (closes ~10 open high/medium
+  advisories: heap out-of-bounds writes, decompression-bomb bypasses,
+  JPEG2000 scratch-buffer DoS, Windows command injection). Both are
+  dev-only — `manifest.json` ships no requirements, so neither reaches a
+  user's HA install — but real CVEs, not routine bumps, so taken rather
+  than held.
 - **Release/test acceptance posture updated for the maintainer's AGL →
   Amber retailer migration** (2026-07-28, `SECURITY.md` RA-16,
   `docs/releasing.md`, `docs/testing.md`, `docs/compliance/conformance.md`):
