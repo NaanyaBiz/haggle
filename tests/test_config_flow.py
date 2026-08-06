@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
+import pytest
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -323,3 +324,72 @@ async def test_options_flow_defaults_to_enabled(hass: HomeAssistant) -> None:
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_SOLAR_STATISTICS_ENABLED)
     assert key.default() is True
+
+
+async def test_options_flow_poll_interval_defaults_to_24(hass: HomeAssistant) -> None:
+    """#228: the poll-interval field defaults to 24h — unchanged cadence
+    unless the user opts to throttle it back."""
+    from custom_components.haggle.const import (
+        DEFAULT_POLL_INTERVAL_HOURS,
+        OPT_POLL_INTERVAL_HOURS,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONTRACT_NUMBER: "9999999999", CONF_REFRESH_TOKEN: "v1.t"},
+        unique_id="opt-poll-default",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    schema = result["data_schema"].schema
+    key = next(k for k in schema if k.schema == OPT_POLL_INTERVAL_HOURS)
+    assert key.default() == DEFAULT_POLL_INTERVAL_HOURS
+
+
+async def test_options_flow_sets_poll_interval(hass: HomeAssistant) -> None:
+    """A valid in-range poll interval is accepted and persisted."""
+    from custom_components.haggle.const import (
+        OPT_POLL_INTERVAL_HOURS,
+        OPT_SOLAR_STATISTICS_ENABLED,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONTRACT_NUMBER: "9999999999", CONF_REFRESH_TOKEN: "v1.t"},
+        unique_id="opt-poll-set",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {OPT_SOLAR_STATISTICS_ENABLED: True, OPT_POLL_INTERVAL_HOURS: 72},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert entry.options[OPT_POLL_INTERVAL_HOURS] == 72
+
+
+@pytest.mark.parametrize("bad_value", [1, 23, 169, 999])
+async def test_options_flow_rejects_out_of_range_poll_interval(
+    hass: HomeAssistant, bad_value: int
+) -> None:
+    """The 24h floor and 168h ceiling are enforced at the options-flow layer
+    (belt-and-braces with the coordinator-side clamp — see const.py)."""
+    import voluptuous as vol
+
+    from custom_components.haggle.const import (
+        OPT_POLL_INTERVAL_HOURS,
+        OPT_SOLAR_STATISTICS_ENABLED,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONTRACT_NUMBER: "9999999999", CONF_REFRESH_TOKEN: "v1.t"},
+        unique_id=f"opt-poll-reject-{bad_value}",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    with pytest.raises(vol.Invalid):
+        await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {OPT_SOLAR_STATISTICS_ENABLED: True, OPT_POLL_INTERVAL_HOURS: bad_value},
+        )

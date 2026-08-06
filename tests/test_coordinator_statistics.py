@@ -538,6 +538,83 @@ class TestUpdateDataAuthError:
 
 
 # ---------------------------------------------------------------------------
+# Configurable poll interval (#228)
+# ---------------------------------------------------------------------------
+
+
+class TestConfigurablePollInterval:
+    async def test_default_interval_matches_scan_interval_hourly(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.const import SCAN_INTERVAL_HOURLY
+
+        coord = _make_coordinator(hass)
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+
+    async def test_configured_interval_used_on_init(self, hass: HomeAssistant) -> None:
+        from datetime import timedelta
+
+        from custom_components.haggle.const import OPT_POLL_INTERVAL_HOURS
+
+        coord = _make_coordinator(hass, options={OPT_POLL_INTERVAL_HOURS: 48})
+        assert coord.update_interval == timedelta(hours=48)
+
+    async def test_successful_poll_restores_configured_interval(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A configured (non-default) cadence, not the hardcoded default, is
+        what a successful poll restores to after an error-cadence override."""
+        from datetime import timedelta
+
+        from custom_components.haggle.const import (
+            OPT_POLL_INTERVAL_HOURS,
+            RETRY_INTERVAL_ON_ERROR,
+        )
+
+        coord = _make_coordinator(hass, options={OPT_POLL_INTERVAL_HOURS: 72})
+        coord.update_interval = RETRY_INTERVAL_ON_ERROR  # as after a failure
+        with patch.object(
+            coord,
+            "_fetch_and_import",
+            new_callable=AsyncMock,
+            return_value=MagicMock(),
+        ):
+            await coord._async_update_data()
+        assert coord.update_interval == timedelta(hours=72)
+
+    async def test_out_of_range_stored_option_is_clamped(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Defense-in-depth: an entry.options value outside [MIN, MAX] (e.g.
+        hand-edited outside the options flow's vol.Range) is clamped rather
+        than honoured verbatim."""
+        from datetime import timedelta
+
+        from custom_components.haggle.const import (
+            MAX_POLL_INTERVAL_HOURS,
+            MIN_POLL_INTERVAL_HOURS,
+            OPT_POLL_INTERVAL_HOURS,
+        )
+
+        too_low = _make_coordinator(hass, options={OPT_POLL_INTERVAL_HOURS: 1})
+        assert too_low.update_interval == timedelta(hours=MIN_POLL_INTERVAL_HOURS)
+
+        too_high = _make_coordinator(hass, options={OPT_POLL_INTERVAL_HOURS: 999})
+        assert too_high.update_interval == timedelta(hours=MAX_POLL_INTERVAL_HOURS)
+
+    async def test_non_numeric_stored_option_falls_back_to_default(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.const import (
+            OPT_POLL_INTERVAL_HOURS,
+            SCAN_INTERVAL_HOURLY,
+        )
+
+        coord = _make_coordinator(hass, options={OPT_POLL_INTERVAL_HOURS: "bogus"})
+        assert coord.update_interval == SCAN_INTERVAL_HOURLY
+
+
+# ---------------------------------------------------------------------------
 # _fetch_range — smart endpoint selection
 # ---------------------------------------------------------------------------
 

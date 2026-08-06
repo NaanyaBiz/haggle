@@ -59,7 +59,7 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract; options flow (solar statistics-writes toggle)
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract; options flow (solar statistics-writes toggle, poll-interval throttle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
@@ -344,11 +344,22 @@ quarterly delivery metrics (see `docs/delivery-metrics.md`).
 
 | Data | Interval | Reason |
 |---|---|---|
-| 30-min intervals | 24 h | AGL data is delayed 24-48 h (AEMO feed lag) |
+| 30-min intervals | 24 h floor, user-configurable up to 168 h (7 days) | AGL data is delayed 24-48 h (AEMO feed lag), so nothing below 24 h finds anything new — see `OPT_POLL_INTERVAL_HOURS` (#228) below |
 | Daily series | 6 h | Picks up newly available days |
 | Plan / overview | 7 days | Rarely changes |
 | Token refresh | Just-in-time (< 2 min to `exp`) | tokens expire at 15 min |
-| **After a FAILED poll** | 30 min (`RETRY_INTERVAL_ON_ERROR`) | #155: a transient error previously cost a full 24 h and looked like "the poll never ran" (#126). Restored to 24 h on the next success; auth failures go to reauth, not fast retry |
+| **After a FAILED poll** | 30 min (`RETRY_INTERVAL_ON_ERROR`) | #155: a transient error previously cost a full 24 h and looked like "the poll never ran" (#126). Restored to the configured cadence on the next success; auth failures go to reauth, not fast retry |
+
+**User-configurable poll interval (#228)**: the integration's Options
+(`config_flow.py::HaggleOptionsFlow`) expose `poll_interval_hours`, read LIVE
+by the coordinator each cycle via `HaggleCoordinator._configured_poll_interval`
+— same no-reload-listener pattern as `OPT_SOLAR_STATISTICS_ENABLED`, takes
+effect from the next poll. Only ever lengthens the cadence from the 24 h
+default (for users who want to throttle back AGL request volume); the 24 h
+floor is enforced twice — the options-flow `vol.Range` and a defensive clamp
+in `coordinator._clamped_poll_interval` (`const.py`: `MIN_POLL_INTERVAL_HOURS`
+/ `MAX_POLL_INTERVAL_HOURS`) — so a hand-edited `entry.options` value can't
+violate it either.
 
 **Do not poll for today's hourly data** — it will be empty. Fetch *yesterday*.
 
@@ -599,7 +610,10 @@ The HA Energy dashboard requires:
 - **No blocking I/O in the coordinator** — `_async_update_data` must be fully async.
 - **No OTP/portal flow** — auth is PKCE via the user's real browser, not portal scraping.
 - **No hardcoded contract numbers** — they come from `/v3/overview` at config time.
-- **No polling faster than 24 h for interval data** — AGL won't have newer data.
+- **No polling faster than 24 h for interval data** — AGL won't have newer
+  data. `OPT_POLL_INTERVAL_HOURS` (#228) lets a user lengthen the cadence,
+  never shorten it below the floor — enforced both by the options-flow
+  `vol.Range` and a defensive clamp in `coordinator._clamped_poll_interval`.
 - **Don't store `access_token` in `entry.data`** — it's transient (15 min).
   Persist only `refresh_token` to `entry.data`; keep `access_token` in memory only.
 - **Don't use `async_add_executor_job`** for AGL API calls — they're already async.
