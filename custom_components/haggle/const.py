@@ -182,6 +182,16 @@ CONF_SOLAR_STALL_SPANS: Final = "solar_stall_spans"
 # mid-cycle for token rotation and heal state; a reload listener would bounce
 # the entry on every rotation). Takes effect from the next poll.
 OPT_SOLAR_STATISTICS_ENABLED: Final = "solar_statistics_enabled"
+# User-configurable normal-path poll cadence (#228). Only ever lengthens the
+# interval from the 24 h default — MIN matches SCAN_INTERVAL_HOURLY, the hard
+# floor below which AGL genuinely has no newer data to return. MAX matches the
+# existing plan/overview refresh cadence (7 days). Enforced twice: the
+# options-flow vol.Range below, and a defensive clamp in the coordinator in
+# case an entry's options were ever set outside the options flow.
+OPT_POLL_INTERVAL_HOURS: Final = "poll_interval_hours"
+DEFAULT_POLL_INTERVAL_HOURS: Final = 24
+MIN_POLL_INTERVAL_HOURS: Final = 24
+MAX_POLL_INTERVAL_HOURS: Final = 168
 MAX_STALL_SPAN_RECORDS: Final = 12
 # Learn-more target for the give-up Repairs issues.
 ISSUE_LEARN_MORE_URL: Final = (

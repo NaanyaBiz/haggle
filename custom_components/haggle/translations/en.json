@@ -90,10 +90,12 @@
       "init": {
         "title": "Haggle options",
         "data": {
-          "solar_statistics_enabled": "Write solar statistics (backfill and self-heal)"
+          "solar_statistics_enabled": "Write solar statistics (backfill and self-heal)",
+          "poll_interval_hours": "Poll interval (hours)"
         },
         "data_description": {
-          "solar_statistics_enabled": "Turn off to freeze all solar statistics writes (backfill, self-heal, give-up markers) without uninstalling or downgrading. Existing statistics are untouched; the bill-period solar sensors read 'unknown' while disabled and the cumulative sensors keep their last stored values. Takes effect from the next poll. Consumption statistics are unaffected."
+          "solar_statistics_enabled": "Turn off to freeze all solar statistics writes (backfill, self-heal, give-up markers) without uninstalling or downgrading. Existing statistics are untouched; the bill-period solar sensors read 'unknown' while disabled and the cumulative sensors keep their last stored values. Takes effect from the next poll. Consumption statistics are unaffected.",
+          "poll_interval_hours": "How often to check AGL for new data. AGL's own feed lags 24-48h behind real-time, so anything below 24h has nothing new to find -- the integration enforces a 24h floor. Raise this if you want to reduce request volume. Takes effect from the next poll."
         }
       }
     }

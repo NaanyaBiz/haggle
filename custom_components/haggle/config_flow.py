@@ -63,7 +63,11 @@ from .const import (
     CONF_PINNED_SPKI_AUTH,
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
+    DEFAULT_POLL_INTERVAL_HOURS,
     DOMAIN,
+    MAX_POLL_INTERVAL_HOURS,
+    MIN_POLL_INTERVAL_HOURS,
+    OPT_POLL_INTERVAL_HOURS,
     OPT_SOLAR_STATISTICS_ENABLED,
 )
 
@@ -417,13 +421,16 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class HaggleOptionsFlow(OptionsFlow):
-    """Options: user off-switch for the solar statistics-writing subsystem.
+    """Options: solar statistics-writing off-switch + poll-interval throttle.
 
     CO-10.3: statistics writes are the one semi-irreversible effect this
-    integration has; this lets a user freeze the highest-blast-radius writer
-    (solar backfill / heal / give-up markers) without downgrading. Read live
-    by the coordinator — no reload listener (see OPT_SOLAR_STATISTICS_ENABLED
-    in const.py); applies from the next poll.
+    integration has; the solar toggle lets a user freeze the
+    highest-blast-radius writer (solar backfill / heal / give-up markers)
+    without downgrading. The poll interval (#228) lets a user throttle back
+    AGL request volume — floored at MIN_POLL_INTERVAL_HOURS, below which AGL
+    genuinely has no newer data to return. Both are read live by the
+    coordinator — no reload listener (see OPT_SOLAR_STATISTICS_ENABLED /
+    OPT_POLL_INTERVAL_HOURS in const.py); applies from the next poll.
     """
 
     async def async_step_init(
@@ -442,6 +449,17 @@ class HaggleOptionsFlow(OptionsFlow):
                             OPT_SOLAR_STATISTICS_ENABLED, True
                         ),
                     ): bool,
+                    vol.Required(
+                        OPT_POLL_INTERVAL_HOURS,
+                        default=self.config_entry.options.get(
+                            OPT_POLL_INTERVAL_HOURS, DEFAULT_POLL_INTERVAL_HOURS
+                        ),
+                    ): vol.All(
+                        vol.Coerce(int),
+                        vol.Range(
+                            min=MIN_POLL_INTERVAL_HOURS, max=MAX_POLL_INTERVAL_HOURS
+                        ),
+                    ),
                 }
             ),
         )
