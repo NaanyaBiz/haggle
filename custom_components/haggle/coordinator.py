@@ -49,15 +49,18 @@ from .const import (
     BACKFILL_INTER_REQUEST_DELAY,
     CONF_SOLAR_HEAL,
     CONF_SOLAR_STALL_SPANS,
+    DEFAULT_POLL_INTERVAL_HOURS,
     DOMAIN,
     ISSUE_LEARN_MORE_URL,
+    MAX_POLL_INTERVAL_HOURS,
     MAX_SOLAR_HEAL_ATTEMPTS,
     MAX_STALL_SPAN_RECORDS,
+    MIN_POLL_INTERVAL_HOURS,
+    OPT_POLL_INTERVAL_HOURS,
     OPT_SOLAR_STATISTICS_ENABLED,
     RECORDER_DRAIN_TIMEOUT,
     RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
-    SCAN_INTERVAL_HOURLY,
     SOLAR_HEAL_DONE,
     SOLAR_HEAL_PENDING,
     SOLAR_STALL_GIVE_UP_CYCLES,
@@ -74,7 +77,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -101,6 +104,21 @@ def _safe_float(raw: Any) -> float:
         _LOGGER.warning("Rejecting non-finite/negative coordinator value: %r", raw)
         return 0.0
     return value
+
+
+def _clamped_poll_interval(options: Mapping[str, Any]) -> timedelta:
+    """Read OPT_POLL_INTERVAL_HOURS, clamped to [MIN, MAX] (#228).
+
+    Defensive clamp in addition to the options-flow vol.Range: covers an
+    entry.options value ever set outside the options flow (e.g. hand-edited).
+    """
+    raw = options.get(OPT_POLL_INTERVAL_HOURS, DEFAULT_POLL_INTERVAL_HOURS)
+    try:
+        hours = int(raw)
+    except TypeError, ValueError:
+        hours = DEFAULT_POLL_INTERVAL_HOURS
+    hours = max(MIN_POLL_INTERVAL_HOURS, min(MAX_POLL_INTERVAL_HOURS, hours))
+    return timedelta(hours=hours)
 
 
 @dataclass
@@ -151,7 +169,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             hass,
             _LOGGER,
             name=DOMAIN,
-            update_interval=SCAN_INTERVAL_HOURLY,
+            update_interval=_clamped_poll_interval(entry.options),
             config_entry=entry,
         )
         self.client = client
@@ -194,6 +212,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             f"{DOMAIN}:{STAT_GENERATION_CREDIT}_{self.contract_number}",
         )
 
+    def _configured_poll_interval(self) -> timedelta:
+        """Live-read the user's poll-interval option (#228), clamped to [MIN, MAX]."""
+        return _clamped_poll_interval(self.config_entry.options)
+
     async def _async_setup(self) -> None:
         """No-op: first-install backfill is handled incrementally in _fetch_and_import."""
 
@@ -212,6 +234,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         their values — but schedules the fast retry too, so the halted chunk
         is re-fetched in 30 minutes rather than tomorrow (Codex on #157).
         """
+        configured_interval = self._configured_poll_interval()
         try:
             data = await self._fetch_and_import()
         except AGLAuthError as err:
@@ -222,7 +245,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                     "Poll failed (%s); retrying in %s instead of %s",
                     err,
                     RETRY_INTERVAL_ON_ERROR,
-                    SCAN_INTERVAL_HOURLY,
+                    configured_interval,
                 )
                 self.update_interval = RETRY_INTERVAL_ON_ERROR
             raise UpdateFailed(str(err)) from err
@@ -233,9 +256,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                     RETRY_INTERVAL_ON_ERROR,
                 )
                 self.update_interval = RETRY_INTERVAL_ON_ERROR
-        elif self.update_interval != SCAN_INTERVAL_HOURLY:
-            _LOGGER.info("Poll succeeded; restoring %s cadence", SCAN_INTERVAL_HOURLY)
-            self.update_interval = SCAN_INTERVAL_HOURLY
+        elif self.update_interval != configured_interval:
+            _LOGGER.info("Poll succeeded; restoring %s cadence", configured_interval)
+            self.update_interval = configured_interval
         return data
 
     async def _fetch_and_import(self) -> HaggleData:

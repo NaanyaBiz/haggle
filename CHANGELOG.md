@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **User-configurable poll interval** (#228): the integration's Options now
+  expose a poll-interval throttle (default 24 h, up to 168 h/7 days) for
+  users who want to reduce AGL request volume. Only ever lengthens the
+  cadence — the 24 h floor (below which AGL genuinely has no newer data) is
+  enforced both by the options-flow validation and a defensive clamp in the
+  coordinator. Read live each cycle, same no-reload-listener pattern as the
+  existing solar-statistics toggle.
+
 ### Changed
 
 - **Dev-dependency bump** (`homeassistant` 2026.7.4, `aiohttp` 3.14.3,
