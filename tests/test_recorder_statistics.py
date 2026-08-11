@@ -19,7 +19,7 @@ Scenario map (each pins a real production defect class):
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
@@ -221,3 +221,76 @@ async def test_tou_partition_sums_to_aggregate(
         assert rows, f"missing band series {band}"
         band_final += rows[-1]["sum"]
     assert abs(band_final - agg_rows[-1]["sum"]) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# _earliest_stat_date (#214) — real recorder, real timezone conversion
+# ---------------------------------------------------------------------------
+#
+# Every other test of this helper (test_coordinator_statistics.py) mocks it
+# out entirely, so its actual recorder query — including the local-date
+# conversion that #214 review caught as wrong in an earlier draft (raw UTC
+# .date() rather than dt_util.as_local(...).date()) — was never exercised
+# against a real statistics row. These tests close that gap.
+
+
+async def test_earliest_stat_date_reports_local_calendar_day(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """A row at local midnight must report the LOCAL date, not the raw UTC
+    date of its stored timestamp.
+
+    Australia/Brisbane is a fixed +10:00 offset (no DST) — real AGL contract
+    territory. Local midnight 2026-06-29T00:00+10:00 is stored under the
+    PREVIOUS UTC calendar date, 2026-06-28T14:00Z. Comparing the raw UTC
+    date would misreport covered_from by a day (and could mask a real
+    one-day truncation as "not truncated").
+    """
+    await hass.config.async_set_time_zone("Australia/Brisbane")
+    coord = _make_coordinator(hass)
+    stat_id_gen, _ = coord._generation_stat_ids()
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)  # local 2026-06-29 00:00 +10:00
+    await coord._import_generation(
+        [IntervalReading(dt=t0, kwh=1.0, cost_aud=0.1, rate_type="normal")]
+    )
+    await async_wait_recording_done(hass)
+
+    earliest = await coord._earliest_stat_date(stat_id_gen, t0 - timedelta(days=1))
+    assert earliest == date(2026, 6, 29)
+
+
+async def test_earliest_stat_date_ignores_rows_before_since(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """`since` is a hard lower bound on the query — an earlier row that
+    exists in the recorder must not be returned (this is what lets
+    _get_generation_period_totals bound the query at bill_start's local
+    midnight instead of scanning a mature series' entire history)."""
+    coord = _make_coordinator(hass)
+    stat_id_gen, _ = coord._generation_stat_ids()
+
+    older = datetime(2026, 6, 1, 14, tzinfo=UTC)
+    newer = datetime(2026, 6, 20, 14, tzinfo=UTC)
+    await coord._import_generation(
+        [
+            IntervalReading(dt=older, kwh=1.0, cost_aud=0.1, rate_type="normal"),
+            IntervalReading(dt=newer, kwh=1.0, cost_aud=0.1, rate_type="normal"),
+        ]
+    )
+    await async_wait_recording_done(hass)
+
+    since = datetime(2026, 6, 15, tzinfo=UTC)
+    earliest = await coord._earliest_stat_date(stat_id_gen, since)
+    assert earliest == newer.date()
+
+
+async def test_earliest_stat_date_no_rows_returns_none(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """No stored rows at/after `since` (fresh series) → None, not a crash."""
+    coord = _make_coordinator(hass)
+    stat_id_gen, _ = coord._generation_stat_ids()
+
+    since = datetime(2026, 1, 1, tzinfo=UTC)
+    assert await coord._earliest_stat_date(stat_id_gen, since) is None

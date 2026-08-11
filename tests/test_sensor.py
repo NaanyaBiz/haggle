@@ -260,3 +260,152 @@ class TestSolarDescriptions:
         desc = {d.key: d for d in SOLAR_DESCRIPTIONS}[DATA_GENERATION_PERIOD]
         sensor = HaggleEnergySensor(entry.runtime_data.coordinator, entry, desc)
         assert sensor.native_value is None
+
+
+class TestExtraStateAttributes:
+    """HaggleEnergySensor.extra_state_attributes — billing period coverage (#214).
+
+    Verifies the property returns the correct `period_start`/`covered_from` dict
+    for the "this period" sensors and None for every other sensor.  The
+    `truncated` key is omitted when False and present (True) only when the
+    stored generation history starts after the nominal bill start.
+    """
+
+    @staticmethod
+    def _sensor_for_key(
+        hass: HomeAssistant, key: str, data: HaggleData
+    ) -> HaggleEnergySensor:
+        from custom_components.haggle.sensor import SOLAR_DESCRIPTIONS
+
+        entry = _make_entry_with_coordinator(hass, data)
+        all_descs = (*SENSOR_DESCRIPTIONS, *SOLAR_DESCRIPTIONS)
+        desc = next(d for d in all_descs if d.key == key)
+        return HaggleEnergySensor(entry.runtime_data.coordinator, entry, desc)
+
+    @staticmethod
+    def _full_data(**overrides) -> HaggleData:
+        """Minimal HaggleData with all required fields; keyword overrides for
+        the new #214 coverage fields."""
+
+        defaults = {
+            "consumption_period_kwh": 0.0,
+            "consumption_period_cost_aud": 0.0,
+            "bill_projection_aud": None,
+            "unit_rate_aud_per_kwh": 0.3,
+            "supply_charge_aud_per_day": 1.0,
+            "latest_cumulative_kwh": 0.0,
+            "has_solar": True,
+        }
+        defaults.update(overrides)
+        return HaggleData(**defaults)
+
+    async def test_consumption_period_returns_period_and_covered_from(
+        self, hass: HomeAssistant
+    ) -> None:
+        """consumption_period sensor returns period_start and covered_from."""
+        from datetime import date
+
+        from custom_components.haggle.const import DATA_CONSUMPTION_PERIOD
+
+        bill_start = date(2026, 5, 1)
+        data = self._full_data(
+            consumption_period_start=bill_start,
+            consumption_period_covered_from=bill_start,
+        )
+        sensor = self._sensor_for_key(hass, DATA_CONSUMPTION_PERIOD, data)
+        attrs = sensor.extra_state_attributes
+        assert attrs == {"period_start": "2026-05-01", "covered_from": "2026-05-01"}
+
+    async def test_consumption_period_none_when_dates_not_set(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Returns None while the coordinator hasn't published period dates yet."""
+        from custom_components.haggle.const import DATA_CONSUMPTION_PERIOD
+
+        # consumption_period_start/covered_from default to None in HaggleData.
+        data = self._full_data()
+        sensor = self._sensor_for_key(hass, DATA_CONSUMPTION_PERIOD, data)
+        assert sensor.extra_state_attributes is None
+
+    async def test_generation_period_no_truncated_key_when_false(
+        self, hass: HomeAssistant
+    ) -> None:
+        """generation_period: truncated key is omitted entirely when False."""
+        from datetime import date
+
+        from custom_components.haggle.const import DATA_GENERATION_PERIOD
+
+        bill_start = date(2026, 5, 1)
+        data = self._full_data(
+            generation_period_start=bill_start,
+            generation_period_covered_from=bill_start,
+            generation_period_truncated=False,
+        )
+        sensor = self._sensor_for_key(hass, DATA_GENERATION_PERIOD, data)
+        attrs = sensor.extra_state_attributes
+        assert attrs == {"period_start": "2026-05-01", "covered_from": "2026-05-01"}
+        assert "truncated" not in attrs
+
+    async def test_generation_period_truncated_key_present_when_true(
+        self, hass: HomeAssistant
+    ) -> None:
+        """generation_period: truncated=True is included when window is truncated."""
+        from datetime import date
+
+        from custom_components.haggle.const import DATA_GENERATION_PERIOD
+
+        bill_start = date(2026, 2, 1)  # nominal bill start (before backfill floor)
+        covered_from = date(2026, 5, 1)  # earliest stored row
+        data = self._full_data(
+            generation_period_start=bill_start,
+            generation_period_covered_from=covered_from,
+            generation_period_truncated=True,
+        )
+        sensor = self._sensor_for_key(hass, DATA_GENERATION_PERIOD, data)
+        attrs = sensor.extra_state_attributes
+        assert attrs == {
+            "period_start": "2026-02-01",
+            "covered_from": "2026-05-01",
+            "truncated": True,
+        }
+
+    async def test_generation_period_credit_mirrors_generation_period_attrs(
+        self, hass: HomeAssistant
+    ) -> None:
+        """generation_period_credit exposes the same attributes as generation_period."""
+        from datetime import date
+
+        from custom_components.haggle.const import DATA_GENERATION_PERIOD_CREDIT
+
+        bill_start = date(2026, 2, 1)
+        covered_from = date(2026, 5, 1)
+        data = self._full_data(
+            generation_period_start=bill_start,
+            generation_period_covered_from=covered_from,
+            generation_period_truncated=True,
+        )
+        sensor = self._sensor_for_key(hass, DATA_GENERATION_PERIOD_CREDIT, data)
+        attrs = sensor.extra_state_attributes
+        assert attrs is not None
+        assert attrs["truncated"] is True
+        assert attrs["period_start"] == "2026-02-01"
+        assert attrs["covered_from"] == "2026-05-01"
+
+    async def test_generation_period_none_when_dates_not_set(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Returns None while generation totals haven't published (dates still None)."""
+        from custom_components.haggle.const import DATA_GENERATION_PERIOD
+
+        # generation_period_start/covered_from default to None in HaggleData.
+        data = self._full_data()
+        sensor = self._sensor_for_key(hass, DATA_GENERATION_PERIOD, data)
+        assert sensor.extra_state_attributes is None
+
+    async def test_other_sensor_key_returns_none(self, hass: HomeAssistant) -> None:
+        """Every sensor other than the 'this period' ones returns None."""
+        from custom_components.haggle.const import DATA_UNIT_RATE
+
+        data = self._full_data()
+        sensor = self._sensor_for_key(hass, DATA_UNIT_RATE, data)
+        assert sensor.extra_state_attributes is None

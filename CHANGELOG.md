@@ -41,6 +41,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`period_start` / `covered_from` attributes on the "this period" sensors**
+  (#214): `consumption_period`, `generation_period` ("Solar sold this
+  period"), and `generation_period_credit` ("Solar feed-in credit this
+  period") now expose the billing window their total actually covers.
+  `consumption_period` is sourced from AGL's own bill-summary total, so
+  `period_start` and `covered_from` always match the nominal bill start.
+  `generation_period`/`generation_period_credit` are computed locally
+  (`_get_generation_period_totals`) and — for a billing period longer than
+  the local backfill floor (a quarterly bill) — `covered_from` can be later
+  than the nominal `period_start`; in that case a `truncated: true`
+  attribute is also present, making the existing quarterly-bill
+  under-coverage limitation self-describing instead of silent.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from

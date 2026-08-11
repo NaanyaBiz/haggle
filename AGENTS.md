@@ -601,6 +601,18 @@ The HA Energy dashboard requires:
 - Resume point: `get_last_statistics(hass, 1, stat_id, True, {"start", "sum"})` — returns
   the last-imported hour so incremental updates don't re-import already-stored rows.
 - Each import call is idempotent: `(statistic_id, start)` updates in place.
+- **Period-coverage attributes** (#214): the three "this period" device-card
+  sensors (`consumption_period`, `generation_period`, `generation_period_credit`
+  — NOT the `haggle:*` statistics above) expose `period_start`/`covered_from`
+  (ISO date strings) via `extra_state_attributes` whenever they publish a
+  value. `consumption_period` reads AGL's own bill-summary total, which is
+  never locally truncated, so the two dates always match. The solar pair is
+  computed locally in `_get_generation_period_totals`, and for a billing
+  period longer than `BACKFILL_DAYS` (a quarterly bill) `covered_from` can be
+  later than `period_start` — `_earliest_stat_date` reports the true earliest
+  covered day, and a `truncated: true` attribute is added (omitted when
+  `False`) so the known quarterly-bill under-coverage limitation is
+  self-describing rather than silent.
 
 ---
 
