@@ -100,3 +100,35 @@ repos:
         language: script
         entry: scripts/check_claude_coauthor.sh
         stages: [commit-msg]
+
+  # Codex Security (@openai/codex-security) — LLM-based vulnerability scan,
+  # not static analysis. OPT-IN and pre-push ONLY: a bare `pre-commit
+  # install` (the standard onboarding step) does NOT wire this in, so a
+  # contributor without an OpenAI/ChatGPT account is never blocked from
+  # committing or pushing. To opt in on a machine that already has
+  # `@openai/codex-security` installed and authenticated
+  # (`npx --no-install @openai/codex-security login`):
+  #   pre-commit install --hook-type pre-push
+  # Scans the diff against origin/main — i.e. what a PR opened from this
+  # branch would contain — not the full repository; see AGENTS.md's AI
+  # toolchain table for the separate periodic full-codebase audit. Skip a
+  # single push with the framework's standard mechanism:
+  #   SKIP=codex-security git push
+  # Unlike every other hook in this file, this tool is NOT version-pinned —
+  # it is personal global tooling (`~/node_modules`), not a repo dependency
+  # declared in uv.lock/pyproject.toml, so there is no lockfile-equivalent
+  # to freeze it against. Adopted 2026-08 per SECURITY.md's "Adopting a new
+  # dependency" gate: registry provenance verified (scoped `@openai`
+  # package, maintainers on `@openai.com`, published via GitHub Actions
+  # OIDC), Apache-2.0 licence (compatible). Do NOT wire this into CI — it
+  # would require a stored `OPENAI_API_KEY`/`CODEX_API_KEY` secret, which
+  # violates this repo's zero-standing-secrets invariant (SECURITY.md §
+  # Access Review: "Actions secrets == 0").
+  - repo: local
+    hooks:
+      - id: codex-security
+        name: Codex Security scan (diff vs origin/main)
+        language: system
+        entry: npx --no-install @openai/codex-security scan . --diff origin/main --fail-on-severity high --max-cost 2
+        pass_filenames: false
+        stages: [pre-push]
