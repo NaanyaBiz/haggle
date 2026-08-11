@@ -1961,7 +1961,7 @@ class TestGenerationPeriodTotals:
         result = await coord._get_generation_period_totals(
             today - timedelta(days=10), None, today
         )
-        assert result == (None, None)
+        assert result == (None, None, None, False)
 
     async def test_returns_none_while_backfill_behind_rewindow(
         self, hass: HomeAssistant
@@ -1973,7 +1973,7 @@ class TestGenerationPeriodTotals:
         result = await coord._get_generation_period_totals(
             today - timedelta(days=10), stale, today
         )
-        assert result == (None, None)
+        assert result == (None, None, None, False)
 
     async def test_caught_up_returns_latest_minus_bill_start_baseline(
         self, hass: HomeAssistant
@@ -1987,12 +1987,25 @@ class TestGenerationPeriodTotals:
         today = datetime.now(UTC).date()
         bill_start = today - timedelta(days=12)
 
-        with patch.object(
-            coord,
-            "_get_baseline_sums",
-            new=AsyncMock(return_value=(10.0, 1.0)),
-        ) as mock_base:
-            kwh, credit = await coord._get_generation_period_totals(
+        with (
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(10.0, 1.0)),
+            ) as mock_base,
+            patch.object(
+                coord,
+                "_earliest_stat_date",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            (
+                kwh,
+                credit,
+                covered_from,
+                truncated,
+            ) = await coord._get_generation_period_totals(
                 bill_start, today - timedelta(days=1), today
             )
 
@@ -2000,6 +2013,9 @@ class TestGenerationPeriodTotals:
         assert credit == pytest.approx(1.3629)
         cutoff = mock_base.call_args[0][2]
         assert cutoff == dt_util.start_of_local_day(bill_start)
+        # No stored history → earliest is None → covered_from equals bill_start.
+        assert covered_from == bill_start
+        assert truncated is False
 
     async def test_clamps_negative_diff_to_zero(self, hass: HomeAssistant) -> None:
         coord = _make_coordinator(hass)
@@ -2007,12 +2023,25 @@ class TestGenerationPeriodTotals:
         coord._latest_generation_credit = 0.5
         today = datetime.now(UTC).date()
 
-        with patch.object(
-            coord,
-            "_get_baseline_sums",
-            new=AsyncMock(return_value=(6.0, 1.0)),
+        with (
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(6.0, 1.0)),
+            ),
+            patch.object(
+                coord,
+                "_earliest_stat_date",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
         ):
-            kwh, credit = await coord._get_generation_period_totals(
+            (
+                kwh,
+                credit,
+                _covered_from,
+                _truncated,
+            ) = await coord._get_generation_period_totals(
                 today - timedelta(days=3), today - timedelta(days=1), today
             )
 
@@ -2067,6 +2096,90 @@ class TestGenerationPeriodTotals:
             data = await coord._fetch_and_import()
 
         assert data.feed_in_rate_aud_per_kwh is None
+
+    async def test_covered_from_equals_bill_start_when_no_prior_history(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Non-truncated case (#214): when _earliest_stat_date returns None (no stored
+        generation rows), covered_from equals bill_start and truncated is False."""
+        coord = _make_coordinator(hass)
+        coord._latest_generation_kwh = 5.0
+        coord._latest_generation_credit = 1.0
+        today = datetime.now(UTC).date()
+        bill_start = today - timedelta(days=12)
+
+        with (
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+            patch.object(
+                coord,
+                "_earliest_stat_date",
+                new_callable=AsyncMock,
+                return_value=None,
+            ),
+        ):
+            (
+                kwh,
+                credit,
+                covered_from,
+                truncated,
+            ) = await coord._get_generation_period_totals(
+                bill_start, today - timedelta(days=1), today
+            )
+
+        assert kwh == pytest.approx(5.0)
+        assert credit == pytest.approx(1.0)
+        # No stored rows → earliest is None → covered_from falls back to bill_start.
+        assert covered_from == bill_start
+        assert truncated is False
+
+    async def test_covered_from_and_truncated_when_earliest_row_after_bill_start(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Truncated case (#214): when the earliest stored generation row is after
+        bill_start (quarterly bill longer than BACKFILL_DAYS), covered_from equals
+        that earliest row date and truncated is True.
+
+        Simulates a quarterly billing period: bill_start precedes the 30-day backfill
+        floor so local storage starts later than the nominal bill start.
+        """
+        coord = _make_coordinator(hass)
+        coord._latest_generation_kwh = 3.0
+        coord._latest_generation_credit = 0.5
+        today = datetime.now(UTC).date()
+        bill_start = today - timedelta(days=40)  # before the 30-day backfill floor
+        earliest_row = today - timedelta(days=28)  # where stored history begins
+
+        with (
+            patch.object(
+                coord,
+                "_get_baseline_sums",
+                new=AsyncMock(return_value=(0.0, 0.0)),
+            ),
+            patch.object(
+                coord,
+                "_earliest_stat_date",
+                new_callable=AsyncMock,
+                return_value=earliest_row,
+            ),
+        ):
+            (
+                kwh,
+                credit,
+                covered_from,
+                truncated,
+            ) = await coord._get_generation_period_totals(
+                bill_start, today - timedelta(days=1), today
+            )
+
+        assert kwh == pytest.approx(3.0)
+        assert credit == pytest.approx(0.5)
+        # Earliest row is after bill_start → the window is truncated.
+        assert covered_from == earliest_row
+        assert truncated is True
 
 
 # ---------------------------------------------------------------------------
@@ -2200,7 +2313,7 @@ class TestGenerationHeal:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
@@ -2239,7 +2352,7 @@ class TestGenerationHeal:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch.object(coord, "_fetch_range", new_callable=AsyncMock) as mock_range,
         ):
@@ -2319,7 +2432,7 @@ class TestComposedRequestCeiling:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch(
                 "custom_components.haggle.coordinator.asyncio.sleep",
@@ -2504,7 +2617,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(4.0, 1.0),
+                return_value=(4.0, 1.0, today, False),
             ),
             patch.object(
                 coord,
@@ -2596,7 +2709,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch.object(coord, "_fetch_range", side_effect=_capture_fetch),
         ):
@@ -2747,7 +2860,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch.object(coord, "_import_intervals", new_callable=AsyncMock),
             patch.object(
@@ -2803,7 +2916,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(4.0, 1.0),
+                return_value=(4.0, 1.0, today, False),
             ) as mock_totals,
             patch.object(coord, "_import_intervals", new_callable=AsyncMock),
             patch.object(
@@ -2848,7 +2961,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(4.0, 1.0),
+                return_value=(4.0, 1.0, today, False),
             ) as mock_totals,
             patch.object(coord, "_import_intervals", new_callable=AsyncMock),
             patch.object(
@@ -2890,7 +3003,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch.object(coord, "_import_intervals", new_callable=AsyncMock),
             patch.object(
@@ -2995,7 +3108,7 @@ class TestGenerationHealState:
                 coord,
                 "_get_generation_period_totals",
                 new_callable=AsyncMock,
-                return_value=(None, None),
+                return_value=(None, None, None, False),
             ),
             patch.object(
                 coord, "_fetch_range", new_callable=AsyncMock, return_value=True

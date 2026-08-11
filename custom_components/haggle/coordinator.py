@@ -138,6 +138,14 @@ class HaggleData:
     unit_rate_peak_aud_per_kwh: float | None = None
     unit_rate_offpeak_aud_per_kwh: float | None = None
     unit_rate_shoulder_aud_per_kwh: float | None = None
+    # Coverage attributes for the consumption_period sensor (#214). Sourced
+    # from AGL's own bill-summary endpoint (consumption_period_kwh above),
+    # which AGL computes itself and is NEVER locally truncated — so these are
+    # always equal to each other and to bill_start once populated. None only
+    # before the very first successful refresh (consumption_period_kwh is
+    # always a float thereafter, never None).
+    consumption_period_start: date | None = None
+    consumption_period_covered_from: date | None = None
     # Solar extras — has_solar gates conditional generation-sensor
     # registration; False on non-solar contracts so those sensors never appear.
     has_solar: bool = False
@@ -149,6 +157,19 @@ class HaggleData:
     # the app (the exact confusion reported on #128 for beta.1).
     generation_period_kwh: float | None = None
     generation_period_credit_aud: float | None = None
+    # Coverage attributes for the generation_period / generation_period_credit
+    # sensors (#214). generation_period_start is bill_start (None until
+    # published, same gate as the totals above). covered_from is the earliest
+    # date actually included in the window computed by
+    # _get_generation_period_totals — equal to generation_period_start unless
+    # the generation series' stored history starts later than bill_start (the
+    # documented quarterly-bill-longer-than-BACKFILL_DAYS limitation), in
+    # which case generation_period_truncated is True and covered_from
+    # reflects the true (later) start of the covered data rather than the
+    # nominal bill start.
+    generation_period_start: date | None = None
+    generation_period_covered_from: date | None = None
+    generation_period_truncated: bool = False
     # Solar feed-in tariff (AUD/kWh) from the plan's gstExclusiveRates.
     feed_in_rate_aud_per_kwh: float | None = None
 
@@ -356,6 +377,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # (`unknown`); a wrong number is worse than a blank one here.
         generation_period_kwh: float | None = None
         generation_period_credit: float | None = None
+        generation_period_start: date | None = None
+        generation_period_covered_from: date | None = None
+        generation_period_truncated: bool = False
         # A persisted PENDING heal proves the stored chain is incomplete even
         # on a cycle that planned no sweep (e.g. solar writes frozen via
         # options, CO-10.3) — publishing totals from it would be a standing
@@ -375,9 +399,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             (
                 generation_period_kwh,
                 generation_period_credit,
+                generation_period_covered_from,
+                generation_period_truncated,
             ) = await self._get_generation_period_totals(
                 bill_start, last_gen_date, today
             )
+            if generation_period_kwh is not None:
+                generation_period_start = bill_start
 
         # A new ToU band (or solar newly detected) appearing after first
         # refresh means sensors need to be added; schedule a loop-safe reload.
@@ -404,11 +432,19 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             unit_rate_peak_aud_per_kwh=_tou_rate(TARIFF_PEAK),
             unit_rate_offpeak_aud_per_kwh=_tou_rate(TARIFF_OFFPEAK),
             unit_rate_shoulder_aud_per_kwh=_tou_rate(TARIFF_SHOULDER),
+            # AGL computes period_kwh itself over the FULL nominal bill
+            # period, so the covered window is never locally truncated —
+            # period_start and covered_from are always bill_start (#214).
+            consumption_period_start=bill_start,
+            consumption_period_covered_from=bill_start,
             has_solar=self._has_solar,
             latest_generation_kwh=self._latest_generation_kwh,
             latest_generation_credit_aud=self._latest_generation_credit,
             generation_period_kwh=generation_period_kwh,
             generation_period_credit_aud=generation_period_credit,
+            generation_period_start=generation_period_start,
+            generation_period_covered_from=generation_period_covered_from,
+            generation_period_truncated=generation_period_truncated,
             feed_in_rate_aud_per_kwh=feed_in_rate_aud,
         )
 
@@ -1000,13 +1036,64 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         return {band for stat_id, band in id_to_band.items() if result.get(stat_id)}
 
+    async def _earliest_stat_date(self, stat_id: str, since: datetime) -> date | None:
+        """Return the LOCAL date of the earliest stored row for stat_id at/after
+        `since`, or None if there is none.
+
+        Bounded at `since` (the caller passes the same bill_start local-midnight
+        cutoff used for the baseline lookup) rather than reaching back to
+        _EARLIEST_HISTORY: a row before that cutoff is irrelevant to the
+        covered_from/truncated decision (see _get_generation_period_totals),
+        and bounding avoids scanning a mature series' entire history just to
+        read one row. Rows come back ascending, so the first row is the
+        earliest — same assumption _baseline_sums_before / _generation_heal_triggers
+        rely on.
+
+        Converts to the LOCAL date, not the raw UTC row timestamp. AGL's
+        `period=` boundary and bill_start are both local-timezone concepts
+        (see the "AGL period= query is local-timezone" note elsewhere in this
+        file); every AGL contract is in a positive-UTC-offset zone, so local
+        midnight is stored under the PREVIOUS UTC calendar date. Comparing raw
+        UTC dates against a local-date bill_start would misreport covered_from
+        by a day in the truncated case (and could even mask a real one-day
+        truncation as covered_from == bill_start).
+        """
+        from homeassistant.components.recorder.statistics import (
+            statistics_during_period,
+        )
+        from homeassistant.helpers.recorder import get_instance
+
+        now = datetime.now(UTC)
+        result = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            since,
+            now,
+            {stat_id},
+            "hour",
+            None,
+            {"start"},
+        )
+        rows = result.get(stat_id) or []
+        if not rows:
+            return None
+        first_start = rows[0].get("start")
+        if first_start is None:
+            return None
+        return dt_util.as_local(
+            datetime.fromtimestamp(float(first_start), tz=UTC)
+        ).date()
+
     async def _get_generation_period_totals(
         self,
         bill_start: date,
         last_gen_date: date | None,
         today: date,
-    ) -> tuple[float | None, float | None]:
-        """Return (kWh, AUD) exported since bill_start, or (None, None).
+    ) -> tuple[float | None, float | None, date | None, bool]:
+        """Return (kWh, AUD, covered_from, truncated) exported since bill_start.
+
+        All four are None/False (kWh/AUD/covered_from None, truncated False)
+        when the totals aren't publishable this cycle.
 
         Matches the AGL app's billing-period "Sold To Grid" tile: latest
         cumulative sum minus the stored sum at local midnight of bill_start.
@@ -1025,7 +1112,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         BACKFILL_DAYS — quarterly bills — starts before the backfill floor,
         so the baseline resolves to 0.0 and the totals cover only the stored
         history. Gating on it would leave quarterly-billed users permanently
-        unavailable.
+        unavailable. #214 makes this self-describing: covered_from is the
+        earliest stored generation row on/after bill_start (an extra recorder
+        round-trip, made only when a value is actually going to publish — see
+        the publish_period gate in _fetch_and_import), and truncated is True
+        whenever that's later than bill_start.
 
         Half-hour timezones (e.g. ACST, local midnight = 14:30Z): the hourly
         row strictly before the cutoff contains the day's first 30-min slot,
@@ -1035,7 +1126,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if last_gen_date is None or last_gen_date < today - timedelta(
             days=REWINDOW_DAYS
         ):
-            return None, None
+            return None, None, None, False
         stat_id_gen, stat_id_credit = self._generation_stat_ids()
         cutoff = dt_util.start_of_local_day(bill_start)
         base_gen, base_credit = await self._get_baseline_sums(
@@ -1043,7 +1134,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         )
         kwh = max(0.0, self._latest_generation_kwh - base_gen)
         credit = max(0.0, self._latest_generation_credit - base_credit)
-        return kwh, credit
+        earliest = await self._earliest_stat_date(stat_id_gen, cutoff)
+        covered_from = bill_start if earliest is None else max(bill_start, earliest)
+        truncated = covered_from > bill_start
+        return kwh, credit, covered_from, truncated
 
     # C901: complexity 13 vs gate of 12 — the 429-break / heal-accounting /
     # per-series-range logic is deliberately in one place. Decomposition is

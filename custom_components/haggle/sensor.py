@@ -15,7 +15,7 @@ state_class choices:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -265,3 +265,45 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
         """Return the current sensor value from coordinator data."""
         value = getattr(self.coordinator.data, self.entity_description.key)
         return float(value) if value is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Expose the covered billing period for the "this period" sensors.
+
+        `period_start` is the nominal bill start; `covered_from` is the
+        earliest day actually included in the total. They differ only for
+        generation_period / generation_period_credit, and only when the
+        billing period is longer than the local backfill floor (a quarterly
+        bill) — see _get_generation_period_totals's documented limitation.
+        `truncated` is included (True) only in that case; omitted otherwise
+        so it doesn't show up as noise on every normal cycle.
+        consumption_period is sourced from AGL's own bill-summary total,
+        which is never locally truncated, so period_start always equals
+        covered_from there and `truncated` never appears.
+        Returns None (no attributes) for every other sensor, and while the
+        underlying "this period" value has not yet published (still None).
+        """
+        data = self.coordinator.data
+        key = self.entity_description.key
+        if key == DATA_CONSUMPTION_PERIOD:
+            period_start = data.consumption_period_start
+            covered_from = data.consumption_period_covered_from
+            if period_start is None or covered_from is None:
+                return None
+            return {
+                "period_start": period_start.isoformat(),
+                "covered_from": covered_from.isoformat(),
+            }
+        if key in (DATA_GENERATION_PERIOD, DATA_GENERATION_PERIOD_CREDIT):
+            gen_period_start = data.generation_period_start
+            gen_covered_from = data.generation_period_covered_from
+            if gen_period_start is None or gen_covered_from is None:
+                return None
+            attrs: dict[str, Any] = {
+                "period_start": gen_period_start.isoformat(),
+                "covered_from": gen_covered_from.isoformat(),
+            }
+            if data.generation_period_truncated:
+                attrs["truncated"] = True
+            return attrs
+        return None
