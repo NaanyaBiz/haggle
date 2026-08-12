@@ -28,9 +28,9 @@ User-Agent: AGL/531 CFNetwork/3860.500.112 Darwin/25.4.0
 ## Auth0 token flow
 
 1. POST `https://secure.agl.com.au/oauth/token` with `grant_type=refresh_token`, `client_id`, `refresh_token`.
-2. Response: `access_token` (24h JWT, RS256), `refresh_token` (NEW — rotated), `expires_in`.
+2. Response: `access_token` (15-min JWT, RS256 — `expires_in: 900`), `refresh_token` (NEW — rotated), `expires_in`.
 3. **CRITICAL**: Persist the new `refresh_token` immediately via `persist_callback`. Failure = lockout on next cycle.
-4. Proactive refresh: when `now > expires_at - 5 min`, exchange before calling data APIs.
+4. Proactive refresh: when `now > expires_at - 2 min`, exchange before calling data APIs.
 5. On 401 from data API: force a refresh and retry exactly once. If second 401, raise `AGLAuthError`.
 
 ## Data API endpoints (all under /mobile/bff)
@@ -43,8 +43,11 @@ GET /api/v1/servicehub/energy/{contractNumber}
     → hyperlinks dict (usage, managePlan, usageInsight, ...)
 
 GET /api/v2/usage/smart/Electricity/{contractNumber}/Current/Hourly?period=YYYY-MM-DD_YYYY-MM-DD
-    → 30-min intervals. Use sections[].items[].consumption.values.quantity for kWh.
-      DO NOT use consumption.quantity (rounded for UI).
+    → 30-min intervals. Use the OUTER consumption.quantity for kWh (matches
+      the AGL portal CSV export to 0.001 kWh).
+      DO NOT use the inner consumption.values.quantity — it's a DPI/chart-scaled
+      helper that undercounts kWh by 4-73% with no consistent ratio (confirmed
+      root cause of the v0.1.0/v0.2.0-beta meter-undercounting bug).
       dateTime is slot-start in UTC. Filter type='none'.
 
 GET /api/v2/usage/smart/Electricity/{contractNumber}/Current/Daily?period=...
@@ -59,7 +62,8 @@ GET /api/v2/plan/energy/{contractNumber}
 - "Hourly" means **30-minute** granularity.
 - Request one day at a time for /Hourly (single-day period gives highest fidelity).
 - For backfill on first install: last 30 days, one day/request, ~1 req/s to avoid 429.
-- `scaling=` param in /Hourly and /Daily is UI-only; try omitting it.
+- `scaling=` param in /Hourly and /Daily is REQUIRED — omitting it returns
+  HTTP 500. Use `&scaling=36.514404_108.057_40.670903_120.357_0_0_0_0`.
 - Response bodies are gzip-encoded; aiohttp handles transparently.
 - Gas contracts use the same path shape with `Gas` replacing `Electricity`.
 
