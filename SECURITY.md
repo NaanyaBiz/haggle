@@ -272,6 +272,26 @@ versions. The pre-commit `gitleaks` hook is the local first line of the
 layered secret scanning above; the CI full-history job is the
 authoritative one.
 
+**Codex Security CLI adoption (2026-08).** `@openai/codex-security`, an
+LLM-based vulnerability scanner, was adopted as a dev-workstation tool
+per the pre-adoption gate above. Outcome: registry provenance verified
+(scoped `@openai` package; maintainers on `@openai.com`; published via
+GitHub Actions OIDC — `npm view @openai/codex-security`); maintenance
+healthy (actively published, large maintainer list); licence Apache-2.0,
+compatible. It is **not** a repo dependency (absent from
+`pyproject.toml`/`uv.lock`) and is therefore the one hook in
+`.pre-commit-config.yaml` NOT version-pinned — no lockfile-equivalent
+exists to freeze a personal global npm install against. Wired in as an
+**opt-in, pre-push-only** local hook (id `codex-security`) — a bare
+`pre-commit install` does not enable it, so contributors without OpenAI
+access are never blocked. **Never add this to CI**: doing so would
+require a stored `OPENAI_API_KEY`/`CODEX_API_KEY` secret, directly
+violating the zero-standing-secrets invariant asserted by
+`./scripts/access-review.sh` ("Actions secrets == 0"). A periodic
+full-repo `scan --mode deep` audit is run manually by the maintainer
+instead, with findings triaged into labelled GitHub issues like any
+other security finding.
+
 **Monitoring.** CodeQL (weekly + per-PR, and a required PR check),
 OpenSSF Scorecard (`scorecard.yml`, published results + README badge),
 Dependabot on both ecosystems with grouped weekly PRs, and a weekly

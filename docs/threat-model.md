@@ -138,6 +138,33 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
   specifically; a crafted "diagnostics" attachment is a prompt-injection
   vector against the triage routine — mitigations in §6.
 
+### TB-6: Repo source / diff → Codex Security (OpenAI) API
+- **From**: the maintainer's local checkout — either the full repository
+  (periodic manual `scan --mode deep` audit) or the diff against
+  `origin/main` (opt-in pre-push hook, `.pre-commit-config.yaml` id
+  `codex-security`). **To**: OpenAI's Codex Security API (`gpt-5.6-sol`).
+- **Controls**: read-only tool — no write grant to the repo, no commit/push
+  authority, cannot merge or release. Opt-in only: not wired into a bare
+  `pre-commit install`, so it never runs on a contributor's machine without
+  deliberate setup (`pre-commit install --hook-type pre-push`) and their
+  own OpenAI credential. Never added to CI (would require a stored
+  `OPENAI_API_KEY`/`CODEX_API_KEY`, violating the zero-standing-secrets
+  invariant — SECURITY.md § Access Review). Full-audit output is written
+  outside the repository (`--output-dir`) and findings are triaged into
+  labelled GitHub issues, not committed.
+- **Assumptions to question**: this sends repository source (and, for the
+  full audit, `docs/threat-model.md`/`docs/compliance/secure-sdlc-standard.md`
+  as `--knowledge-base` context) to a second external AI supplier alongside
+  Anthropic (see §6) — an availability/confidentiality dependency this
+  project now also carries toward OpenAI, on top of the existing Anthropic
+  one. The repo is public, so source exposure to a third party is a smaller
+  incremental risk than it would be for a private repo, but the diff/audit
+  content can still include not-yet-published in-progress code. Verbatim
+  training-data reproduction risk (RA-11 in SECURITY.md) technically now
+  has two supplier-side surfaces rather than one; assessed as unchanged in
+  practice — the concern applies equally to any code an LLM reads, and this
+  tool never writes code, only reports findings for human review.
+
 ## 4. Threat register and dispositions
 
 18 threats from the 2026-05-02 STRIDE assessment, tracked to disposition.
@@ -252,6 +279,24 @@ reproduction are supplier-side risks this project cannot test for and
 relies on Anthropic to control (risk-accepted — RA-11/RA-12 in
 SECURITY.md). Cross-vendor AI review (OpenAI Codex PR reviews) is used on
 substantive PRs as partial independence.
+
+**Codex Security CLI (`@openai/codex-security`) and OpenAI as a second
+supplier.** Adopted 2026-08 as a dev-workstation vulnerability scanner
+(TB-6); NOT an agent in the sense of the two rows above — it holds no
+write grant, cannot commit, push, merge, or take any repo action, and
+only reads source/diff content to produce a findings report a human
+reviews. Its risk profile is therefore narrower than either agent above:
+no blast radius from hijacking (nothing to hijack into doing, since it
+can't act), but it introduces OpenAI as a second external AI supplier
+alongside Anthropic, with the same class of supplier-side risks (model
+behaviour, service compromise, verbatim-reproduction exposure of
+whatever source it reads) that this project likewise cannot test for and
+relies on the vendor to control. Scoped tightly to limit that exposure:
+opt-in only (never forced on a contributor), pre-push rather than
+pre-commit (lower frequency, less inadvertent exposure), never wired into
+CI (no standing secret, per SECURITY.md's zero-standing-secrets
+invariant), and the periodic full-repo audit's output is kept outside the
+repository rather than committed.
 
 ## 7. Regulatory scope — negative determination
 
