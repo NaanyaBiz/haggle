@@ -69,6 +69,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute is also present, making the existing quarterly-bill
   under-coverage limitation self-describing instead of silent.
 
+### Changed
+
+- **Dev-dependency bump** (`pytest-homeassistant-custom-component` floor
+  0.13.361, `uv lock` resolved 0.13.364 → `homeassistant` 2026.9.1;
+  `ruff` 0.16.6, `mypy` 2.3.1, `pre-commit` 4.6.2, `zizmor` 1.30.0):
+  Dependabot raised the `pyproject.toml` floors but left `uv.lock` stale,
+  so the `uv lock --check` CI gate (#185) failed — regenerated here, which
+  is the whole point of that gate. `ruff` 0.16.6 enabled no new rules
+  against this tree (check, format, and mypy all clean, no source edits).
+  The `hacs.json` runtime floor stays at 2026.7.0 deliberately: nothing in
+  this bump is a runtime requirement (`manifest.json` ships no
+  `requirements`, so users get HA from core), and lifting it would strand
+  HACS users on 2026.7/2026.8 — including the #253 reporter — for no
+  behavioural gain.
+- **`pip` 26.1.2 → 26.2** in the `uv` group, closing
+  `GHSA-qwm4-qh6w-59xr` (doubly-encoded package URLs from indexes).
+  Dev-lockfile only.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
