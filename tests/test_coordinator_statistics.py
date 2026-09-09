@@ -976,9 +976,23 @@ class TestNumericGuards:
             projection_label="$nan",  # summary value is now IGNORED by design
         )
         mock_client.async_get_plan.return_value = _empty_plan()
+        # The adversarial projection arrives via the only live source — the
+        # overview — not pre-seeded state: _refresh_from_overview now clears
+        # the stored label whenever a successful fetch lacks the contract, so
+        # a pre-seeded value would be wiped before _money ever saw it.
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                bill_projection_label="$nan",
+            )
+        ]
         coord = _make_coordinator(hass, client=mock_client)
-        # The adversarial projection now arrives via the only live source.
-        coord._bill_projection_label = "$nan"
 
         today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
@@ -1955,6 +1969,38 @@ class TestSolarGeneration:
         assert coord._bill_projection_label == ""
         await coord._refresh_from_overview()
         assert coord._bill_projection_label == "$139.15"
+
+    async def test_bill_projection_clears_when_contract_absent_from_overview(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A SUCCESSFUL overview missing the configured contract clears too.
+
+        Codex finding on PR #261: the clear-on-empty assignment lived inside
+        the contract-match loop, so an overview that no longer lists the
+        contract (removed from the account, or its contractNumber dropped by
+        the totality guards) kept a stale projection indefinitely. has_solar
+        must stay sticky through the same path — it gates whether the
+        generation series is written at all.
+        """
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number="0000000000",  # NOT the configured contract
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                bill_projection_label="$139.15",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        coord._bill_projection_label = "$139.15"
+        coord._has_solar = True
+        await coord._refresh_from_overview()
+        assert coord._bill_projection_label == ""
+        assert coord._has_solar is True
 
     async def test_bill_projection_clears_on_successful_empty_fetch(
         self, hass: HomeAssistant

@@ -374,6 +374,30 @@ async def test_unknown_fuel_type_still_selectable(hass: HomeAssistant) -> None:
     assert result["data"][CONF_CONTRACT_NUMBER] == "2222222222"
 
 
+async def test_unrecognized_nonempty_fuel_still_selectable(
+    hass: HomeAssistant,
+) -> None:
+    """A renamed/unknown NONEMPTY fuel type must also fail open (Codex, PR #261).
+
+    The first cut required the literal "electricity" substring, which kept
+    empty types but silently excluded any unknown nonempty wording (e.g. a
+    renamed `powerContract`) — on a single-contract account that aborted
+    setup entirely. The filter is a denylist of known-unservable fuels, not
+    an allowlist of known-good ones.
+    """
+    renamed = Contract(
+        contract_number="3333333333",
+        account_number="1234567890",
+        address="1 Sample Street SUBURB QLD 4000",
+        fuel_type="powerContract",
+        status="active",
+    )
+    result = await _run_discovery(hass, [renamed])
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_CONTRACT_NUMBER] == "3333333333"
+
+
 async def test_serviceable_filter_is_case_insensitive(hass: HomeAssistant) -> None:
     """Fuel-type matching tolerates casing/wording drift on AGL's side."""
     from custom_components.haggle.config_flow import _serviceable_contracts

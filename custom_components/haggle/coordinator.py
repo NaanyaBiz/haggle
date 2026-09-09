@@ -472,10 +472,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         The bill projection lives ONLY here (#253): the usage-summary endpoint
         does not carry `additionalLabelValue`, which is why the sensor read
-        `unknown` in every release up to v0.5.0-beta.1. An empty label is
-        preserved as empty rather than clearing a previously-good value, so a
-        contract that stops reporting a projection keeps the last known one
-        until a reload — same stickiness rationale as has_solar.
+        `unknown` in every release up to v0.5.0-beta.1. Unlike has_solar the
+        projection is NOT sticky across a successful fetch: AGL withdraws the
+        label (period end, solar contracts), and a stale dollar figure is a
+        wrong number — worse than a blank one (#152 principle). Stickiness
+        applies only to a FAILED fetch, via the early return below.
         """
         try:
             contracts = await self.client.async_get_overview()
@@ -495,6 +496,17 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 # early return in the except block above.
                 self._bill_projection_label = contract.bill_projection_label
                 return
+        # HTTP-successful overview WITHOUT the configured contract (contract
+        # removed from the account, or its contractNumber dropped as malformed
+        # by the totality guards): nothing current supports the stored
+        # projection, so clear it rather than showing it indefinitely (Codex
+        # review finding on PR #261). has_solar deliberately stays sticky —
+        # it gates whether the generation series is written at all, and
+        # flapping it off on one odd payload would halt statistics writes.
+        self._bill_projection_label = ""
+        _LOGGER.debug(
+            "Configured contract absent from overview; cleared bill projection"
+        )
 
     def _maybe_reload_for_new_tariffs(self) -> None:
         """Schedule a reload when a ToU band first appears after first refresh.

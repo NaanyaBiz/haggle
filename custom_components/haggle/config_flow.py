@@ -75,6 +75,10 @@ _LOGGER = logging.getLogger(__name__)
 
 CALLBACK_URL_FIELD = "callback_url"
 
+# Fuels positively identified as unservable by the Electricity-only client.
+# Fixture-known vocabulary: "electricityContract" | "gasContract".
+_NON_ELECTRICITY_FUELS = ("gas",)
+
 
 def _serviceable_contracts(contracts: list[Contract]) -> list[Contract]:
     """Contracts this integration can actually serve (#260).
@@ -85,16 +89,20 @@ def _serviceable_contracts(contracts: list[Contract]) -> list[Contract]:
     on a gas-only account the single-contract fast path selects it silently.
 
     Fails OPEN, not closed: a contract whose `type` AGL did not report (or
-    reports with unexpected wording) is treated as serviceable. Locking a
-    working electricity user out because AGL renamed a string is a worse
-    failure than the one this filter fixes; only a positively-identified
-    non-electricity fuel is excluded.
+    reports with unexpected wording — e.g. a renamed `powerContract`) is
+    treated as serviceable. Locking a working electricity user out because
+    AGL renamed a string is a worse failure than the one this filter fixes;
+    only a positively-identified non-electricity fuel is excluded, so the
+    predicate is a denylist of known-unservable fuels, NOT an allowlist of
+    known-good ones (Codex review finding on PR #261 — requiring the literal
+    "electricity" substring silently excluded every unknown nonempty type).
     """
     keep: list[Contract] = []
     for contract in contracts:
         fuel = contract.fuel_type.casefold()
-        if not fuel or "electricity" in fuel:
-            keep.append(contract)
+        if any(unservable in fuel for unservable in _NON_ELECTRICITY_FUELS):
+            continue
+        keep.append(contract)
     return keep
 
 
