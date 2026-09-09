@@ -56,25 +56,13 @@ def _classify_tariff(text: str) -> str | None:
     return None
 
 
-def _safe_float(raw: Any) -> float:
-    """Coerce raw API value to a non-negative, finite, BOUNDED float.
+def safe_float(raw: Any) -> float:
+    """Coerce a raw API value to a non-negative, finite float <= MAX_AGL_NUMERIC.
 
-    Treats inf/nan/negative as 0.0 with a warning, so adversarial or corrupt
-    AGL responses cannot poison the recorder via async_add_external_statistics.
-
-    Also rejects anything above MAX_AGL_NUMERIC (#241). "Finite" alone was not
-    enough: 1e308 is finite and passed through unchanged, and two such values
-    in one hourly bucket — or a cumulative sum crossing the ceiling — evaluate
-    to `inf` with no exception raised, which is precisely the corruption the
-    finite check exists to prevent.
-
-    Rejected values become 0.0 rather than being clamped to the bound: a zero
-    delta never moves a cumulative sum, whereas a clamped 1e6 would write a
-    permanent, enormous false spike into the series.
-
-    This is the single implementation — coordinator.py imports it rather than
-    keeping a near-duplicate copy that drifted (its version returned -0.0 where
-    this one normalises to 0.0).
+    inf/nan/negative and over-bound values become 0.0 (never clamped to the
+    bound — a zero delta leaves a cumulative sum untouched; a clamped 1e6
+    would write a permanent false spike). Single implementation (#241);
+    coordinator.py imports it. Full rationale: AGENTS.md "What NOT to Do".
     """
     try:
         value = float(raw or 0.0)
@@ -179,25 +167,12 @@ def parse_interval_readings(
     never moves the cumulative sum, and the trailing rewindow re-visits the
     hour anyway.
 
-    ``expected_day`` is the day that was actually requested via ``period=``.
-    When given, readings whose timestamp falls outside that day ±
-    INTERVAL_DAY_TOLERANCE are dropped (#242). This matters far more than
-    "a row landed on the wrong day": ``coordinator._import_intervals`` derives
-    its cumulative-sum baseline cutoff as ``min(hour_cons)`` — straight from
-    response content — so ONE injected interval with an old timestamp pins the
-    cutoff before all real recorder history, the baseline resolves to 0.0
-    instead of the true multi-year total, and the same import then writes
-    today's genuine hours on top of it. The result is a large downward step in
-    the ``sum`` column: the #114 failure class, but triggerable by a single
-    crafted timestamp rather than only by a resume-gap edge case.
-
-    The window is deliberately tolerant, not exact. AGL interprets ``period=``
-    in the contract's LOCAL timezone while ``dateTime`` comes back in UTC, so a
-    single-day query legitimately spans two UTC dates and the parser has no
-    timezone context to narrow it further. One day either side covers every
-    real offset and DST shift, while still rejecting a timestamp from an
-    unrelated week or year — which is the attack. Precision here would risk
-    dropping legitimate readings; the guard only needs to bound the cutoff.
+    ``expected_day`` is the day actually requested via ``period=``; readings
+    outside that day ± INTERVAL_DAY_TOLERANCE are dropped (#242) so a crafted
+    timestamp can't pin the baseline cutoff before real recorder history
+    (threat-model T-4, the #114 sum-step class). Deliberately ±1 day, not
+    exact: AGL reads ``period=`` in LOCAL time and returns UTC, so a one-day
+    query legitimately spans two UTC dates.
     """
     _skip_types = {"none", "pending"}
     window: tuple[date, date] | None = None
@@ -207,6 +182,7 @@ def parse_interval_readings(
             expected_day + timedelta(days=INTERVAL_DAY_TOLERANCE),
         )
     readings: list[IntervalReading] = []
+    dropped_out_of_window = 0
     for section_raw in _as_list(_as_dict(data).get("sections")):
         for item_raw in _as_list(_as_dict(section_raw).get("items")):
             item = _as_dict(item_raw)
@@ -224,16 +200,13 @@ def parse_interval_readings(
             except ValueError, AttributeError:
                 continue
             if window is not None and not (window[0] <= dt.date() <= window[1]):
-                _LOGGER.warning(
-                    "Dropping interval outside the requested window "
-                    "(got %s, expected %s..%s)",
-                    dt.date(),
-                    window[0],
-                    window[1],
-                )
+                # Counted, not logged per-item: a hostile response could carry
+                # thousands of these, and a synchronous WARNING per reading
+                # would stall the event loop and flood the log (review finding).
+                dropped_out_of_window += 1
                 continue
-            kwh = _safe_float(block.get("quantity"))
-            cost_aud = _safe_float(block.get("amount"))
+            kwh = safe_float(block.get("quantity"))
+            cost_aud = safe_float(block.get("amount"))
             if kwh == 0.0 and cost_aud == 0.0:
                 continue
             readings.append(
@@ -244,6 +217,13 @@ def parse_interval_readings(
                     rate_type=rate_type,
                 )
             )
+    if dropped_out_of_window:
+        _LOGGER.warning(
+            "Dropped %d interval(s) outside the requested window %s..%s",
+            dropped_out_of_window,
+            window[0] if window else None,
+            window[1] if window else None,
+        )
     return readings
 
 
@@ -270,8 +250,8 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
                 day: date = dt.date()
             except ValueError, AttributeError:
                 continue
-            kwh = _safe_float(consumption.get("quantity"))
-            cost_aud = _safe_float(consumption.get("amount"))
+            kwh = safe_float(consumption.get("quantity"))
+            cost_aud = safe_float(consumption.get("amount"))
             if kwh == 0.0 and cost_aud == 0.0:
                 continue
             readings.append(DailyReading(day=day, kwh=kwh, cost_aud=cost_aud))
@@ -310,10 +290,10 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
     # (whitespace previously hit .split()[0] -> IndexError; fuzz-enforced).
     quantity_raw = usage.get("quantity")
     if isinstance(quantity_raw, int | float) and not isinstance(quantity_raw, bool):
-        consumption_kwh = _safe_float(quantity_raw)
+        consumption_kwh = safe_float(quantity_raw)
     else:
         parts = _as_str(quantity_raw, "0").replace(",", "").split()
-        consumption_kwh = _safe_float(parts[0] if parts else 0.0)
+        consumption_kwh = safe_float(parts[0] if parts else 0.0)
 
     return BillPeriod(
         start=start,
@@ -345,7 +325,7 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
         if kind != "detail":
             continue
         rate_type = _as_str(rate.get("type"))
-        price = _safe_float(rate.get("price"))
+        price = safe_float(rate.get("price"))
         title = _as_str(rate.get("title"))
         if rate_type == "c/day" and "supply" in title.lower():
             supply_charge = price
@@ -378,7 +358,7 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
             continue
         title = _as_str(rate.get("title"))
         if "feed-in" in title.lower() or "feed in" in title.lower():
-            feed_in_rate = _safe_float(rate.get("price"))
+            feed_in_rate = safe_float(rate.get("price"))
             break
 
     return PlanRates(

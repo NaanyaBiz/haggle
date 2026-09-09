@@ -160,6 +160,118 @@ async def test_rewindow_overwrite_no_midnight_spike(
     assert abs(sums[-1] - 48.0) < 1e-9
 
 
+async def test_poisoned_old_timestamp_cannot_step_sum_down(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """T-4 (#242) on the REAL statistics engine — the test docs/testing.md
+    requires for any baseline/cumulative-sum change.
+
+    Build a mature 48 h chain (sum reaches 48.0). Then import a later batch
+    that ALSO carries one interval timestamped 1970 — the crafted-timestamp
+    attack. Pre-fix, that row pins the baseline cutoff at 1970, the baseline
+    resolves to 0.0, and the new rows restart the chain near zero: a massive
+    downward step in the recorder's sum column.
+
+    The parser's window guard drops the 1970 row before it ever reaches
+    _import_intervals, so this test feeds the POST-PARSER path exactly as the
+    client wires it: parse_interval_readings(payload, expected_day=...).
+    """
+    from custom_components.haggle.agl.parser import parse_interval_readings
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 48))
+    await async_wait_recording_done(hass)
+
+    # Attack batch: two legitimate hours for 2026-06-30 plus one 1970 row.
+    day = date(2026, 6, 30)
+
+    def _item(iso: str) -> dict:
+        return {
+            "dateTime": iso,
+            "consumption": {"type": "normal", "quantity": 1.0, "amount": 0.30},
+        }
+
+    payload = {
+        "sections": [
+            {
+                "items": [
+                    _item("2026-06-30T14:00:00Z"),
+                    _item("2026-06-30T15:00:00Z"),
+                    _item("1970-01-02T00:00:00Z"),  # the poison
+                ]
+            }
+        ]
+    }
+    readings = parse_interval_readings(payload, expected_day=day)
+    assert len(readings) == 2, "window guard must drop the 1970 row"
+
+    await coord._import_intervals(readings)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    # No downward step anywhere, and the chain continued from 48, not from 0.
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    assert abs(sums[-1] - 50.0) < 1e-9
+    # And no phantom 1970 row was written (start is an epoch float here).
+    assert all(
+        datetime.fromtimestamp(row["start"], tz=UTC).year >= 2026 for row in rows
+    )
+
+
+async def test_two_overbound_readings_cannot_write_inf_sum(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#241's exact scenario at the recorder layer: two 1e308 readings in one
+    hourly bucket. Pre-fix, safe_float passed them through, _bucket_hourly
+    summed them to inf, and the recorder stored a non-finite sum. Post-fix
+    they reject to 0.0 -> zero-delta hours, sum chain flat and finite.
+    """
+    import math
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 24))
+    await async_wait_recording_done(hass)
+
+    from custom_components.haggle.agl.parser import parse_interval_readings
+
+    def _item(iso: str, qty: float) -> dict:
+        return {
+            "dateTime": iso,
+            "consumption": {"type": "normal", "quantity": qty, "amount": 0.30},
+        }
+
+    payload = {
+        "sections": [
+            {
+                "items": [
+                    # Two half-hour slots in the SAME hour, both over-bound.
+                    _item("2026-06-29T14:00:00Z", 1e308),
+                    _item("2026-06-29T14:30:00Z", 1e308),
+                    # One sane reading after, so the batch isn't empty-ish.
+                    _item("2026-06-29T15:00:00Z", 1.0),
+                ]
+            }
+        ]
+    }
+    readings = parse_interval_readings(payload, expected_day=date(2026, 6, 29))
+    await coord._import_intervals(readings)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    assert all(math.isfinite(v) for v in sums), sums
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    # 24 legit + the sane 1.0; the two 1e308s contributed exactly nothing.
+    assert abs(sums[-1] - 25.0) < 1e-9
+
+
 async def test_band_reachback_baseline_after_long_absence(
     recorder_mock, hass: HomeAssistant
 ) -> None:

@@ -7,7 +7,7 @@ cycle. This harness enforces two invariants:
 
   1. No exception escapes any parse_* function for any json.loads() value.
   2. Every numeric field returned is finite, >= 0, and <= MAX_AGL_NUMERIC
-     (the _safe_float guarantee — protects the recorder's cumulative-sum
+     (the safe_float guarantee — protects the recorder's cumulative-sum
      statistics). The upper bound is part of the invariant since #241:
      "finite" alone let 1e308 through, and two of those in one hourly
      bucket sum to inf with no exception raised.
@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from datetime import date, timedelta
 from typing import Any
 
 import atheris
@@ -35,7 +36,15 @@ import atheris
 # atheris.instrument_imports()/instrument_all() would sweep in the whole
 # homeassistant import chain and make startup prohibitively slow.
 from custom_components.haggle.agl import parser
-from custom_components.haggle.const import MAX_AGL_NUMERIC
+from custom_components.haggle.const import INTERVAL_DAY_TOLERANCE, MAX_AGL_NUMERIC
+
+# Fixed day for the windowed pass — fuzz inputs may carry any timestamp, and
+# the invariant is that everything RETURNED lies within the window.
+_FUZZ_EXPECTED_DAY = date(2026, 1, 15)
+_FUZZ_WINDOW = (
+    _FUZZ_EXPECTED_DAY - timedelta(days=INTERVAL_DAY_TOLERANCE),
+    _FUZZ_EXPECTED_DAY + timedelta(days=INTERVAL_DAY_TOLERANCE),
+)
 
 for _fn_name in (
     "parse_overview",
@@ -44,7 +53,7 @@ for _fn_name in (
     "parse_bill_period",
     "parse_plan",
     "_classify_tariff",
-    "_safe_float",
+    "safe_float",
     "_as_dict",
     "_as_list",
     "_as_str",
@@ -70,6 +79,18 @@ def test_one_input(data: bytes) -> None:
 
     for source_field in ("consumption", "feedIn"):
         for reading in parser.parse_interval_readings(obj, source_field=source_field):
+            _check_amount(reading.kwh)
+            _check_amount(reading.cost_aud)
+        # Windowed pass (#242 / T-4): with expected_day set, every RETURNED
+        # reading must lie inside the window — a crafted timestamp escaping
+        # it is exactly the baseline-cutoff attack the guard exists to stop.
+        for reading in parser.parse_interval_readings(
+            obj, source_field=source_field, expected_day=_FUZZ_EXPECTED_DAY
+        ):
+            if not (_FUZZ_WINDOW[0] <= reading.dt.date() <= _FUZZ_WINDOW[1]):
+                raise AssertionError(
+                    f"out-of-window timestamp escaped the guard: {reading.dt!r}"
+                )
             _check_amount(reading.kwh)
             _check_amount(reading.cost_aud)
 

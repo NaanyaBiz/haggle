@@ -89,7 +89,7 @@ tests/
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
-├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, _safe_float
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float
 ├── test_pinning.py                  # SPKI extraction + host-name guards
 ├── fuzz/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
@@ -666,7 +666,7 @@ The HA Energy dashboard requires:
   carry the contract number (PII). Pattern:
   `_LOGGER.debug("…body: %s", text[:200]); raise AGLError(f"HTTP {status} …")`.
 - **Don't use unbounded `float()` coercion on AGL response values**. Use
-  `_safe_float` from `agl/parser.py` — now the SINGLE implementation, imported
+  `safe_float` from `agl/parser.py` — now the SINGLE implementation, imported
   by `coordinator.py` rather than duplicated (the two copies had already
   drifted: one returned `-0.0`, the other `0.0`) — so `inf`/`nan`/negative
   **and implausibly large** values can't reach

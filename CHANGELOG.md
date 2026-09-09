@@ -71,7 +71,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
-- **`_safe_float` now bounds magnitude, not just finiteness** (#241).
+- **`safe_float` now bounds magnitude, not just finiteness** (#241;
+  renamed from `_safe_float` — it is a cross-module API, review finding).
   `1e308` is finite, so it passed the guard unchanged — and
   `1e308 + 1e308` evaluates to `inf` with no exception raised. Two such
   readings in one hourly bucket, or a cumulative sum crossing the ceiling,
@@ -81,7 +82,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   slot) are now rejected to `0.0`, never clamped to the bound, since a zero
   delta leaves the sum untouched while a clamped 1e6 would write a
   permanent false spike. The bound is part of the fuzz invariant.
-  - The two near-duplicate `_safe_float` copies are collapsed into one:
+  - The two near-duplicate `safe_float` copies are collapsed into one:
     `coordinator.py` imports the parser's. They had already drifted (one
     returned `-0.0` where the other normalised to `0.0`), and an upper
     bound added to one copy but not the other would be worse than none.

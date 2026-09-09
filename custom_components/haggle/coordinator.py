@@ -43,11 +43,8 @@ from .agl.client import (
     AGLTransportError,
 )
 
-# Single implementation of the numeric guard (#241). The coordinator kept a
-# near-duplicate that had already drifted (it returned -0.0 where the parser's
-# normalises to 0.0), and an upper bound added to one copy but not the other
-# would be worse than no bound at all.
-from .agl.parser import _safe_float
+# Single numeric-guard implementation (#241) — a local near-duplicate had drifted.
+from .agl.parser import safe_float
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -342,7 +339,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         unit_rate_aud: float | None = None
         for rate in plan.unit_rates:
             if rate.get("type") == "c/kWh":
-                cents = _safe_float(rate.get("price"))
+                cents = safe_float(rate.get("price"))
                 unit_rate_aud = cents / 100.0
                 break
 
@@ -406,13 +403,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Parse bill-period totals.
         projection: float | None = None
-        period_kwh = _safe_float(summary.consumption_kwh)
-        period_cost = _safe_float(
+        period_kwh = safe_float(summary.consumption_kwh)
+        period_cost = safe_float(
             (summary.cost_label or "").lstrip("$").replace(",", "")
         )
         proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
         if proj_label:
-            projection = _safe_float(proj_label)
+            projection = safe_float(proj_label)
 
         return HaggleData(
             consumption_period_kwh=period_kwh,

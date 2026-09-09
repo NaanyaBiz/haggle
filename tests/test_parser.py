@@ -39,45 +39,45 @@ class TestSafeFloat:
     """Adversarial / corrupt API values must clamp to 0.0 instead of poisoning stats."""
 
     def test_finite_positive_passes_through(self) -> None:
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
-        assert _safe_float(0.5) == 0.5
-        assert _safe_float("12.34") == pytest.approx(12.34)
+        assert safe_float(0.5) == 0.5
+        assert safe_float("12.34") == pytest.approx(12.34)
 
     def test_inf_nan_negative_clamp_to_zero(self) -> None:
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
-        assert _safe_float(float("inf")) == 0.0
-        assert _safe_float(float("nan")) == 0.0
-        assert _safe_float(-1.0) == 0.0
-        assert _safe_float(1e400) == 0.0  # overflow → inf → clamped
+        assert safe_float(float("inf")) == 0.0
+        assert safe_float(float("nan")) == 0.0
+        assert safe_float(-1.0) == 0.0
+        assert safe_float(1e400) == 0.0  # overflow → inf → clamped
 
     def test_large_but_finite_is_rejected(self) -> None:
         """#241 — "finite" was never a sufficient bound.
 
         This assertion previously read
-        `assert _safe_float("1e308") == 1e308  # finite, allowed`, encoding the
+        `assert safe_float("1e308") == 1e308  # finite, allowed`, encoding the
         gap as intended behaviour. It is not: 1e308 is finite, so it passed the
         isfinite() check unchanged, and `1e308 + 1e308` evaluates to `inf` with
         no exception raised. Two such readings in one hourly bucket — or a
         cumulative sum crossing the ceiling — silently produced the very
         non-finite `sum` the finite check exists to prevent.
         """
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
         assert float("inf") == 1e308 + 1e308  # the mechanism, made explicit
-        assert _safe_float("1e308") == 0.0
-        assert _safe_float(1e308) == 0.0
+        assert safe_float("1e308") == 0.0
+        assert safe_float(1e308) == 0.0
 
     def test_bound_admits_plausible_values_and_rejects_just_above(self) -> None:
         """The bound sits far above any real reading, so it never clips data."""
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
         from custom_components.haggle.const import MAX_AGL_NUMERIC
 
-        assert _safe_float(50.0) == 50.0  # a big 30-min household slot
-        assert _safe_float(9_999.0) == 9_999.0  # a quarterly bill total
-        assert _safe_float(MAX_AGL_NUMERIC) == MAX_AGL_NUMERIC  # inclusive
-        assert _safe_float(MAX_AGL_NUMERIC * 1.000001) == 0.0
+        assert safe_float(50.0) == 50.0  # a big 30-min household slot
+        assert safe_float(9_999.0) == 9_999.0  # a quarterly bill total
+        assert safe_float(MAX_AGL_NUMERIC) == MAX_AGL_NUMERIC  # inclusive
+        assert safe_float(MAX_AGL_NUMERIC * 1.000001) == 0.0
 
     def test_rejected_value_becomes_zero_not_the_bound(self) -> None:
         """Rejects to 0.0, never clamps to the ceiling.
@@ -85,24 +85,32 @@ class TestSafeFloat:
         A zero delta leaves the cumulative sum untouched; writing MAX_AGL_NUMERIC
         instead would burn a permanent, enormous false spike into the series.
         """
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
         from custom_components.haggle.const import MAX_AGL_NUMERIC
 
-        assert _safe_float(1e300) != MAX_AGL_NUMERIC
-        assert _safe_float(1e300) == 0.0
+        assert safe_float(1e300) != MAX_AGL_NUMERIC
+        assert safe_float(1e300) == 0.0
 
     def test_negative_zero_normalises(self) -> None:
-        """coordinator.py's removed copy returned -0.0 here; this one does not."""
-        from custom_components.haggle.agl.parser import _safe_float
+        """coordinator.py's removed copy returned -0.0 here; this one does not.
 
-        assert repr(_safe_float(-0.0)) == "0.0"
+        Mechanism note: -0.0 is falsy, so it normalises via the `raw or 0.0`
+        short-circuit BEFORE the `< 0` guard is ever reached — not via the
+        negative-value rejection path (review finding). Pinned here so a
+        refactor dropping the `or 0.0` shorthand re-fails this test.
+        """
+        from custom_components.haggle.agl.parser import safe_float
+
+        assert repr(safe_float(-0.0)) == "0.0"
+        # The guard path proper, for contrast:
+        assert safe_float(-0.5) == 0.0
 
     def test_unparseable_clamps_to_zero(self) -> None:
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
-        assert _safe_float(None) == 0.0
-        assert _safe_float("not a number") == 0.0
-        assert _safe_float({}) == 0.0
+        assert safe_float(None) == 0.0
+        assert safe_float("not a number") == 0.0
+        assert safe_float({}) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -359,8 +367,9 @@ class TestIntervalWindowValidation:
         "dt_iso",
         [
             "2026-06-30T14:00:00Z",  # AEST local midnight of the 1st
-            "2026-07-01T23:30:00Z",  # UTC-12 tail of the same local day
-            "2026-07-02T11:00:00Z",  # UTC+14 head
+            "2026-07-01T23:30:00Z",  # UTC-12: mid local day
+            "2026-07-02T11:30:00Z",  # UTC-12 tail (last slot of the local day)
+            "2026-06-30T10:00:00Z",  # UTC+14 head (local midnight of the 1st)
         ],
     )
     def test_adjacent_utc_dates_are_kept(self, dt_iso: str) -> None:
