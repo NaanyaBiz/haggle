@@ -688,10 +688,14 @@ The HA Energy dashboard requires:
   baseline resolves to `0.0` instead of the true multi-year sum, and the same
   import writes today's real hours on top of it: a large downward step in the
   `sum` column (#114 class, from a single crafted timestamp). With `tz` the
-  window is the true UTC shape of the requested LOCAL day
-  ± `INTERVAL_WINDOW_SLACK_HOURS` (AGL interprets `period=` in the contract's
-  local timezone and returns `dateTime` in UTC, so a single-day query spans
-  two UTC dates; DST is handled by the tzinfo). The tz-less ±1-DATE fallback
+  window is the true UTC shape of the requested LOCAL day, with
+  `INTERVAL_WINDOW_TRAILING_SLACK_HOURS` of TRAILING-only slack (AGL
+  interprets `period=` in the contract's local timezone and returns
+  `dateTime` in UTC, so a single-day query spans two UTC dates; DST is
+  handled by the tzinfo). Never add LEADING slack: the baseline cutoff is
+  `min(hour_cons)`, so leading slack of any width re-admits the cutoff
+  attack at that width, while a late row cannot lower the min (Codex
+  pass-2 P1 on PR #266). The tz-less ±1-DATE fallback
   alone is NOT sufficient: it accepts every instant of the adjacent UTC date,
   so an injected `D-1T00:00Z` reading still dragged the cutoff ~14 h early —
   stored rows in that gap left out of the baseline but not re-emitted, a

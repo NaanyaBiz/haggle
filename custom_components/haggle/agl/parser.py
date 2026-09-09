@@ -28,7 +28,7 @@ if TYPE_CHECKING:
 
 from ..const import (
     INTERVAL_DAY_TOLERANCE,
-    INTERVAL_WINDOW_SLACK_HOURS,
+    INTERVAL_WINDOW_TRAILING_SLACK_HOURS,
     MAX_AGL_NUMERIC,
     TARIFF_OFFPEAK,
     TARIFF_PEAK,
@@ -191,8 +191,11 @@ def _out_of_window_predicate(
         )
         next_day = expected_day + timedelta(days=1)
         day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
-        slack = timedelta(hours=INTERVAL_WINDOW_SLACK_HOURS)
-        lo, hi = day_start - slack, day_end + slack
+        # Trailing slack ONLY: the baseline cutoff is min(hour_cons), so a
+        # leading slack of any width re-admits the cutoff attack at that
+        # width (Codex pass-2 P1, PR #266); a late row cannot lower the min.
+        slack = timedelta(hours=INTERVAL_WINDOW_TRAILING_SLACK_HOURS)
+        lo, hi = day_start, day_end + slack
         return lambda dt: not (lo <= dt < hi)
     lo_date = expected_day - timedelta(days=INTERVAL_DAY_TOLERANCE)
     hi_date = expected_day + timedelta(days=INTERVAL_DAY_TOLERANCE)
@@ -230,8 +233,8 @@ def parse_interval_readings(
     #114 sum-step class). With ``tz`` — the contract's local timezone, which
     the caller asserts is the HA instance's configured one (the same
     assumption every local-midnight computation in the coordinator makes) —
-    the window is exact: [local midnight of the day - slack, next local
-    midnight + slack) in UTC, DST handled by the tzinfo. AGL reads
+    the window is exact: [local midnight of the day, next local midnight +
+    trailing slack) in UTC, DST handled by the tzinfo. AGL reads
     ``period=`` in LOCAL time and returns UTC, so this is the true shape of
     one requested day. Without ``tz`` the fallback is the coarser
     ``expected_day ± INTERVAL_DAY_TOLERANCE`` DATE window — Codex P1 on PR

@@ -98,11 +98,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   true multi-year total and the same import wrote today's genuine hours on
   top of it: a large downward step in the `sum` column. That is the #114
   failure class, reachable from one crafted timestamp rather than only a
-  resume-gap edge case. Readings outside the requested day ±1 are now
-  dropped, at all three fetch sites including solar. The tolerance is
-  deliberate — AGL reads `period=` in the contract's local timezone and
-  returns UTC, so a one-day query legitimately spans two UTC dates.
-  Recorded as threat-model **T-4**.
+  resume-gap edge case. Readings outside the requested day's window are now
+  dropped, at all three fetch sites including solar. The window is derived
+  from the configured local timezone — local midnight to next local
+  midnight plus 2 h of trailing-only slack, computed in UTC (AGL reads
+  `period=` in the contract's local timezone and returns UTC, so a one-day
+  query legitimately spans two UTC dates; DST is handled by the timezone
+  data). A coarser ±1-date window applies only when no timezone is
+  available. Recorded as threat-model **T-4**.
 
 ### Targets for next sprint
 

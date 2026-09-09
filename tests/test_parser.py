@@ -433,7 +433,9 @@ class TestIntervalWindowTzDerived:
     reading survived, became min(hour_cons), and pulled the baseline cutoff
     ~14 h early — stored rows in that gap were excluded from the baseline but
     not re-emitted, so the first genuine row stepped the cumulative sum down
-    (#114 class). With tz the window is the local day ± 2 h slack.
+    (#114 class). With tz the window is the local day plus a TRAILING-only
+    2 h slack — pass 2 showed leading slack re-admits the attack at its own
+    width, while a late row cannot lower min(hour_cons).
     """
 
     _payload = staticmethod(TestIntervalWindowValidation._payload)
@@ -454,7 +456,7 @@ class TestIntervalWindowTzDerived:
         [
             "2026-06-30T14:00:00Z",  # local midnight — first slot of the day
             "2026-07-01T13:30:00Z",  # 23:30 local — last slot of the day
-            "2026-06-30T12:00:00Z",  # exactly at the 2 h slack edge (kept)
+            "2026-07-01T15:59:00Z",  # inside the 2 h TRAILING slack (kept)
         ],
     )
     def test_legitimate_boundary_slots_are_kept(self, dt_iso: str) -> None:
@@ -465,9 +467,20 @@ class TestIntervalWindowTzDerived:
         )
         assert len(readings) == 1
 
-    def test_just_outside_slack_is_dropped(self) -> None:
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            # Codex pass-2 P1: leading slack of ANY width re-admits the
+            # baseline-cutoff attack at that width — the lower bound is the
+            # local midnight itself, so even one second before it is out.
+            "2026-06-30T13:59:59Z",
+            "2026-06-30T12:00:00Z",  # the old leading-slack edge — now out
+            "2026-07-01T16:00:00Z",  # at the trailing-slack edge (exclusive)
+        ],
+    )
+    def test_outside_the_asymmetric_window_is_dropped(self, dt_iso: str) -> None:
         readings = parse_interval_readings(
-            self._payload("2026-06-30T11:59:00Z"),
+            self._payload(dt_iso),
             expected_day=date(2026, 7, 1),
             tz=self._BRISBANE,
         )

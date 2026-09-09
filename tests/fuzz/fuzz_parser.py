@@ -38,7 +38,7 @@ import atheris
 from custom_components.haggle.agl import parser
 from custom_components.haggle.const import (
     INTERVAL_DAY_TOLERANCE,
-    INTERVAL_WINDOW_SLACK_HOURS,
+    INTERVAL_WINDOW_TRAILING_SLACK_HOURS,
     MAX_AGL_NUMERIC,
 )
 
@@ -51,10 +51,12 @@ _FUZZ_WINDOW = (
     _FUZZ_EXPECTED_DAY + timedelta(days=INTERVAL_DAY_TOLERANCE),
 )
 # tz-derived pass (Codex P1, PR #266): the exact UTC shape of one local day
-# ± slack. UTC keeps the harness deterministic and tzdata-independent.
+# plus trailing-only slack. UTC keeps the harness deterministic and
+# tzdata-independent.
 _FUZZ_TZ_WINDOW = (
-    datetime(2026, 1, 15, tzinfo=UTC) - timedelta(hours=INTERVAL_WINDOW_SLACK_HOURS),
-    datetime(2026, 1, 16, tzinfo=UTC) + timedelta(hours=INTERVAL_WINDOW_SLACK_HOURS),
+    datetime(2026, 1, 15, tzinfo=UTC),  # strict lower bound — no leading slack
+    datetime(2026, 1, 16, tzinfo=UTC)
+    + timedelta(hours=INTERVAL_WINDOW_TRAILING_SLACK_HOURS),
 )
 
 for _fn_name in (
