@@ -255,6 +255,103 @@ class TestAglAuth:
 # ---------------------------------------------------------------------------
 
 
+class TestMalformedButOkTokenResponses:
+    """#243 — a 200 with a valid-JSON but wrong-shaped body must not escape.
+
+    Every coordinator catch site is built around the AGLError family. A raw
+    AttributeError/KeyError/ValueError from the schema-trusting block bypasses
+    all of it, crashes the update cycle before the #155 retry cadence runs, and
+    lands in DataUpdateCoordinator.last_exception — which diagnostics.py
+    publishes verbatim into a file users attach to public GitHub issues.
+
+    None of these are auth failures, so none may raise AGLAuthError: that
+    would trigger a reauth prompt and burn a working grant over a bad response.
+    """
+
+    @staticmethod
+    async def _refresh(body: object) -> None:
+        async def persist(token: str) -> None:
+            pass
+
+        await AglAuth("v1.initial", persist).async_force_refresh(_make_session(body))  # type: ignore[arg-type]
+
+    @pytest.mark.parametrize("body", [None, [], "a string", 3, True])
+    async def test_non_object_body_raises_retryable_agl_error(
+        self, body: object
+    ) -> None:
+        with pytest.raises(AGLError) as exc:
+            await self._refresh(body)
+        assert not isinstance(exc.value, AGLAuthError)
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"access_token": "a"},
+            {"refresh_token": "r"},
+            {"access_token": "a", "refresh_token": None},
+            {"access_token": ["a"], "refresh_token": "r"},
+        ],
+    )
+    async def test_missing_or_mistyped_tokens_raise_agl_error(self, body: dict) -> None:
+        with pytest.raises(AGLError) as exc:
+            await self._refresh(body)
+        assert not isinstance(exc.value, AGLAuthError)
+
+    async def test_unparseable_expires_in_does_not_leak_body_into_exception(
+        self,
+    ) -> None:
+        """The concrete leak vector: int() embeds its input in the message.
+
+        `int("<script>alert(1)</script>")` raises
+        `ValueError: invalid literal for int() with base 10: '<script>...'`.
+        Unwrapped, that string reaches diagnostics.py via str(last_exception).
+        """
+        hostile = "<script>alert(1)</script>"
+        with pytest.raises(AGLError) as exc:
+            await self._refresh(
+                {"access_token": "a", "refresh_token": "r", "expires_in": hostile}
+            )
+        assert hostile not in str(exc.value)
+        assert "ValueError" in str(exc.value)
+
+    async def test_absurd_expires_in_raises_agl_error(self) -> None:
+        """A huge expires_in overflows datetime.fromtimestamp."""
+        with pytest.raises(AGLError):
+            await self._refresh(
+                {"access_token": "a", "refresh_token": "r", "expires_in": 10**20}
+            )
+
+    async def test_structured_error_field_is_not_echoed(self) -> None:
+        """`error` reaches HA notifications — only a plausible slug is echoed."""
+        hostile = "x" * 500
+        with pytest.raises(AGLAuthError) as exc:
+            await self._refresh({"error": {"nested": hostile}})
+        assert hostile not in str(exc.value)
+        assert "unspecified" in str(exc.value)
+
+    async def test_ordinary_error_slug_still_surfaces(self) -> None:
+        """The useful case is preserved: a short slug is still reported."""
+        with pytest.raises(AGLAuthError) as exc:
+            await self._refresh({"error": "invalid_grant"})
+        assert "invalid_grant" in str(exc.value)
+
+    async def test_non_string_id_token_is_dropped_not_stored(self) -> None:
+        """A mistyped id_token degrades to "" rather than poisoning TokenSet."""
+
+        async def persist(token: str) -> None:
+            pass
+
+        auth = AglAuth("v1.initial", persist)
+        await auth.async_force_refresh(
+            _make_session(
+                {"access_token": "a", "refresh_token": "r", "id_token": {"bad": 1}}
+            )
+        )
+        assert auth._token_set is not None
+        assert auth._token_set.id_token == ""
+
+
 class TestAglClient:
     def _make_client(
         self, response_data: dict, status: int = 200

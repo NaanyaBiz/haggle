@@ -133,10 +133,21 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
   tests serialize the whole payload and assert raw identifiers never appear
   (`tests/test_diagnostics.py`); `schema_version` gates machine parsing;
   the triage routine treats all attachment content as untrusted data.
+  `coordinator.last_exception` is republished verbatim as
+  `str(last_exception)`, so that field is only as clean as the exception
+  discipline upstream of it: it is safe *because* every raise site
+  constructs its own message, never echoing a response body. #243 showed
+  the gap — an unwrapped `int()` on a hostile `expires_in` produced
+  `ValueError: invalid literal for int() with base 10: '<attacker text>'`,
+  and a structured `error` field was echoed whole into an `AGLAuthError`.
+  Both now degrade to a type name / a length-capped slug.
 - **Assumptions to question**: users may attach *other* files (raw HA logs)
   that are not scrubbed — the issue template asks for the diagnostics file
   specifically; a crafted "diagnostics" attachment is a prompt-injection
-  vector against the triage routine — mitigations in §6.
+  vector against the triage routine — mitigations in §6. The
+  `last_exception` channel depends on a convention, not a mechanism: any
+  new raise site that interpolates response content re-opens it, and no
+  test can enumerate every such site.
 
 ### TB-6: Repo source / diff → Codex Security (OpenAI) API
 - **From**: the maintainer's local checkout — either the full repository

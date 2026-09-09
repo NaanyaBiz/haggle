@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 import pytest
@@ -288,6 +289,89 @@ async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) 
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "select_contract"
+
+
+def _mock_token_session(
+    body: object = None, *, status: int = 200, json_exc: Exception | None = None
+) -> MagicMock:
+    """Mock the short-lived ClientSession _exchange_code builds internally."""
+    resp = AsyncMock()
+    resp.status = status
+    resp.ok = 200 <= status < 400
+    resp.json = (
+        AsyncMock(side_effect=json_exc)
+        if json_exc is not None
+        else AsyncMock(return_value=body)
+    )
+    resp.__aenter__ = AsyncMock(return_value=resp)
+    resp.__aexit__ = AsyncMock(return_value=False)
+
+    session = MagicMock()
+    session.post = MagicMock(return_value=resp)
+    session.__aenter__ = AsyncMock(return_value=session)
+    session.__aexit__ = AsyncMock(return_value=False)
+    return session
+
+
+class TestExchangeCodeMalformedResponses:
+    """#243 — _exchange_code must not let raw exceptions past its boundary.
+
+    async_step_exchange catches only AGLAuthError and
+    (AGLError, aiohttp.ClientError, TimeoutError). Anything else aborts the
+    config flow with an untranslated "Unknown error" instead of the intended
+    `cannot_connect` / `invalid_auth` form. These paths were previously
+    untested — every other test in this file mocks _exchange_code out.
+    """
+
+    @staticmethod
+    async def _exchange(**kw: object) -> tuple[str, str, str]:
+        from custom_components.haggle.config_flow import _exchange_code
+
+        with (
+            patch(
+                "custom_components.haggle.config_flow.aiohttp.ClientSession",
+                return_value=_mock_token_session(**kw),  # type: ignore[arg-type]
+            ),
+            patch("custom_components.haggle.config_flow.HagglePinningConnector"),
+        ):
+            return await _exchange_code("auth_code", "verifier")
+
+    @pytest.mark.parametrize("body", [None, [], "a string", 7])
+    async def test_non_object_body_raises_agl_error(self, body: object) -> None:
+        with pytest.raises(AGLError):
+            await self._exchange(body=body)
+
+    async def test_undecodable_json_raises_agl_error(self) -> None:
+        with pytest.raises(AGLError):
+            await self._exchange(json_exc=json.JSONDecodeError("bad", "doc", 0))
+
+    async def test_mistyped_token_fields_raise_auth_error(self) -> None:
+        with pytest.raises(AGLAuthError):
+            await self._exchange(body={"access_token": 1, "refresh_token": ["r"]})
+
+    async def test_malformed_body_surfaces_cannot_connect_not_unknown_error(
+        self, hass: HomeAssistant
+    ) -> None:
+        """End-to-end: the user sees the translated error, not "Unknown error"."""
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": config_entries.SOURCE_USER}
+        )
+        callback_url = _make_callback_url(
+            result["description_placeholders"]["authorize_url"]
+        )
+        with (
+            patch(
+                "custom_components.haggle.config_flow.aiohttp.ClientSession",
+                return_value=_mock_token_session(body=None),
+            ),
+            patch("custom_components.haggle.config_flow.HagglePinningConnector"),
+        ):
+            result = await hass.config_entries.flow.async_configure(
+                result["flow_id"], user_input={CALLBACK_URL_FIELD: callback_url}
+            )
+
+        assert result["type"] is FlowResultType.FORM
+        assert result["errors"] == {"base": "cannot_connect"}
 
 
 async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:

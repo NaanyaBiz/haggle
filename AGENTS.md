@@ -779,6 +779,26 @@ The HA Energy dashboard requires:
   When adding a new client method, route it through `_get` or replicate the
   shield; `_fetch_with_heal_accounting` is the belt-and-braces layer that
   counts an attempt on ANY sweep exit regardless.
+- **Don't leave schema-trusting code outside the transport shield.** A
+  `try` that catches only `_TRANSPORT_ERRORS`/`JSONDecodeError` around the
+  `resp.json()` call does nothing for the `data["..."]` / `int(...)` /
+  `datetime.fromtimestamp(...)` block *after* it. A 200 whose body is valid
+  JSON of the wrong shape (`null`, `[]`, `{"expires_in": "x"}`) raises
+  `AttributeError`/`KeyError`/`TypeError`/`ValueError`/`OverflowError`,
+  which bypasses every coordinator catch site (all built around the
+  `AGLError` family), skips the #155 retry cadence, and lands in
+  `last_exception` → published diagnostics. Guard the shape explicitly
+  (`isinstance(data, dict)`) and wrap the conversions, raising a *retryable*
+  `AGLTransportError` — never `AGLAuthError`, which would burn a working
+  grant on a reauth prompt for what is not an auth failure (#243).
+- **Don't interpolate an AGL/Auth0 response *field* into an exception
+  message either.** The "no raw bodies in exceptions" rule is usually read
+  as being about `resp.text()`, but a single field is enough: `f"Token
+  refresh error: {error}"` echoed a 500-character structured payload, and
+  `int(hostile)` puts its input into the `ValueError` text. Both reach HA
+  Persistent Notifications and `diagnostics.py`'s `str(last_exception)`,
+  which users attach to public issues. Echo a length-capped, type-checked
+  slug or the exception *type name* only (#243).
 - **Don't hardcode release version strings in README/info.md/docs.** The
   release flow bumps `manifest.json` + `CHANGELOG.md` only, so a pinned
   `vX.Y.Z` anywhere else rots on the next release (the README advertised

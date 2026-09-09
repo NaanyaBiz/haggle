@@ -163,10 +163,27 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
             raise AGLAuthError(f"Token exchange failed: HTTP {resp.status}")
         if not resp.ok:
             raise AGLError(f"Token exchange error: HTTP {resp.status}")
-        body: dict[str, Any] = await resp.json()
+        try:
+            # content_type=None: Auth0 behind an Akamai challenge can return
+            # a 200 whose body is not JSON at all.
+            body = await resp.json(content_type=None)
+        except ValueError as err:
+            # json.JSONDecodeError subclasses ValueError. Raised as AGLError
+            # so async_step_exchange maps it to the translated
+            # `cannot_connect`, not an untranslated "Unknown error" (#243).
+            # No body text in the message — it surfaces in the config-flow UI.
+            raise AGLError("malformed response from AGL token endpoint") from err
 
-    access_token: str = body.get("access_token", "")
-    refresh_token: str = body.get("refresh_token", "")
+    # Valid JSON of the wrong shape (`null`, `[]`, a bare number) has no
+    # .get(); an unguarded AttributeError escapes async_step_exchange's
+    # AGLError/ClientError/TimeoutError boundary entirely.
+    if not isinstance(body, dict):
+        raise AGLError("unexpected token-response shape from AGL token endpoint")
+
+    access_token = body.get("access_token", "")
+    refresh_token = body.get("refresh_token", "")
+    if not isinstance(access_token, str) or not isinstance(refresh_token, str):
+        raise AGLAuthError("Token response fields are not strings")
     if not access_token or not refresh_token:
         raise AGLAuthError("Token response missing access_token or refresh_token")
 

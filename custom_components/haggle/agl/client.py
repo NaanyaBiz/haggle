@@ -230,23 +230,57 @@ class AglAuth:
         except json.JSONDecodeError as err:
             raise AGLTransportError("non-JSON response from token endpoint") from err
 
+        # Everything below is schema-trusting, so it needs the same shield as
+        # the transport layer above (#243). A malformed-but-200 body is NOT an
+        # auth failure: it must raise a retryable AGLError, never AGLAuthError
+        # (which would burn the grant through a pointless reauth prompt), and
+        # never a raw AttributeError/KeyError/ValueError — those bypass every
+        # coordinator catch site, which is built around the AGLError family.
+        if not isinstance(data, dict):
+            # Valid JSON, wrong shape: `null`, `[]`, `"x"`, `3`. The
+            # annotation above is a promise the wire cannot keep.
+            raise AGLTransportError("unexpected token-response shape from AGL auth")
+
         error = data.get("error")
         if error:
-            raise AGLAuthError(f"Token refresh error: {error}")
+            # Auth0's `error` is a short slug ("invalid_grant"). Anything else
+            # is untrusted content, and this message reaches
+            # ConfigEntryAuthFailed -> HA Persistent Notifications and
+            # diagnostics.py's str(last_exception). Only echo a plausible slug.
+            code = (
+                error if isinstance(error, str) and len(error) <= 64 else "unspecified"
+            )
+            raise AGLAuthError(f"Token refresh error: {code}")
 
-        access_token: str = data["access_token"]
-        new_refresh_token: str = data["refresh_token"]
-        expires_in: int = int(data.get("expires_in", 900))
-        expires_at = datetime.fromtimestamp(
-            int(datetime.now(tz=UTC).timestamp()) + expires_in,
-            tz=UTC,
-        )
+        try:
+            access_token = data["access_token"]
+            new_refresh_token = data["refresh_token"]
+            if not isinstance(access_token, str) or not isinstance(
+                new_refresh_token, str
+            ):
+                raise TypeError("token fields are not strings")
+            id_token = data.get("id_token", "")
+            if not isinstance(id_token, str):
+                id_token = ""
+            expires_in = int(data.get("expires_in", 900))
+            expires_at = datetime.fromtimestamp(
+                int(datetime.now(tz=UTC).timestamp()) + expires_in,
+                tz=UTC,
+            )
+        except (KeyError, TypeError, ValueError, OverflowError, OSError) as err:
+            # Deliberately the type NAME only. `int("<hostile>")` puts the
+            # offending value straight into the ValueError message, and
+            # diagnostics.py publishes str(last_exception) verbatim into a
+            # file users attach to public issues.
+            raise AGLTransportError(
+                f"malformed token response from AGL auth ({type(err).__name__})"
+            ) from err
 
         self._token_set = TokenSet(
             access_token=access_token,
             refresh_token=new_refresh_token,
             expires_at=expires_at,
-            id_token=data.get("id_token", ""),
+            id_token=id_token,
         )
         self._refresh_token = new_refresh_token
         await self._persist(new_refresh_token)
