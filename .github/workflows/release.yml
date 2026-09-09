@@ -91,7 +91,7 @@ jobs:
           # The integration directory has never contained a symlink — the
           # repo's only tracked one is CLAUDE.md -> AGENTS.md at the root,
           # outside this tree — so this rejects a class rather than a habit.
-          symlinks="$(find custom_components/haggle -type l)"
+          symlinks="$(find custom_components/haggle -type l)" || { echo "::error::symlink scan failed"; exit 1; }
           if [ -n "$symlinks" ]; then
             echo "::error::symlink(s) found under custom_components/haggle/ — refusing to build the release artifact"
             printf '%s\n' "$symlinks"
