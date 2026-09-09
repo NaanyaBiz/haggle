@@ -104,7 +104,13 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
     third-party actions in the privileged release workflow; workflow-audit
     gates (actionlint, zizmor, shellcheck — PR #184).
   - Dependency-review gate on every PR (vulnerability severity + licence
-    denylist, pinned-scope enforcement — PR #184).
+    denylist, pinned-scope enforcement — PR #184). Since 2026-09-09 the
+    denylist covers network copyleft only (AGPL/SSPL) — plain GPL removed
+    under RA-17 (nothing is redistributed, so those obligations cannot
+    attach). Two recorded limits of the licence check (#262): SPDX-only
+    matching (trove-classifier-declared licences are unnormalised) and
+    diff-scoped evaluation (dependencies already in the tree are never
+    re-examined).
   - Control plane as code: rulesets and repo settings are declared under
     `.github/settings/` and re-verified by a weekly settings-drift workflow
     that files an issue on divergence (PR #188); settings changes are
