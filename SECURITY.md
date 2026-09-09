@@ -182,6 +182,23 @@ by Home Assistant core. Consequences:
   basis — a green-CI dev bump is zero-user-risk, and a CVE in the
   lockfile is a developer-workstation/CI concern, not a user one.
 
+**Release artifact contents are fail-closed on symlinks.** `haggle.zip` is
+the highest-consequence surface this project has — HACS extracts it
+straight into `<config>/custom_components/haggle/`. `release.yml` refuses
+to build if any symlink exists under `custom_components/haggle/`
+(`find -type l`, non-empty → `exit 1`), and additionally passes `zip -y`.
+The guard is the control, not the flag: `zip -r` **without** `-y`
+dereferences a symlink and stores the target's live bytes as a regular
+file — verified empirically — so a link committed under the integration
+directory would inline arbitrary repo or runner content into the
+published artifact. `-y` alone only converts that into a traversal path
+extracted on the user's machine, so both are applied and neither is
+sufficient alone (#246). The integration directory has never contained a
+symlink; the repo's only tracked one is `CLAUDE.md -> AGENTS.md` at the
+root, outside the zipped tree. Exploitation would still require the link
+to survive the `protect-main` PR gate, but that repo normalises committing
+a symlink, which plausibly lowers scrutiny of a new one.
+
 **Dev lockfile.** `uv.lock` is hash-pinned (sha256 per artifact). It
 resolves ~167 packages, ~90% of which are the Home Assistant ecosystem's
 transitive tree (via `homeassistant` +

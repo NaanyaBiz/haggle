@@ -79,7 +79,25 @@ jobs:
       # URL as releases/download/<tag>/<filename> with no templating.
       - name: Build release artifact
         run: |
-          (cd custom_components/haggle && zip -r "${GITHUB_WORKSPACE}/haggle.zip" . -x '*__pycache__*' '*.pyc')
+          # Fail closed on symlinks (#246). `zip -r` WITHOUT `-y` dereferences
+          # them: the link is stored as a regular file containing the target's
+          # live bytes, so a symlink under custom_components/haggle/ would
+          # inline arbitrary repo — or runner — file content into the artifact
+          # HACS installs. `-y` alone is NOT a sufficient fix: it stores the
+          # link verbatim, which only moves the problem to extraction time in
+          # the user's config directory. The guard is the control; `-y` below
+          # is defence in depth for the case where a link somehow exists.
+          #
+          # The integration directory has never contained a symlink — the
+          # repo's only tracked one is CLAUDE.md -> AGENTS.md at the root,
+          # outside this tree — so this rejects a class rather than a habit.
+          symlinks="$(find custom_components/haggle -type l)"
+          if [ -n "$symlinks" ]; then
+            echo "::error::symlink(s) found under custom_components/haggle/ — refusing to build the release artifact"
+            printf '%s\n' "$symlinks"
+            exit 1
+          fi
+          (cd custom_components/haggle && zip -r -y "${GITHUB_WORKSPACE}/haggle.zip" . -x '*__pycache__*' '*.pyc')
           unzip -l haggle.zip | grep -Eq ' manifest\.json$' || { echo "::error::manifest.json is not at the zip root"; exit 1; }
 
       # Per-release SBOMs (SPDX + CycloneDX) via the syft CLI as a
