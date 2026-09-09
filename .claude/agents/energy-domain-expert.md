@@ -66,7 +66,11 @@ The `sum` field is the **cumulative total** (monotonically increasing), not the 
 
 ## AGL interval data semantics
 
-- `consumption.values.quantity` is kWh. Source of truth. Never use `consumption.quantity` (rounded).
+- The OUTER `consumption.quantity` is kWh. Source of truth (matches the AGL
+  portal CSV export to 0.001 kWh). Never use the inner `consumption.values.quantity`
+  — it's a DPI/chart-scaled helper that undercounts kWh by 4-73% with no
+  consistent ratio (confirmed root cause of the v0.1.0/v0.2.0-beta
+  meter-undercounting bug).
 - `dateTime` is slot-**start** in UTC. Convert to AEST/AEDT for display but keep UTC for storage.
 - `type=none` slots are future/unavailable — filter them out before importing statistics.
 - ToU plans: `type` will be `peak`/`offpeak`/`shoulder`. For v1, sum all regardless of type.
