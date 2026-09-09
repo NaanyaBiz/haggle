@@ -364,31 +364,31 @@ class TestSagaFields:
     async def test_malformed_token_exception_never_leaks_into_diagnostics(
         self, hass: HomeAssistant
     ) -> None:
-        """End-to-end #243: hostile expires_in -> refresh raise -> update cycle
-        -> last_exception -> published diagnostics, with the hostile text absent.
+        """End-to-end #243: hostile error field -> refresh raise -> REAL
+        coordinator update cycle -> last_exception -> published diagnostics,
+        with the hostile text absent.
 
-        The raise-site test (test_agl_client.py) proves the message is clean at
-        construction; this proves the CLEAN exception is what actually reaches
-        the diagnostics file after a real coordinator update cycle — and that
-        it travelled as retryable UpdateFailed, not ConfigEntryAuthFailed.
+        The raise-site test (test_agl_client.py) proves the message is clean
+        at construction; this drives coordinator.async_refresh() itself so the
+        AGLError -> UpdateFailed translation and DataUpdateCoordinator's own
+        exception recording are exercised, not simulated by hand-assigning
+        last_exception (Codex finding, PR #265). It also proves the failure
+        travelled as retryable UpdateFailed, never ConfigEntryAuthFailed.
         """
         from unittest.mock import AsyncMock, MagicMock
 
+        from homeassistant.helpers.update_coordinator import UpdateFailed
+
         from custom_components.haggle.agl.client import AglAuth, AGLAuthError, AGLError
 
+        # Non-slug error content: enforces the OAuth-alphabet echo guard.
         hostile = "<script>alert(1)</script>"
         entry = await _make_entry(hass)
         coordinator = entry.runtime_data.coordinator
 
         resp = AsyncMock()
         resp.status = 200
-        resp.json = AsyncMock(
-            return_value={
-                "access_token": "a",
-                "refresh_token": "r",
-                "expires_in": hostile,
-            }
-        )
+        resp.json = AsyncMock(return_value={"error": hostile})
         resp.__aenter__ = AsyncMock(return_value=resp)
         resp.__aexit__ = AsyncMock(return_value=False)
         session = MagicMock()
@@ -403,16 +403,31 @@ class TestSagaFields:
         assert caught is not None, "malformed response must raise"
         # Retryable family, NOT the reauth-triggering subtype.
         assert not isinstance(caught, AGLAuthError)
+        assert hostile not in str(caught)
 
-        # What DataUpdateCoordinator records after that failed cycle.
-        coordinator.last_exception = caught
+        # Every client call the update cycle might make raises the REAL
+        # exception object, exactly as if the token refresh inside the call
+        # had failed; async_refresh() then routes it through
+        # _async_update_data's except-AGLError -> UpdateFailed path and
+        # DataUpdateCoordinator records it.
+        for method in (
+            "async_get_usage_summary",
+            "async_get_plan",
+            "async_get_overview",
+            "async_get_hourly_usage",
+        ):
+            getattr(coordinator.client, method).side_effect = caught
+        await coordinator.async_refresh()
+
+        assert coordinator.last_update_success is False
+        assert isinstance(coordinator.last_exception, UpdateFailed)
 
         with _patched_stats():
             result = await async_get_config_entry_diagnostics(hass, entry)
 
         serialized = str(result)
         assert hostile not in serialized
-        assert "ValueError" in result["coordinator"]["last_exception"]
+        assert "unspecified" in result["coordinator"]["last_exception"]
 
     async def test_recorder_failure_degrades_not_raises(
         self, hass: HomeAssistant

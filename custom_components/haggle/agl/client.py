@@ -24,7 +24,7 @@ import json
 import logging
 import re
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 import aiohttp
 
@@ -101,6 +101,113 @@ _TRANSPORT_ERRORS = (TimeoutError, aiohttp.ClientError)
 _REFRESH_MARGIN_SECONDS = 120
 
 TOKEN_ENDPOINT = f"{AGL_AUTH_HOST}/oauth/token"
+
+# OAuth error codes are lowercase snake_case slugs. Only a string matching
+# this alphabet is ever echoed into an exception (which reaches HA Persistent
+# Notifications and diagnostics via str(last_exception)) — a short string is
+# NOT automatically a safe slug: a token fragment, an email address, or a
+# control-character payload all fit in 64 chars (Codex, PR #265).
+_OAUTH_ERROR_SLUG = re.compile(r"[a-z0-9_]{1,64}")
+
+# The only error codes that mean the refresh GRANT itself is dead, so reauth
+# is the fix. Everything else — server_error, temporarily_unavailable, a
+# malformed or unknown code — says nothing about the grant and must stay
+# retryable: routing it to reauth abandons a working rotated token family
+# over a blip (Codex, PR #265; AGENTS.md "network blip is never AGLAuthError").
+_TERMINAL_GRANT_ERRORS = frozenset({"invalid_grant"})
+
+# Auth0-documented access-token lifetime (AGENTS.md: expires_in 900,
+# confirmed 2026-05-01) — the fallback when expires_in is absent/malformed.
+_EXPIRES_IN_FALLBACK = 900
+# Sanity ceiling: anything above a day is not a plausible access-token
+# lifetime, and an absurd value (10**20) would overflow fromtimestamp.
+_EXPIRES_IN_CEILING = 86400
+
+
+def _oauth_error_slug(error: object) -> str:
+    """Return `error` if it is a plausible OAuth error slug, else 'unspecified'."""
+    if isinstance(error, str) and _OAUTH_ERROR_SLUG.fullmatch(error):
+        return error
+    return "unspecified"
+
+
+def _raise_for_token_error_status(status: int, text: str) -> NoReturn:
+    """Classify a non-200 token response by its error slug, not bare status.
+
+    Auth0 delivers invalid_grant as HTTP 403 + JSON body — only THAT means
+    the grant is dead. A 5xx/429/other 4xx says nothing about the grant, and
+    the old blanket AGLAuthError pushed users through reauth over an Auth0
+    blip (Codex taxonomy finding, PR #265 — same rule as the 200-with-error
+    branch in async_force_refresh).
+    """
+    code = ""
+    try:
+        body_json = json.loads(text)
+        if isinstance(body_json, dict):
+            code = _oauth_error_slug(body_json.get("error"))
+    except ValueError:
+        code = ""
+    if code in _TERMINAL_GRANT_ERRORS:
+        raise AGLAuthError(f"Token refresh error: {code}")
+    raise AGLTransportError(f"token refresh failed HTTP {status}")
+
+
+def _validated_token_fields(data: dict[str, Any]) -> tuple[str, str, str]:
+    """Return (access_token, refresh_token, id_token) or raise retryable.
+
+    Blank strings are rejected too: "" passes the type check but a persisted
+    blank refresh token permanently discards the real grant (Codex, PR #265).
+    """
+    try:
+        access_token = data["access_token"]
+        new_refresh_token = data["refresh_token"]
+        if not isinstance(access_token, str) or not isinstance(new_refresh_token, str):
+            raise TypeError("token fields are not strings")
+        if not access_token or not new_refresh_token:
+            raise ValueError("token fields are empty")
+        id_token = data.get("id_token", "")
+        if not isinstance(id_token, str):
+            id_token = ""
+    except (KeyError, TypeError, ValueError) as err:
+        # Deliberately the type NAME only: an exception message that embeds
+        # response content reaches diagnostics.py via str(last_exception),
+        # published verbatim into files users attach to public issues.
+        raise AGLTransportError(
+            f"malformed token response from AGL auth ({type(err).__name__})"
+        ) from err
+    return access_token, new_refresh_token, id_token
+
+
+def _token_expiry(data: dict[str, Any]) -> datetime:
+    """Compute expires_at, degrading a malformed expires_in to the default.
+
+    Called only AFTER the tokens are accepted, and NEVER raises: by that
+    point Auth0 has already rotated the refresh token, so any exception
+    before _persist() discards the only valid grant — the advertised retry
+    would submit the stale token, get invalid_grant, and force the exact
+    reauth lockout the schema shield exists to prevent (Codex P1, PR #265).
+    """
+    try:
+        expires_in = int(data.get("expires_in", _EXPIRES_IN_FALLBACK))
+    except TypeError, ValueError, OverflowError:
+        # No value in the message — int()'s ValueError embeds its input.
+        _LOGGER.warning(
+            "Malformed expires_in in token response; assuming %s s",
+            _EXPIRES_IN_FALLBACK,
+        )
+        expires_in = _EXPIRES_IN_FALLBACK
+    if not 0 < expires_in <= _EXPIRES_IN_CEILING:
+        # Also forecloses the fromtimestamp OverflowError/OSError an absurd
+        # value (10**20) used to raise.
+        _LOGGER.warning(
+            "Implausible expires_in in token response; assuming %s s",
+            _EXPIRES_IN_FALLBACK,
+        )
+        expires_in = _EXPIRES_IN_FALLBACK
+    return datetime.fromtimestamp(
+        int(datetime.now(tz=UTC).timestamp()) + expires_in,
+        tz=UTC,
+    )
 
 
 class AGLError(Exception):
@@ -218,7 +325,7 @@ class AglAuth:
                         "Token refresh non-200 body: %s",
                         _redact_body(text),
                     )
-                    raise AGLAuthError(f"Token refresh failed HTTP {resp.status}")
+                    _raise_for_token_error_status(resp.status, text)
                 data: dict[str, Any] = await resp.json(content_type=None)
         except _TRANSPORT_ERRORS as err:
             # A network blip is NOT an auth failure — wrap as retryable
@@ -239,38 +346,22 @@ class AglAuth:
 
         error = data.get("error")
         if error:
-            # Auth0's `error` is a short slug ("invalid_grant"). Anything else
-            # is untrusted content, and this message reaches
-            # ConfigEntryAuthFailed -> HA Persistent Notifications and
-            # diagnostics.py's str(last_exception). Only echo a plausible slug.
-            code = (
-                error if isinstance(error, str) and len(error) <= 64 else "unspecified"
-            )
-            raise AGLAuthError(f"Token refresh error: {code}")
+            # Auth0's `error` is a short snake_case slug ("invalid_grant") —
+            # only a string matching that alphabet is echoed, because this
+            # message reaches ConfigEntryAuthFailed -> HA Persistent
+            # Notifications and diagnostics.py's str(last_exception).
+            code = _oauth_error_slug(error)
+            if code in _TERMINAL_GRANT_ERRORS:
+                raise AGLAuthError(f"Token refresh error: {code}")
+            # Unknown/malformed codes say nothing about the grant: stay
+            # retryable rather than burning the rotated token family.
+            raise AGLTransportError(f"token endpoint error: {code}")
 
-        try:
-            access_token = data["access_token"]
-            new_refresh_token = data["refresh_token"]
-            if not isinstance(access_token, str) or not isinstance(
-                new_refresh_token, str
-            ):
-                raise TypeError("token fields are not strings")
-            id_token = data.get("id_token", "")
-            if not isinstance(id_token, str):
-                id_token = ""
-            expires_in = int(data.get("expires_in", 900))
-            expires_at = datetime.fromtimestamp(
-                int(datetime.now(tz=UTC).timestamp()) + expires_in,
-                tz=UTC,
-            )
-        except (KeyError, TypeError, ValueError, OverflowError, OSError) as err:
-            # Deliberately the type NAME only. `int("<hostile>")` puts the
-            # offending value straight into the ValueError message, and
-            # diagnostics.py publishes str(last_exception) verbatim into a
-            # file users attach to public issues.
-            raise AGLTransportError(
-                f"malformed token response from AGL auth ({type(err).__name__})"
-            ) from err
+        access_token, new_refresh_token, id_token = _validated_token_fields(data)
+        # _token_expiry never raises — the tokens above are already rotated
+        # on Auth0's side, so failing here would discard the only valid
+        # grant (Codex P1, PR #265).
+        expires_at = _token_expiry(data)
 
         self._token_set = TokenSet(
             access_token=access_token,

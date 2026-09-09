@@ -131,7 +131,9 @@ def _make_session(response_data: dict, status: int = 200) -> MagicMock:
     mock_resp = AsyncMock()
     mock_resp.status = status
     mock_resp.json = AsyncMock(return_value=response_data)
-    mock_resp.text = AsyncMock(return_value=str(response_data))
+    # Real JSON text, not the Python repr — the non-200 branch re-parses the
+    # body to classify the error slug (PR #265).
+    mock_resp.text = AsyncMock(return_value=json.dumps(response_data))
     mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
     mock_resp.__aexit__ = AsyncMock(return_value=False)
 
@@ -225,10 +227,13 @@ class TestAglAuth:
         auth = AglAuth("v1.initial", persist)
         with (
             caplog.at_level("DEBUG", logger="custom_components.haggle.agl.client"),
-            pytest.raises(AGLAuthError) as exc_info,
+            pytest.raises(AGLError) as exc_info,
         ):
             await auth.async_force_refresh(session)
 
+        # A 429 says nothing about the grant — retryable, never reauth
+        # (Codex taxonomy finding, PR #265).
+        assert not isinstance(exc_info.value, AGLAuthError)
         # The exception message must mention the status code but NOT the body.
         assert "429" in str(exc_info.value)
         assert "MARKER-SHOULD-NOT-LEAK" not in str(exc_info.value)
@@ -298,43 +303,137 @@ class TestMalformedButOkTokenResponses:
             await self._refresh(body)
         assert not isinstance(exc.value, AGLAuthError)
 
-    async def test_unparseable_expires_in_does_not_leak_body_into_exception(
-        self,
+    async def test_malformed_expires_in_preserves_the_rotated_grant(
+        self, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """The concrete leak vector: int() embeds its input in the message.
+        """Codex P1 (PR #265): valid tokens + bad expires_in must NOT raise.
 
-        `int("<script>alert(1)</script>")` raises
-        `ValueError: invalid literal for int() with base 10: '<script>...'`.
-        Unwrapped, that string reaches diagnostics.py via str(last_exception).
+        Auth0 has already rotated the refresh token by the time the body is
+        parsed. The first cut raised AGLTransportError from the same try
+        block that extracted the tokens, BEFORE _persist() ran — so the
+        "retryable" retry submitted the stale token, got invalid_grant, and
+        forced the reauth lockout the shield exists to prevent. A malformed
+        expires_in now degrades to the documented 900 s default, and the
+        hostile value never reaches the log message (int()'s ValueError
+        embeds its input).
         """
         hostile = "<script>alert(1)</script>"
-        with pytest.raises(AGLError) as exc:
-            await self._refresh(
-                {"access_token": "a", "refresh_token": "r", "expires_in": hostile}
-            )
-        assert hostile not in str(exc.value)
-        assert "ValueError" in str(exc.value)
+        persisted: list[str] = []
 
-    async def test_absurd_expires_in_raises_agl_error(self) -> None:
-        """A huge expires_in overflows datetime.fromtimestamp."""
-        with pytest.raises(AGLError):
-            await self._refresh(
-                {"access_token": "a", "refresh_token": "r", "expires_in": 10**20}
-            )
+        async def persist(token: str) -> None:
+            persisted.append(token)
+
+        auth = AglAuth("v1.initial", persist)
+        session = _make_session(
+            {"access_token": "a", "refresh_token": "v1.rotated", "expires_in": hostile}
+        )
+        with caplog.at_level("WARNING"):
+            token = await auth.async_force_refresh(session)
+
+        assert token == "a"
+        assert persisted == ["v1.rotated"]  # the grant survived
+        assert auth._refresh_token == "v1.rotated"
+        assert not any(hostile in r.message for r in caplog.records)
+
+    async def test_absurd_expires_in_defaults_instead_of_raising(self) -> None:
+        """10**20 overflowed fromtimestamp; now clamped to the 900 s default."""
+        persisted: list[str] = []
+
+        async def persist(token: str) -> None:
+            persisted.append(token)
+
+        auth = AglAuth("v1.initial", persist)
+        session = _make_session(
+            {"access_token": "a", "refresh_token": "v1.rotated", "expires_in": 10**20}
+        )
+        token = await auth.async_force_refresh(session)
+
+        assert token == "a"
+        assert persisted == ["v1.rotated"]
+
+    async def test_blank_token_strings_are_rejected_not_persisted(self) -> None:
+        """Codex (PR #265): "" passes isinstance(str) but must never persist.
+
+        Persisting a blank refresh token permanently discards the real grant.
+        """
+        persisted: list[str] = []
+
+        async def persist(token: str) -> None:
+            persisted.append(token)
+
+        auth = AglAuth("v1.initial", persist)
+        session = _make_session({"access_token": "", "refresh_token": ""})
+        with pytest.raises(AGLError) as exc:
+            await auth.async_force_refresh(session)
+
+        assert not isinstance(exc.value, AGLAuthError)
+        assert persisted == []
+        assert auth._refresh_token == "v1.initial"
 
     async def test_structured_error_field_is_not_echoed(self) -> None:
-        """`error` reaches HA notifications — only a plausible slug is echoed."""
+        """`error` reaches HA notifications — only a plausible slug is echoed.
+
+        A structured/malformed error also says nothing about the grant, so it
+        must stay retryable (Codex, PR #265).
+        """
         hostile = "x" * 500
-        with pytest.raises(AGLAuthError) as exc:
+        with pytest.raises(AGLError) as exc:
             await self._refresh({"error": {"nested": hostile}})
+        assert not isinstance(exc.value, AGLAuthError)
         assert hostile not in str(exc.value)
         assert "unspecified" in str(exc.value)
 
+    async def test_short_nonslug_error_is_not_echoed(self) -> None:
+        """Codex (PR #265): short ≠ safe — enforce the OAuth slug alphabet.
+
+        A token fragment, email address, or control-character payload all fit
+        in 64 chars; none may reach notifications/diagnostics verbatim.
+        """
+        for hostile in ("user@example.com", "eyJhbGciOi.frag", "a\x1b[2Jb"):
+            with pytest.raises(AGLError) as exc:
+                await self._refresh({"error": hostile})
+            assert hostile not in str(exc.value)
+            assert "unspecified" in str(exc.value)
+
     async def test_ordinary_error_slug_still_surfaces(self) -> None:
-        """The useful case is preserved: a short slug is still reported."""
+        """The useful case is preserved: a known terminal slug still reauths."""
         with pytest.raises(AGLAuthError) as exc:
             await self._refresh({"error": "invalid_grant"})
         assert "invalid_grant" in str(exc.value)
+
+    async def test_unknown_error_slug_is_retryable_but_echoed(self) -> None:
+        """An unrecognised (but well-formed) slug is reported, not reauthed.
+
+        `{"error": "upstream_failure"}` says nothing about the refresh grant;
+        only _TERMINAL_GRANT_ERRORS may burn it (Codex, PR #265).
+        """
+        with pytest.raises(AGLError) as exc:
+            await self._refresh({"error": "upstream_failure"})
+        assert not isinstance(exc.value, AGLAuthError)
+        assert "upstream_failure" in str(exc.value)
+
+    async def test_http403_invalid_grant_still_reauths(self) -> None:
+        """Auth0 delivers a dead grant as HTTP 403 + JSON body — must reauth."""
+        session = _make_session({"error": "invalid_grant"}, status=403)
+
+        async def persist(token: str) -> None:
+            pass
+
+        auth = AglAuth("v1.initial", persist)
+        with pytest.raises(AGLAuthError):
+            await auth.async_force_refresh(session)
+
+    async def test_http500_is_retryable_not_reauth(self) -> None:
+        """An Auth0 5xx is a blip, not a dead grant (Codex taxonomy, PR #265)."""
+        session = _make_session({"error": "server_error"}, status=500)
+
+        async def persist(token: str) -> None:
+            pass
+
+        auth = AglAuth("v1.initial", persist)
+        with pytest.raises(AGLError) as exc:
+            await auth.async_force_refresh(session)
+        assert not isinstance(exc.value, AGLAuthError)
 
     async def test_non_string_id_token_is_dropped_not_stored(self) -> None:
         """A mistyped id_token degrades to "" rather than poisoning TokenSet."""
