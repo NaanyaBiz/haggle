@@ -50,8 +50,52 @@ class TestSafeFloat:
         assert _safe_float(float("inf")) == 0.0
         assert _safe_float(float("nan")) == 0.0
         assert _safe_float(-1.0) == 0.0
-        assert _safe_float("1e308") == pytest.approx(1e308)  # finite, allowed
         assert _safe_float(1e400) == 0.0  # overflow → inf → clamped
+
+    def test_large_but_finite_is_rejected(self) -> None:
+        """#241 — "finite" was never a sufficient bound.
+
+        This assertion previously read
+        `assert _safe_float("1e308") == 1e308  # finite, allowed`, encoding the
+        gap as intended behaviour. It is not: 1e308 is finite, so it passed the
+        isfinite() check unchanged, and `1e308 + 1e308` evaluates to `inf` with
+        no exception raised. Two such readings in one hourly bucket — or a
+        cumulative sum crossing the ceiling — silently produced the very
+        non-finite `sum` the finite check exists to prevent.
+        """
+        from custom_components.haggle.agl.parser import _safe_float
+
+        assert float("inf") == 1e308 + 1e308  # the mechanism, made explicit
+        assert _safe_float("1e308") == 0.0
+        assert _safe_float(1e308) == 0.0
+
+    def test_bound_admits_plausible_values_and_rejects_just_above(self) -> None:
+        """The bound sits far above any real reading, so it never clips data."""
+        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.const import MAX_AGL_NUMERIC
+
+        assert _safe_float(50.0) == 50.0  # a big 30-min household slot
+        assert _safe_float(9_999.0) == 9_999.0  # a quarterly bill total
+        assert _safe_float(MAX_AGL_NUMERIC) == MAX_AGL_NUMERIC  # inclusive
+        assert _safe_float(MAX_AGL_NUMERIC * 1.000001) == 0.0
+
+    def test_rejected_value_becomes_zero_not_the_bound(self) -> None:
+        """Rejects to 0.0, never clamps to the ceiling.
+
+        A zero delta leaves the cumulative sum untouched; writing MAX_AGL_NUMERIC
+        instead would burn a permanent, enormous false spike into the series.
+        """
+        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.const import MAX_AGL_NUMERIC
+
+        assert _safe_float(1e300) != MAX_AGL_NUMERIC
+        assert _safe_float(1e300) == 0.0
+
+    def test_negative_zero_normalises(self) -> None:
+        """coordinator.py's removed copy returned -0.0 here; this one does not."""
+        from custom_components.haggle.agl.parser import _safe_float
+
+        assert repr(_safe_float(-0.0)) == "0.0"
 
     def test_unparseable_clamps_to_zero(self) -> None:
         from custom_components.haggle.agl.parser import _safe_float
@@ -259,6 +303,116 @@ class TestParseIntervalReadings:
 # ---------------------------------------------------------------------------
 # parse_overview
 # ---------------------------------------------------------------------------
+
+
+class TestIntervalWindowValidation:
+    """#242 — returned timestamps must be checked against the requested day.
+
+    Not merely a "row on the wrong day" concern: coordinator._import_intervals
+    derives its cumulative-sum baseline cutoff as min(hour_cons), straight from
+    response content. One interval with an old timestamp pins that cutoff
+    before all real recorder history, so the baseline resolves to 0.0 instead
+    of the true multi-year total and the same import writes today's genuine
+    hours on top of it — a large downward step in the sum column (#114 class,
+    but triggerable by a single crafted timestamp).
+    """
+
+    @staticmethod
+    def _payload(dt_iso: str) -> dict:
+        return {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": dt_iso,
+                            "consumption": {
+                                "type": "normal",
+                                "quantity": 1.5,
+                                "amount": 0.45,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+
+    def test_far_past_timestamp_is_dropped(self) -> None:
+        """The attack: a 1970-era slot would pin the baseline cutoff at zero."""
+        readings = parse_interval_readings(
+            self._payload("1970-01-02T00:00:00Z"), expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
+
+    def test_far_future_timestamp_is_dropped(self) -> None:
+        readings = parse_interval_readings(
+            self._payload("2099-01-01T00:00:00Z"), expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
+
+    def test_requested_day_is_kept(self) -> None:
+        readings = parse_interval_readings(
+            self._payload("2026-07-01T03:00:00Z"), expected_day=date(2026, 7, 1)
+        )
+        assert len(readings) == 1
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            "2026-06-30T14:00:00Z",  # AEST local midnight of the 1st
+            "2026-07-01T23:30:00Z",  # UTC-12 tail of the same local day
+            "2026-07-02T11:00:00Z",  # UTC+14 head
+        ],
+    )
+    def test_adjacent_utc_dates_are_kept(self, dt_iso: str) -> None:
+        """AGL reads period= in LOCAL time and returns UTC, so a one-day query
+        legitimately spans two UTC dates. The window must not clip those."""
+        readings = parse_interval_readings(
+            self._payload(dt_iso), expected_day=date(2026, 7, 1)
+        )
+        assert len(readings) == 1
+
+    def test_window_is_opt_in(self) -> None:
+        """Without expected_day the parser is unchanged (fuzz harness path)."""
+        readings = parse_interval_readings(self._payload("1970-01-02T00:00:00Z"))
+        assert len(readings) == 1
+
+    def test_only_out_of_window_items_are_dropped(self) -> None:
+        """A poisoned item is removed without discarding the legitimate ones."""
+        payload = self._payload("2026-07-01T03:00:00Z")
+        payload["sections"][0]["items"].append(
+            {
+                "dateTime": "1970-01-02T00:00:00Z",
+                "consumption": {"type": "normal", "quantity": 2.0, "amount": 0.6},
+            }
+        )
+        readings = parse_interval_readings(payload, expected_day=date(2026, 7, 1))
+
+        assert len(readings) == 1
+        assert readings[0].dt.date() == date(2026, 7, 1)
+        # The cutoff coordinator._import_intervals would derive is now safe.
+        assert min(r.dt for r in readings).year == 2026
+
+    def test_solar_path_also_validates(self) -> None:
+        payload = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "1970-01-02T00:00:00Z",
+                            "feedIn": {
+                                "type": "normal",
+                                "quantity": 3.0,
+                                "amount": 0.5,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        readings = parse_interval_readings(
+            payload, source_field="feedIn", expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
 
 
 class TestParseOverview:

@@ -665,10 +665,32 @@ The HA Energy dashboard requires:
   can include diagnostic fields (`mfa_token`, internal trace IDs); AGL BFF URLs
   carry the contract number (PII). Pattern:
   `_LOGGER.debug("…body: %s", text[:200]); raise AGLError(f"HTTP {status} …")`.
-- **Don't use unbounded `float()` coercion on AGL response values**. Use the
-  `_safe_float` helpers in `agl/parser.py` / `coordinator.py` so `inf`/`nan`/
-  negative values can't reach `async_add_external_statistics` and corrupt the
-  cumulative-sum series.
+- **Don't use unbounded `float()` coercion on AGL response values**. Use
+  `_safe_float` from `agl/parser.py` — now the SINGLE implementation, imported
+  by `coordinator.py` rather than duplicated (the two copies had already
+  drifted: one returned `-0.0`, the other `0.0`) — so `inf`/`nan`/negative
+  **and implausibly large** values can't reach
+  `async_add_external_statistics` and corrupt the cumulative-sum series.
+  "Finite" was never a sufficient bound (#241): `1e308` is finite and passed
+  straight through, and `1e308 + 1e308` evaluates to `inf` with no exception,
+  so two such readings in one hourly bucket produced exactly the non-finite
+  `sum` the check existed to prevent. Values above `MAX_AGL_NUMERIC` are
+  rejected to `0.0`, never clamped to the bound — a zero delta leaves the sum
+  untouched, whereas a clamped `1e6` writes a permanent false spike.
+- **Don't parse interval readings without telling the parser which day was
+  requested.** `parse_interval_readings` takes `expected_day`; every
+  `AglClient` fetch site must pass it (#242). Without it,
+  `coordinator._import_intervals` derives its baseline cutoff as
+  `min(hour_cons)` — purely from response content — so ONE interval carrying
+  an old `dateTime` pins the cutoff before all real recorder history, the
+  baseline resolves to `0.0` instead of the true multi-year sum, and the same
+  import writes today's real hours on top of it: a large downward step in the
+  `sum` column (#114 class, from a single crafted timestamp). The window is
+  intentionally the requested day ± `INTERVAL_DAY_TOLERANCE`, NOT an exact
+  match: AGL interprets `period=` in the contract's local timezone and returns
+  `dateTime` in UTC, so a single-day query legitimately spans two UTC dates.
+  Tightening it would drop legitimate readings; the guard exists to bound the
+  cutoff, not to police the calendar.
 - **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
   unparenthesised form is intentional: it is `ruff format`'s canonical output
   for this repo's Python 3.14 target (PEP 758, where `except A, B:` means

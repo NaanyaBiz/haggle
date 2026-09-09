@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -43,6 +42,12 @@ from .agl.client import (
     AGLRateLimitError,
     AGLTransportError,
 )
+
+# Single implementation of the numeric guard (#241). The coordinator kept a
+# near-duplicate that had already drifted (it returned -0.0 where the parser's
+# normalises to 0.0), and an upper bound added to one copy but not the other
+# would be worse than no bound at all.
+from .agl.parser import _safe_float
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -92,18 +97,6 @@ _LOGGER = logging.getLogger(__name__)
 # look-back window is still found. Bounded ABOVE at the fetch cutoff by the
 # caller, so it never reads a sum from inside the rewindow being rewritten.
 _EARLIEST_HISTORY = datetime(1970, 1, 1, tzinfo=UTC)
-
-
-def _safe_float(raw: Any) -> float:
-    """Coerce raw API value to a non-negative finite float, defaulting to 0.0."""
-    try:
-        value = float(raw)
-    except TypeError, ValueError:
-        return 0.0
-    if not math.isfinite(value) or value < 0:
-        _LOGGER.warning("Rejecting non-finite/negative coordinator value: %r", raw)
-        return 0.0
-    return value
 
 
 def _clamped_poll_interval(options: Mapping[str, Any]) -> timedelta:

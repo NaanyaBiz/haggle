@@ -54,6 +54,28 @@ BACKFILL_INTER_REQUEST_DELAY: Final = 0.5
 # async_add_external_statistics is idempotent on (statistic_id, start), so
 # this is a safe overwrite.
 REWINDOW_DAYS: Final = 7
+
+# Upper magnitude bound for any numeric read out of an AGL response (#241).
+# `_safe_float` rejected inf/nan/negative but had no ceiling, so a crafted
+# finite value near the float limit passed through unchanged and two of them
+# in one hourly bucket — or a running cumulative sum crossing it — silently
+# became `inf` (1e308 + 1e308 == inf, no exception), corrupting a `haggle:*`
+# series' sum chain permanently.
+#
+# 1e6 is far above anything physically plausible: 1,000,000 kWh in a 30-minute
+# slot is ~2 GW of continuous draw, and the largest value this guard ever sees
+# is a bill-period total (a residential quarter is under 10,000 kWh). It is
+# applied to individual readings and rates only — never to the running
+# cumulative sum, which legitimately grows without bound over years.
+MAX_AGL_NUMERIC: Final = 1_000_000.0
+
+# Tolerance around a requested day when validating returned interval
+# timestamps (#242). AGL interprets `period=` in the contract's LOCAL
+# timezone and returns `dateTime` in UTC, so a single-day query legitimately
+# spans two UTC dates. One day either side covers every real offset
+# (UTC-12..UTC+14) plus DST, while still rejecting a timestamp from an
+# unrelated week or year — which is the whole attack.
+INTERVAL_DAY_TOLERANCE: Final = 1
 # Max seconds to wait for the recorder to commit queued statistics after a
 # COMPLETE heal sweep before reading the bill-period baseline (#152). On
 # timeout the period sensors stay `unknown` for the cycle (safe fallback).

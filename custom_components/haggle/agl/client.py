@@ -382,7 +382,7 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data)
+        return parse_interval_readings(data, expected_day=day)
 
     async def async_get_usage_hourly_previous(
         self, contract_number: str, day: date
@@ -391,7 +391,7 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Previous/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data)
+        return parse_interval_readings(data, expected_day=day)
 
     # --- Solar (feed-in) ---
 
@@ -411,7 +411,7 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/ElectricitySolar/{contract_number}/{period_segment}/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data, source_field="feedIn")
+        return parse_interval_readings(data, source_field="feedIn", expected_day=day)
 
     # --- Plan ---
 

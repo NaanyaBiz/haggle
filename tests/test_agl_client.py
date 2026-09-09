@@ -454,6 +454,53 @@ class TestAglClient:
 # ---------------------------------------------------------------------------
 
 
+class TestIntervalWindowIsWiredThrough:
+    """#242 — the parser's window guard is inert unless the client passes the day.
+
+    The vulnerability was precisely that the client built `period=` and then
+    discarded it at the parser boundary, so these assert the wiring rather than
+    the guard (which tests/test_parser.py covers).
+    """
+
+    @staticmethod
+    async def _captured(method: str) -> dict:
+        from datetime import date
+
+        session = _make_session({})
+        auth = AglAuth("v1.tok", AsyncMock())
+        with patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="tok",
+        ):
+            client = AglClient(auth, session)
+            with patch(
+                "custom_components.haggle.agl.client.parse_interval_readings",
+                return_value=[],
+            ) as parser:
+                await getattr(client, method)("9999999999", date(2026, 7, 1))
+        return parser.call_args.kwargs
+
+    async def test_current_hourly_passes_expected_day(self) -> None:
+        from datetime import date
+
+        kwargs = await self._captured("async_get_usage_hourly")
+        assert kwargs["expected_day"] == date(2026, 7, 1)
+
+    async def test_previous_hourly_passes_expected_day(self) -> None:
+        from datetime import date
+
+        kwargs = await self._captured("async_get_usage_hourly_previous")
+        assert kwargs["expected_day"] == date(2026, 7, 1)
+
+    async def test_solar_passes_expected_day_and_keeps_source_field(self) -> None:
+        from datetime import date
+
+        kwargs = await self._captured("async_get_solar_hourly")
+        assert kwargs["expected_day"] == date(2026, 7, 1)
+        assert kwargs["source_field"] == "feedIn"
+
+
 def test_unused_methods_removed_from_client() -> None:
     """Belt-and-braces: re-introducing these without a caller is a regression."""
     assert not hasattr(AglClient, "async_get_servicehub")

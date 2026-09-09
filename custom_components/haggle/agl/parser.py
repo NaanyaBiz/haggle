@@ -20,10 +20,16 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any, cast
 
-from ..const import TARIFF_OFFPEAK, TARIFF_PEAK, TARIFF_SHOULDER
+from ..const import (
+    INTERVAL_DAY_TOLERANCE,
+    MAX_AGL_NUMERIC,
+    TARIFF_OFFPEAK,
+    TARIFF_PEAK,
+    TARIFF_SHOULDER,
+)
 from .models import BillPeriod, Contract, DailyReading, IntervalReading, PlanRates
 
 _LOGGER = logging.getLogger(__name__)
@@ -51,10 +57,24 @@ def _classify_tariff(text: str) -> str | None:
 
 
 def _safe_float(raw: Any) -> float:
-    """Coerce raw API value to a non-negative finite float.
+    """Coerce raw API value to a non-negative, finite, BOUNDED float.
 
     Treats inf/nan/negative as 0.0 with a warning, so adversarial or corrupt
     AGL responses cannot poison the recorder via async_add_external_statistics.
+
+    Also rejects anything above MAX_AGL_NUMERIC (#241). "Finite" alone was not
+    enough: 1e308 is finite and passed through unchanged, and two such values
+    in one hourly bucket — or a cumulative sum crossing the ceiling — evaluate
+    to `inf` with no exception raised, which is precisely the corruption the
+    finite check exists to prevent.
+
+    Rejected values become 0.0 rather than being clamped to the bound: a zero
+    delta never moves a cumulative sum, whereas a clamped 1e6 would write a
+    permanent, enormous false spike into the series.
+
+    This is the single implementation — coordinator.py imports it rather than
+    keeping a near-duplicate copy that drifted (its version returned -0.0 where
+    this one normalises to 0.0).
     """
     try:
         value = float(raw or 0.0)
@@ -62,6 +82,9 @@ def _safe_float(raw: Any) -> float:
         return 0.0
     if not math.isfinite(value) or value < 0:
         _LOGGER.warning("Rejecting non-finite/negative AGL value: %r", raw)
+        return 0.0
+    if value > MAX_AGL_NUMERIC:
+        _LOGGER.warning("Rejecting implausibly large AGL value: %r", raw)
         return 0.0
     return value
 
@@ -133,7 +156,10 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
 
 
 def parse_interval_readings(
-    data: dict[str, Any], *, source_field: str = "consumption"
+    data: dict[str, Any],
+    *,
+    source_field: str = "consumption",
+    expected_day: date | None = None,
 ) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
@@ -152,8 +178,34 @@ def parse_interval_readings(
     real (no sun at night), but dropping them is still correct: a zero delta
     never moves the cumulative sum, and the trailing rewindow re-visits the
     hour anyway.
+
+    ``expected_day`` is the day that was actually requested via ``period=``.
+    When given, readings whose timestamp falls outside that day ±
+    INTERVAL_DAY_TOLERANCE are dropped (#242). This matters far more than
+    "a row landed on the wrong day": ``coordinator._import_intervals`` derives
+    its cumulative-sum baseline cutoff as ``min(hour_cons)`` — straight from
+    response content — so ONE injected interval with an old timestamp pins the
+    cutoff before all real recorder history, the baseline resolves to 0.0
+    instead of the true multi-year total, and the same import then writes
+    today's genuine hours on top of it. The result is a large downward step in
+    the ``sum`` column: the #114 failure class, but triggerable by a single
+    crafted timestamp rather than only by a resume-gap edge case.
+
+    The window is deliberately tolerant, not exact. AGL interprets ``period=``
+    in the contract's LOCAL timezone while ``dateTime`` comes back in UTC, so a
+    single-day query legitimately spans two UTC dates and the parser has no
+    timezone context to narrow it further. One day either side covers every
+    real offset and DST shift, while still rejecting a timestamp from an
+    unrelated week or year — which is the attack. Precision here would risk
+    dropping legitimate readings; the guard only needs to bound the cutoff.
     """
     _skip_types = {"none", "pending"}
+    window: tuple[date, date] | None = None
+    if expected_day is not None:
+        window = (
+            expected_day - timedelta(days=INTERVAL_DAY_TOLERANCE),
+            expected_day + timedelta(days=INTERVAL_DAY_TOLERANCE),
+        )
     readings: list[IntervalReading] = []
     for section_raw in _as_list(_as_dict(data).get("sections")):
         for item_raw in _as_list(_as_dict(section_raw).get("items")):
@@ -170,6 +222,15 @@ def parse_interval_readings(
                 if dt.tzinfo is None:
                     dt = dt.replace(tzinfo=UTC)
             except ValueError, AttributeError:
+                continue
+            if window is not None and not (window[0] <= dt.date() <= window[1]):
+                _LOGGER.warning(
+                    "Dropping interval outside the requested window "
+                    "(got %s, expected %s..%s)",
+                    dt.date(),
+                    window[0],
+                    window[1],
+                )
                 continue
             kwh = _safe_float(block.get("quantity"))
             cost_aud = _safe_float(block.get("amount"))

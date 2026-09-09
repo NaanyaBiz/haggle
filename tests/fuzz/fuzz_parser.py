@@ -6,8 +6,11 @@ TOTAL over arbitrary JSON — a parser crash is a MITM-triggerable failed poll
 cycle. This harness enforces two invariants:
 
   1. No exception escapes any parse_* function for any json.loads() value.
-  2. Every numeric field returned is finite and >= 0 (the _safe_float
-     guarantee — protects the recorder's cumulative-sum statistics).
+  2. Every numeric field returned is finite, >= 0, and <= MAX_AGL_NUMERIC
+     (the _safe_float guarantee — protects the recorder's cumulative-sum
+     statistics). The upper bound is part of the invariant since #241:
+     "finite" alone let 1e308 through, and two of those in one hourly
+     bucket sum to inf with no exception raised.
 
 Run locally (needs the dev env for the homeassistant import chain):
     uv sync --extra dev
@@ -32,6 +35,7 @@ import atheris
 # atheris.instrument_imports()/instrument_all() would sweep in the whole
 # homeassistant import chain and make startup prohibitively slow.
 from custom_components.haggle.agl import parser
+from custom_components.haggle.const import MAX_AGL_NUMERIC
 
 for _fn_name in (
     "parse_overview",
@@ -54,6 +58,8 @@ def _check_amount(value: float) -> None:
         raise AssertionError(f"non-finite value escaped a parser: {value!r}")
     if value < 0:
         raise AssertionError(f"negative value escaped a parser: {value!r}")
+    if value > MAX_AGL_NUMERIC:
+        raise AssertionError(f"unbounded value escaped a parser: {value!r}")
 
 
 def test_one_input(data: bytes) -> None:
