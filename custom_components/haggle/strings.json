@@ -22,6 +22,7 @@
     },
     "abort": {
       "already_configured": "This AGL contract is already configured.",
+      "no_electricity_contract": "No electricity contract found on this AGL account. Haggle reads AGL's smart-meter electricity data; gas contracts are not supported.",
       "reauth_successful": "Reauthentication successful."
     }
   },

@@ -69,6 +69,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute is also present, making the existing quarterly-bill
   under-coverage limitation self-describing instead of silent.
 
+### Fixed
+
+- **Bill projection sensor no longer reads `unknown`** (#253): the sensor has
+  never worked in any released version. `parse_bill_period` read the
+  projection from `additionalLabelValue` at the root of the *usage-summary*
+  response, where AGL does not return it — the parser's own comment said as
+  much ("callers can populate from overview") but no caller ever did, and
+  `parse_overview` discarded the field entirely. The projection is now read
+  from `/v3/overview`, which the coordinator already fetches every cycle, so
+  there is no extra request. The usage-summary root is kept as a fallback in
+  case AGL ever starts returning it there.
+  - Read is **label-keyed**, not positional. AGL reuses one
+    `additionalLabel`/`additionalLabelValue` slot per contract for different
+    quantities: a plain contract shows `"Bill Projection" / "$139.15"`, a
+    solar contract shows `"Sold To Grid" / "+ $7.43"`. Reading the value
+    positionally would publish feed-in credit as the bill projection.
+  - **Known limitation:** on a solar contract AGL occupies that slot with
+    "Sold To Grid", so no projection is available from this endpoint and the
+    sensor stays `unknown` — deliberately, rather than showing a wrong number.
+- **Setup no longer offers, or silently auto-selects, a contract it cannot
+  serve** (#260): every usage endpoint is hardcoded to AGL's `Electricity`
+  path, but contract discovery listed every contract on the account. An
+  account whose only contract was gas had it auto-selected with no choice and
+  no warning, producing a config entry where every call failed unexplained;
+  mixed accounts offered gas as a valid-looking option. Non-electricity
+  contracts are now filtered before both the picker and the single-contract
+  fast path, and a gas-only account aborts with a clear message. The filter
+  fails open — a contract whose fuel type AGL does not report stays
+  selectable, since locking out a working install would be worse than the
+  bug being fixed.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from

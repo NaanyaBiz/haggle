@@ -998,6 +998,76 @@ class TestNumericGuards:
         # "$nan" parses to nan → clamped to 0.0 (not None — proj_label was non-empty).
         assert result.bill_projection_aud == 0.0
 
+    async def test_bill_projection_published_from_overview(
+        self, hass: HomeAssistant
+    ) -> None:
+        """End-to-end #253: overview label -> bill_projection_aud on HaggleData.
+
+        Regression for the sensor reading `unknown` in every release up to
+        v0.5.0-beta.1: parse_bill_period read `additionalLabelValue` from the
+        usage-summary root, where AGL never returns it, and nothing ever
+        populated it from the overview despite the parser comment saying a
+        caller would.
+        """
+        from custom_components.haggle.agl.models import BillPeriod
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = BillPeriod(
+            start=date.today() - timedelta(days=15),
+            end=date.today() + timedelta(days=15),
+            consumption_kwh=200.0,
+            cost_label="$45.00",
+            projection_label="",  # absent, as the real endpoint returns it
+        )
+        mock_client.async_get_plan.return_value = _empty_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+        coord._bill_projection_label = "$1,139.15"  # thousands separator
+
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        assert result.bill_projection_aud == 1139.15
+
+    async def test_bill_projection_none_when_no_source_has_it(
+        self, hass: HomeAssistant
+    ) -> None:
+        """No projection anywhere stays None (`unknown`), never a fake 0.0."""
+        from custom_components.haggle.agl.models import BillPeriod
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = BillPeriod(
+            start=date.today() - timedelta(days=15),
+            end=date.today() + timedelta(days=15),
+            consumption_kwh=200.0,
+            cost_label="$45.00",
+            projection_label="",
+        )
+        mock_client.async_get_plan.return_value = _empty_plan()
+        coord = _make_coordinator(hass, client=mock_client)
+
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        assert result.bill_projection_aud is None
+
     async def test_summary_with_negative_clamps_to_zero(
         self, hass: HomeAssistant
     ) -> None:
@@ -1792,7 +1862,7 @@ class TestSolarGeneration:
         mock_gen.assert_called_once()
         assert mock_gen.call_args[0][0] == [reading]
 
-    async def test_refresh_has_solar_sets_flag_from_overview(
+    async def test_refresh_from_overview_sets_flag_from_overview(
         self, hass: HomeAssistant
     ) -> None:
         from custom_components.haggle.agl.models import Contract
@@ -1810,10 +1880,10 @@ class TestSolarGeneration:
         ]
         coord = _make_coordinator(hass, client=mock_client)
         assert coord._has_solar is False
-        await coord._refresh_has_solar()
+        await coord._refresh_from_overview()
         assert coord._has_solar is True
 
-    async def test_refresh_has_solar_ignores_other_contracts(
+    async def test_refresh_from_overview_ignores_other_contracts(
         self, hass: HomeAssistant
     ) -> None:
         from custom_components.haggle.agl.models import Contract
@@ -1830,18 +1900,68 @@ class TestSolarGeneration:
             )
         ]
         coord = _make_coordinator(hass, client=mock_client)
-        await coord._refresh_has_solar()
+        await coord._refresh_from_overview()
         assert coord._has_solar is False
 
-    async def test_refresh_has_solar_sticky_on_error(self, hass: HomeAssistant) -> None:
+    async def test_refresh_from_overview_sticky_on_error(
+        self, hass: HomeAssistant
+    ) -> None:
         from custom_components.haggle.agl.client import AGLError
 
         mock_client = AsyncMock()
         mock_client.async_get_overview.side_effect = AGLError("boom")
         coord = _make_coordinator(hass, client=mock_client)
         coord._has_solar = True
-        await coord._refresh_has_solar()
+        await coord._refresh_from_overview()
         assert coord._has_solar is True
+
+    async def test_refresh_from_overview_captures_bill_projection(
+        self, hass: HomeAssistant
+    ) -> None:
+        """The projection is read from /v3/overview each cycle (#253)."""
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                bill_projection_label="$139.15",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        assert coord._bill_projection_label == ""
+        await coord._refresh_from_overview()
+        assert coord._bill_projection_label == "$139.15"
+
+    async def test_bill_projection_sticky_across_blank_overview(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A cycle without a projection keeps the last known one, not blank.
+
+        Same stickiness rationale as has_solar: a transient omission should
+        not flap the sensor back to `unknown`.
+        """
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                bill_projection_label="",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        coord._bill_projection_label = "$139.15"
+        await coord._refresh_from_overview()
+        assert coord._bill_projection_label == "$139.15"
 
 
 # ---------------------------------------------------------------------------

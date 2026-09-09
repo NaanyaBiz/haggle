@@ -59,7 +59,7 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract; options flow (solar statistics-writes toggle, poll-interval throttle)
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); options flow (solar statistics-writes toggle, poll-interval throttle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
@@ -67,7 +67,7 @@ custom_components/haggle/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
 │   ├── models.py        # TokenSet, Contract, IntervalReading, DailyReading, BillPeriod, PlanRates
-│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals
+│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals; label-keyed bill projection (_projection_label, #253)
 │   └── pinning.py       # SPKI extraction helper for Trust-On-First-Use TLS pinning
 ├── strings.json         # translatable config-flow strings
 └── translations/en.json # English strings (must mirror strings.json)
@@ -497,6 +497,48 @@ and each item carries **both** a `consumption` block and a shape-identical
   compare the *period* sensors (or per-day Energy dashboard bars), never the
   cumulative totals.
 
+### Bill Projection / the shared `additionalLabel` pair
+
+`/v3/overview` gives each contract ONE free-text label/value pair —
+`additionalLabel` + `additionalLabelValue` — and **reuses that slot for
+different quantities**:
+
+| Contract | `additionalLabel` | `additionalLabelValue` |
+|---|---|---|
+| Plain electricity | `"Bill Projection"` | `"$139.15"` |
+| Solar (`hasSolar: true`) | `"Sold To Grid"` | `"+ $7.43"` |
+
+The pair is only meaningful read **together**. `parser._projection_label`
+returns the value only when the label contains "projection"
+(case-insensitive); anything else returns `""` and the sensor stays
+`unknown`, never a confidently wrong number — the same discipline as
+`_classify_tariff`.
+
+**The usage-summary endpoint does NOT carry `additionalLabelValue`.**
+`/api/v2/usage/smart/Electricity/{contractNumber}?isRestricted=False`
+has no projection field. `parse_bill_period` still reads the root key as a
+harmless fallback, but the overview is the real source. This was #253: the
+Bill projection sensor read `unknown` in *every* release from v0.1.0 to
+v0.5.0-beta.1, because the summary was the only source wired up.
+`tests/fixtures/bill_period_response.json` carries an
+`additionalLabelValue` that was invented in #13 to make the test pass (all
+fixtures are synthetic — `tests/fixtures/PROVENANCE.md`); it is not
+evidence of API behaviour.
+
+Solar contracts therefore have **no** bill projection available from this
+endpoint. That is a documented limitation, not a bug.
+
+### Contract fuel types
+
+`/v3/overview` returns `accounts[].contracts[].type` as
+`"electricityContract"` or `"gasContract"`. Every usage endpoint in
+`AglClient` is hardcoded to the `Electricity` path segment, so only
+electricity contracts are serviceable. `config_flow._serviceable_contracts`
+filters the rest out before both the picker and the single-contract
+auto-select fast path (#260), and **fails open**: a contract whose `type`
+is empty or unrecognised is kept, because locking out a working install
+over a renamed string is worse than the bug the filter fixes.
+
 ### Plan / Rates
 
 ```
@@ -693,6 +735,27 @@ The HA Energy dashboard requires:
   delivered the meter reads (with a non-`none` type, even). Inserting them
   creates phantom flat rows that the resume logic skips past forever once AGL
   backfills the real reads. `parse_interval_readings` filters them.
+- **Don't read `additionalLabelValue` from `/v3/overview` positionally.**
+  AGL reuses that one slot per contract for different quantities — "Bill
+  Projection" on a plain contract, "Sold To Grid" on a solar one. Always
+  gate on `additionalLabel` (`parser._projection_label`). A positional read
+  publishes solar feed-in credit as the bill projection; and because
+  `coordinator._money` strips the `+` from `"+ $7.43"`, the result is a
+  *plausible* wrong number (7.43), not an obviously-broken one — the label
+  key is the actual control, not the number formatting.
+- **Don't trust `tests/fixtures/bill_period_response.json`'s
+  `additionalLabelValue` as an API fact.** It was invented in #13 to make
+  `test_projection_label_from_root` pass, one PR after #12 documented that
+  the field is *not* in the usage summary. Every fixture except
+  `solar_hourly_response.json` is synthetic (`tests/fixtures/PROVENANCE.md`)
+  — a fixture is only evidence of API behaviour if PROVENANCE.md says it was
+  captured.
+- **Don't let the config flow offer a contract the client can't fetch.**
+  All usage endpoints are `Electricity`-only; discovery returns gas
+  contracts too. Filter through `_serviceable_contracts` before BOTH the
+  picker and the `len(...) == 1` auto-select path — the fast path was the
+  worse half of #260, silently selecting a gas contract on a gas-only
+  account with no user choice and no error.
 - **Don't put `AGL` (or any close variant) in `DeviceInfo.manufacturer`.**
   HA's "Service info" card renders `model by manufacturer`; this is an
   unofficial third-party integration and labelling the device as if AGL

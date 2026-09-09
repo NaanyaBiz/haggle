@@ -76,6 +76,28 @@ _LOGGER = logging.getLogger(__name__)
 CALLBACK_URL_FIELD = "callback_url"
 
 
+def _serviceable_contracts(contracts: list[Contract]) -> list[Contract]:
+    """Contracts this integration can actually serve (#260).
+
+    Every usage endpoint in `AglClient` is hardcoded to the `Electricity`
+    path segment, so a gas contract can be selected but never fetched — it
+    produces a config entry that fails every call with no explanation, and
+    on a gas-only account the single-contract fast path selects it silently.
+
+    Fails OPEN, not closed: a contract whose `type` AGL did not report (or
+    reports with unexpected wording) is treated as serviceable. Locking a
+    working electricity user out because AGL renamed a string is a worse
+    failure than the one this filter fixes; only a positively-identified
+    non-electricity fuel is excluded.
+    """
+    keep: list[Contract] = []
+    for contract in contracts:
+        fuel = contract.fuel_type.casefold()
+        if not fuel or "electricity" in fuel:
+            keep.append(contract)
+    return keep
+
+
 def _gen_pkce() -> tuple[str, str]:
     """Return (verifier, S256-challenge) for an OAuth2 PKCE exchange."""
     verifier = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode()
@@ -335,8 +357,16 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._contracts:
             return await self._async_create_entry(contract_number="", account_number="")
 
-        if len(self._contracts) == 1:
-            c = self._contracts[0]
+        # Every data path is hardcoded to AGL's Electricity endpoints, so a
+        # gas contract can be selected but never served (#260). Filter before
+        # BOTH the single-contract fast path and the picker, or a gas-only
+        # account gets it auto-selected with no choice and no explanation.
+        serviceable = _serviceable_contracts(self._contracts)
+        if not serviceable:
+            return self.async_abort(reason="no_electricity_contract")
+
+        if len(serviceable) == 1:
+            c = serviceable[0]
             return await self._async_create_entry(
                 contract_number=c.contract_number,
                 account_number=c.account_number,
@@ -346,8 +376,8 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             chosen = user_input[CONF_CONTRACT_NUMBER]
             contract = next(
-                (c for c in self._contracts if c.contract_number == chosen),
-                self._contracts[0],
+                (c for c in serviceable if c.contract_number == chosen),
+                serviceable[0],
             )
             return await self._async_create_entry(
                 contract_number=contract.contract_number,
@@ -356,7 +386,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         options = {
-            c.contract_number: f"{c.address} ({c.fuel_type})" for c in self._contracts
+            c.contract_number: f"{c.address} ({c.fuel_type})" for c in serviceable
         }
         return self.async_show_form(
             step_id="select_contract",
