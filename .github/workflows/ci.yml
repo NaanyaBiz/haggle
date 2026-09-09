@@ -150,9 +150,21 @@ jobs:
           # cover us today — pinning all three scopes removes the
           # dependence on that classification behaviour.
           fail-on-scopes: runtime, development, unknown
-          # Apache-2.0 repo. The dependency estate is dev/CI-only
-          # (manifest.json ships zero runtime requirements), so this gate
-          # protects contributor machines and CI, not the shipped artifact.
-          # Deny strong/network copyleft only; weak copyleft (LGPL/MPL) dev
-          # tools are compatible with how this repo uses them.
-          deny-licenses: GPL-2.0-only, GPL-2.0-or-later, GPL-3.0-only, GPL-3.0-or-later, AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, SSPL-1.0
+          # Apache-2.0 repo shipping ZERO third-party code: haggle.zip is
+          # custom_components/haggle/ only (manifest.json requirements: []),
+          # so no dependency is ever redistributed and plain-copyleft
+          # obligations cannot arise. The whole estate is dev/CI-only.
+          #
+          # Network copyleft ONLY (PR #263). Plain GPL removed 2026-09-09:
+          # the tree carries three GPL-3.0 packages transitively from
+          # homeassistant — hass-nabucasa, its own dependency snitun, and
+          # pyric — none of which this project can drop or redistribute.
+          # The old denylist blocked exactly one of the three, because
+          # hass-nabucasa declares SPDX `license_expression` while the other
+          # two declare only a legacy classifier the action does not
+          # normalise (#262). Blocking a parent while admitting its child
+          # was incoherent, and it fired on metadata format rather than
+          # licence. AGPL/SSPL are kept: they carry genuinely surprising
+          # obligations, appear nowhere in the current tree, and would be a
+          # real signal if they showed up.
+          deny-licenses: AGPL-1.0-only, AGPL-1.0-or-later, AGPL-3.0-only, AGPL-3.0-or-later, SSPL-1.0
