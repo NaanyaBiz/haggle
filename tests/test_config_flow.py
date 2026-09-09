@@ -357,6 +357,28 @@ class TestExchangeCodeMalformedResponses:
             await self._exchange(body={"access_token": 1, "refresh_token": ["r"]})
         assert not isinstance(exc.value, AGLAuthError)
 
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {},
+            {"access_token": "a"},
+            {"access_token": "", "refresh_token": ""},
+            {"access_token": "a", "refresh_token": ""},
+        ],
+    )
+    async def test_missing_or_blank_tokens_raise_agl_error_not_auth(
+        self, body: dict
+    ) -> None:
+        """Missing/blank tokens are the same schema-fault family (Codex pass 2).
+
+        This branch sat one line below the mistyped-field fix and still
+        raised AGLAuthError — surfacing invalid_auth and telling the user to
+        re-authenticate for an upstream fault retrying might fix.
+        """
+        with pytest.raises(AGLError) as exc:
+            await self._exchange(body=body)
+        assert not isinstance(exc.value, AGLAuthError)
+
     async def test_401_still_maps_to_auth_error(self) -> None:
         """The genuine-auth-failure path is unchanged by the malformed-200 work."""
         with pytest.raises(AGLAuthError):

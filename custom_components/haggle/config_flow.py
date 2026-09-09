@@ -186,7 +186,11 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
         # of the same condition (review finding, two independent reviewers).
         raise AGLError("Token response fields are not strings")
     if not access_token or not refresh_token:
-        raise AGLAuthError("Token response missing access_token or refresh_token")
+        # Same fault family as above: a 200 with missing/blank tokens is an
+        # upstream schema fault, not proof the user's credentials are bad.
+        # AGLAuthError here surfaced invalid_auth and told the user to
+        # re-authenticate for something retrying might fix (Codex pass 2).
+        raise AGLError("Token response missing access_token or refresh_token")
 
     auth_spki = connector.observed.get(AGL_AUTH_HOST_NAME, "")
     return access_token, refresh_token, auth_spki
