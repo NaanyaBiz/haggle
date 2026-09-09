@@ -230,12 +230,8 @@ class AglAuth:
         except json.JSONDecodeError as err:
             raise AGLTransportError("non-JSON response from token endpoint") from err
 
-        # Everything below is schema-trusting, so it needs the same shield as
-        # the transport layer above (#243). A malformed-but-200 body is NOT an
-        # auth failure: it must raise a retryable AGLError, never AGLAuthError
-        # (which would burn the grant through a pointless reauth prompt), and
-        # never a raw AttributeError/KeyError/ValueError — those bypass every
-        # coordinator catch site, which is built around the AGLError family.
+        # Schema-trusting section (#243): a malformed-but-200 body raises
+        # retryable AGLTransportError — never AGLAuthError, never a raw escape.
         if not isinstance(data, dict):
             # Valid JSON, wrong shape: `null`, `[]`, `"x"`, `3`. The
             # annotation above is a promise the wire cannot keep.

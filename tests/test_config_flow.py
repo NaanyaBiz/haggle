@@ -345,9 +345,22 @@ class TestExchangeCodeMalformedResponses:
         with pytest.raises(AGLError):
             await self._exchange(json_exc=json.JSONDecodeError("bad", "doc", 0))
 
-    async def test_mistyped_token_fields_raise_auth_error(self) -> None:
-        with pytest.raises(AGLAuthError):
+    async def test_mistyped_token_fields_raise_agl_error_not_auth(self) -> None:
+        """Shape faults map to cannot_connect, not invalid_auth.
+
+        Review finding (two independent reviewers): this originally raised
+        AGLAuthError, telling the user their credentials were wrong for what
+        is a server-response problem — and contradicting async_force_refresh's
+        AGLTransportError treatment of the identical condition.
+        """
+        with pytest.raises(AGLError) as exc:
             await self._exchange(body={"access_token": 1, "refresh_token": ["r"]})
+        assert not isinstance(exc.value, AGLAuthError)
+
+    async def test_401_still_maps_to_auth_error(self) -> None:
+        """The genuine-auth-failure path is unchanged by the malformed-200 work."""
+        with pytest.raises(AGLAuthError):
+            await self._exchange(body={"error": "invalid_grant"}, status=401)
 
     async def test_malformed_body_surfaces_cannot_connect_not_unknown_error(
         self, hass: HomeAssistant

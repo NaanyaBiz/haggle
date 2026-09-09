@@ -174,16 +174,17 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
             # No body text in the message — it surfaces in the config-flow UI.
             raise AGLError("malformed response from AGL token endpoint") from err
 
-    # Valid JSON of the wrong shape (`null`, `[]`, a bare number) has no
-    # .get(); an unguarded AttributeError escapes async_step_exchange's
-    # AGLError/ClientError/TimeoutError boundary entirely.
+    # Wrong-shaped JSON (`null`, `[]`) would otherwise escape as AttributeError.
     if not isinstance(body, dict):
         raise AGLError("unexpected token-response shape from AGL token endpoint")
 
     access_token = body.get("access_token", "")
     refresh_token = body.get("refresh_token", "")
     if not isinstance(access_token, str) or not isinstance(refresh_token, str):
-        raise AGLAuthError("Token response fields are not strings")
+        # A response-shape fault, not an auth failure — AGLError maps to the
+        # translated cannot_connect, matching async_force_refresh's treatment
+        # of the same condition (review finding, two independent reviewers).
+        raise AGLError("Token response fields are not strings")
     if not access_token or not refresh_token:
         raise AGLAuthError("Token response missing access_token or refresh_token")
 
