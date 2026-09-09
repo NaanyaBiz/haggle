@@ -78,8 +78,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   much ("callers can populate from overview") but no caller ever did, and
   `parse_overview` discarded the field entirely. The projection is now read
   from `/v3/overview`, which the coordinator already fetches every cycle, so
-  there is no extra request. The usage-summary root is kept as a fallback in
-  case AGL ever starts returning it there.
+  there is no extra request.
   - The usage-summary root is **not** consumed at all (review finding: it
     carries no label to key on, so a fallback there is unguardable — a
     solar value would bypass the check). A projection AGL withdraws is
