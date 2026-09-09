@@ -23,7 +23,7 @@ import base64
 import json
 import logging
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -272,9 +272,17 @@ class AglClient:
         self,
         auth: AglAuth,
         session: aiohttp.ClientSession,
+        local_tz: tzinfo | None = None,
     ) -> None:
+        """``local_tz`` is the contract's local timezone — callers assert it
+        is the HA instance's configured one, the same assumption every
+        local-midnight computation in the coordinator makes. It tightens the
+        interval-timestamp window to the true UTC shape of one local day
+        (Codex P1 on PR #266); ``None`` falls back to the ±1-date window.
+        """
         self._auth = auth
         self._session = session
+        self._local_tz = local_tz
 
     @property
     def _default_headers(self) -> dict[str, str]:
@@ -382,7 +390,7 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data, expected_day=day)
+        return parse_interval_readings(data, expected_day=day, tz=self._local_tz)
 
     async def async_get_usage_hourly_previous(
         self, contract_number: str, day: date
@@ -391,7 +399,7 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Previous/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data, expected_day=day)
+        return parse_interval_readings(data, expected_day=day, tz=self._local_tz)
 
     # --- Solar (feed-in) ---
 
@@ -411,7 +419,9 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/ElectricitySolar/{contract_number}/{period_segment}/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data, source_field="feedIn", expected_day=day)
+        return parse_interval_readings(
+            data, source_field="feedIn", expected_day=day, tz=self._local_tz
+        )
 
     # --- Plan ---
 

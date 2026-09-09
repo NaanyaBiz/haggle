@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import UTC, date, datetime, timedelta
-from typing import Any, cast
+from datetime import UTC, date, datetime, timedelta, tzinfo
+from typing import TYPE_CHECKING, Any, cast
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 from ..const import (
     INTERVAL_DAY_TOLERANCE,
+    INTERVAL_WINDOW_SLACK_HOURS,
     MAX_AGL_NUMERIC,
     TARIFF_OFFPEAK,
     TARIFF_PEAK,
@@ -56,23 +60,51 @@ def _classify_tariff(text: str) -> str | None:
     return None
 
 
-def safe_float(raw: Any) -> float:
+class NumericRejections:
+    """Counter out-param for :func:`safe_float` at batch call sites.
+
+    A crafted interval response can carry thousands of over-bound values —
+    two per item — and a synchronous WARNING for each would stall the event
+    loop and flood the log through the same MITM-influenceable surface the
+    guard defends (Codex finding on PR #266; same class as the out-of-window
+    timestamp counter in parse_interval_readings). Batch parsers pass one of
+    these, count silently, and emit a single bounded summary after the loop.
+    """
+
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        self.count = 0
+
+
+def safe_float(raw: Any, *, rejections: NumericRejections | None = None) -> float:
     """Coerce a raw API value to a non-negative, finite float <= MAX_AGL_NUMERIC.
 
     inf/nan/negative and over-bound values become 0.0 (never clamped to the
     bound — a zero delta leaves a cumulative sum untouched; a clamped 1e6
     would write a permanent false spike). Single implementation (#241);
     coordinator.py imports it. Full rationale: AGENTS.md "What NOT to Do".
+
+    With ``rejections`` given, a rejection is counted instead of logged —
+    the caller emits ONE summary. Without it (single-value call sites: plan
+    rates, usage summary), the per-call WARNING stands, with the repr
+    truncated so hostile content can't flood a single log line.
     """
     try:
         value = float(raw or 0.0)
     except TypeError, ValueError:
         return 0.0
     if not math.isfinite(value) or value < 0:
-        _LOGGER.warning("Rejecting non-finite/negative AGL value: %r", raw)
+        if rejections is not None:
+            rejections.count += 1
+        else:
+            _LOGGER.warning("Rejecting non-finite/negative AGL value: %.60r", raw)
         return 0.0
     if value > MAX_AGL_NUMERIC:
-        _LOGGER.warning("Rejecting implausibly large AGL value: %r", raw)
+        if rejections is not None:
+            rejections.count += 1
+        else:
+            _LOGGER.warning("Rejecting implausibly large AGL value: %.60r", raw)
         return 0.0
     return value
 
@@ -143,11 +175,36 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
     return contracts
 
 
+def _out_of_window_predicate(
+    expected_day: date | None, tz: tzinfo | None
+) -> Callable[[datetime], bool]:
+    """Build the reject-predicate for the requested-day window (#242).
+
+    Window semantics are documented on parse_interval_readings; this exists
+    so the parse loop stays under the complexity gate (decompose, not noqa).
+    """
+    if expected_day is None:
+        return lambda _dt: False
+    if tz is not None:
+        day_start = datetime(
+            expected_day.year, expected_day.month, expected_day.day, tzinfo=tz
+        )
+        next_day = expected_day + timedelta(days=1)
+        day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
+        slack = timedelta(hours=INTERVAL_WINDOW_SLACK_HOURS)
+        lo, hi = day_start - slack, day_end + slack
+        return lambda dt: not (lo <= dt < hi)
+    lo_date = expected_day - timedelta(days=INTERVAL_DAY_TOLERANCE)
+    hi_date = expected_day + timedelta(days=INTERVAL_DAY_TOLERANCE)
+    return lambda dt: not (lo_date <= dt.date() <= hi_date)
+
+
 def parse_interval_readings(
     data: dict[str, Any],
     *,
     source_field: str = "consumption",
     expected_day: date | None = None,
+    tz: tzinfo | None = None,
 ) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
@@ -168,21 +225,25 @@ def parse_interval_readings(
     hour anyway.
 
     ``expected_day`` is the day actually requested via ``period=``; readings
-    outside that day ± INTERVAL_DAY_TOLERANCE are dropped (#242) so a crafted
-    timestamp can't pin the baseline cutoff before real recorder history
-    (threat-model T-4, the #114 sum-step class). Deliberately ±1 day, not
-    exact: AGL reads ``period=`` in LOCAL time and returns UTC, so a one-day
-    query legitimately spans two UTC dates.
+    outside its window are dropped (#242) so a crafted timestamp can't pin
+    the baseline cutoff before real recorder history (threat-model T-4, the
+    #114 sum-step class). With ``tz`` — the contract's local timezone, which
+    the caller asserts is the HA instance's configured one (the same
+    assumption every local-midnight computation in the coordinator makes) —
+    the window is exact: [local midnight of the day - slack, next local
+    midnight + slack) in UTC, DST handled by the tzinfo. AGL reads
+    ``period=`` in LOCAL time and returns UTC, so this is the true shape of
+    one requested day. Without ``tz`` the fallback is the coarser
+    ``expected_day ± INTERVAL_DAY_TOLERANCE`` DATE window — Codex P1 on PR
+    #266 showed that window alone still admits an injected D-1T00:00Z
+    reading that drags the baseline cutoff ~14 h early, excluding stored
+    rows from the baseline without re-emitting them: a #114 downward step.
     """
     _skip_types = {"none", "pending"}
-    window: tuple[date, date] | None = None
-    if expected_day is not None:
-        window = (
-            expected_day - timedelta(days=INTERVAL_DAY_TOLERANCE),
-            expected_day + timedelta(days=INTERVAL_DAY_TOLERANCE),
-        )
+    out_of_window = _out_of_window_predicate(expected_day, tz)
     readings: list[IntervalReading] = []
     dropped_out_of_window = 0
+    rejections = NumericRejections()
     for section_raw in _as_list(_as_dict(data).get("sections")):
         for item_raw in _as_list(_as_dict(section_raw).get("items")):
             item = _as_dict(item_raw)
@@ -199,14 +260,14 @@ def parse_interval_readings(
                     dt = dt.replace(tzinfo=UTC)
             except ValueError, AttributeError:
                 continue
-            if window is not None and not (window[0] <= dt.date() <= window[1]):
-                # Counted, not logged per-item: a hostile response could carry
-                # thousands of these, and a synchronous WARNING per reading
-                # would stall the event loop and flood the log (review finding).
+            # Counted, not logged per-item: a hostile response could carry
+            # thousands of these, and a synchronous WARNING per reading
+            # would stall the event loop and flood the log (review finding).
+            if out_of_window(dt):
                 dropped_out_of_window += 1
                 continue
-            kwh = safe_float(block.get("quantity"))
-            cost_aud = safe_float(block.get("amount"))
+            kwh = safe_float(block.get("quantity"), rejections=rejections)
+            cost_aud = safe_float(block.get("amount"), rejections=rejections)
             if kwh == 0.0 and cost_aud == 0.0:
                 continue
             readings.append(
@@ -219,10 +280,16 @@ def parse_interval_readings(
             )
     if dropped_out_of_window:
         _LOGGER.warning(
-            "Dropped %d interval(s) outside the requested window %s..%s",
+            "Dropped %d interval(s) outside the window for requested day %s",
             dropped_out_of_window,
-            window[0] if window else None,
-            window[1] if window else None,
+            expected_day,
+        )
+    if rejections.count:
+        _LOGGER.warning(
+            "Rejected %d non-finite/negative/over-bound numeric value(s) "
+            "in interval response for %s",
+            rejections.count,
+            expected_day,
         )
     return readings
 

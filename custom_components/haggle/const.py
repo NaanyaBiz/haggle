@@ -60,8 +60,17 @@ REWINDOW_DAYS: Final = 7
 # cumulative sum. Rationale: AGENTS.md "What NOT to Do".
 MAX_AGL_NUMERIC: Final = 1_000_000.0
 
-# Interval-timestamp window: requested day ± this (#242). ±1 because AGL reads
-# `period=` in LOCAL time but returns UTC, so one local day spans two UTC dates.
+# Interval-timestamp window (#242): with a known local timezone the window is
+# [local midnight of the requested day - slack, next local midnight + slack),
+# computed in UTC — AGL reads `period=` in LOCAL time but returns UTC
+# timestamps. The slack absorbs boundary quirks (e.g. AGL computing the day
+# edge in a fixed offset across a DST transition) while keeping the baseline
+# blast radius to ~2 h instead of the ~14 h a whole-adjacent-UTC-date window
+# allowed (Codex P1 on PR #266 — an injected D-1T00:00Z reading inside that
+# looser window could still pull the baseline cutoff early and step the
+# cumulative sum down, the #114 class).
+INTERVAL_WINDOW_SLACK_HOURS: Final = 2
+# Fallback when no timezone is available: requested day ± this many DATES.
 INTERVAL_DAY_TOLERANCE: Final = 1
 # Max seconds to wait for the recorder to commit queued statistics after a
 # COMPLETE heal sweep before reading the bill-period baseline (#152). On

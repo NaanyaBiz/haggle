@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import pathlib
-from datetime import UTC, date
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -420,6 +421,113 @@ class TestIntervalWindowValidation:
         }
         readings = parse_interval_readings(
             payload, source_field="feedIn", expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
+
+
+class TestIntervalWindowTzDerived:
+    """Codex P1 (PR #266): the ±1-DATE window alone is too loose.
+
+    For an AEST contract, day D's true UTC shape is [D-1T14:00Z, D T14:00Z).
+    The date window accepted EVERY instant of D-1, so an injected D-1T00:00Z
+    reading survived, became min(hour_cons), and pulled the baseline cutoff
+    ~14 h early — stored rows in that gap were excluded from the baseline but
+    not re-emitted, so the first genuine row stepped the cumulative sum down
+    (#114 class). With tz the window is the local day ± 2 h slack.
+    """
+
+    _payload = staticmethod(TestIntervalWindowValidation._payload)
+    _BRISBANE = ZoneInfo("Australia/Brisbane")  # +10, no DST
+    _SYDNEY = ZoneInfo("Australia/Sydney")  # +10/+11, DST
+
+    def test_adjacent_date_injection_is_dropped(self) -> None:
+        """The exact Codex attack: D-1T00:00Z passes the date window, not tz."""
+        readings = parse_interval_readings(
+            self._payload("2026-06-30T00:00:00Z"),
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert readings == []
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            "2026-06-30T14:00:00Z",  # local midnight — first slot of the day
+            "2026-07-01T13:30:00Z",  # 23:30 local — last slot of the day
+            "2026-06-30T12:00:00Z",  # exactly at the 2 h slack edge (kept)
+        ],
+    )
+    def test_legitimate_boundary_slots_are_kept(self, dt_iso: str) -> None:
+        readings = parse_interval_readings(
+            self._payload(dt_iso),
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert len(readings) == 1
+
+    def test_just_outside_slack_is_dropped(self) -> None:
+        readings = parse_interval_readings(
+            self._payload("2026-06-30T11:59:00Z"),
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert readings == []
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            "2026-10-03T14:00:00Z",  # local midnight (AEST, +10)
+            "2026-10-04T12:30:00Z",  # 23:30 local (AEDT, +11) — 23 h day
+        ],
+    )
+    def test_dst_transition_day_boundaries_are_kept(self, dt_iso: str) -> None:
+        """2026-10-04 is Sydney's 23 h DST-start day; tzinfo handles the
+        asymmetric midnights that a fixed-offset window would clip."""
+        readings = parse_interval_readings(
+            self._payload(dt_iso),
+            expected_day=date(2026, 10, 4),
+            tz=self._SYDNEY,
+        )
+        assert len(readings) == 1
+
+    def test_injection_cannot_move_the_baseline_cutoff(self) -> None:
+        """min(r.dt) — the coordinator's baseline cutoff — stays the genuine
+        local-midnight slot even with the adjacent-date poison present."""
+        payload = self._payload("2026-06-30T14:00:00Z")
+        payload["sections"][0]["items"].append(
+            {
+                "dateTime": "2026-06-30T00:00:00Z",  # the poison
+                "consumption": {"type": "normal", "quantity": 2.0, "amount": 0.6},
+            }
+        )
+        readings = parse_interval_readings(
+            payload, expected_day=date(2026, 7, 1), tz=self._BRISBANE
+        )
+        assert len(readings) == 1
+        assert min(r.dt for r in readings) == datetime(2026, 6, 30, 14, tzinfo=UTC)
+
+    def test_solar_path_uses_tz_window_too(self) -> None:
+        payload = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-06-30T00:00:00Z",
+                            "feedIn": {
+                                "type": "normal",
+                                "quantity": 3.0,
+                                "amount": 0.5,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        readings = parse_interval_readings(
+            payload,
+            source_field="feedIn",
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
         )
         assert readings == []
 

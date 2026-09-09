@@ -222,6 +222,71 @@ async def test_poisoned_old_timestamp_cannot_step_sum_down(
     )
 
 
+async def test_adjacent_date_injection_cannot_step_sum_down(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Codex P1 (PR #266) on the REAL statistics engine — the adjacent-date
+    variant the 1970 test misses.
+
+    For an AEST contract, day D legitimately starts at D-1T14:00Z, and the
+    old ±1-DATE window therefore accepted EVERY instant of D-1. An injected
+    D-1T00:00Z reading (here 2026-06-30T00:00Z against requested day
+    2026-07-01) sat INSIDE the mature stored chain: it pinned the baseline
+    cutoff ~14 h early, the baseline resolved to the sum as of that hour, and
+    the day's genuine rows were then written far below the stored tip — a
+    downward step in the sum column with no 1970-style absurdity to catch.
+    The tz-derived window (local day ± 2 h slack) drops the injected row.
+    """
+    from zoneinfo import ZoneInfo
+
+    from custom_components.haggle.agl.parser import parse_interval_readings
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 48))
+    await async_wait_recording_done(hass)
+
+    # Requested local day 2026-07-01 (AEST): true window starts 06-30T14:00Z.
+    day = date(2026, 7, 1)
+
+    def _item(iso: str) -> dict:
+        return {
+            "dateTime": iso,
+            "consumption": {"type": "normal", "quantity": 1.0, "amount": 0.30},
+        }
+
+    payload = {
+        "sections": [
+            {
+                "items": [
+                    _item("2026-06-30T14:00:00Z"),  # genuine first slot
+                    _item("2026-06-30T15:00:00Z"),
+                    # The poison: same UTC DATE as a genuine slot, so the old
+                    # date window passed it; 14 h before the true local start.
+                    _item("2026-06-30T00:00:00Z"),
+                ]
+            }
+        ]
+    }
+    readings = parse_interval_readings(
+        payload, expected_day=day, tz=ZoneInfo("Australia/Brisbane")
+    )
+    assert len(readings) == 2, "tz window must drop the adjacent-date poison"
+    assert min(r.dt for r in readings) == datetime(2026, 6, 30, 14, tzinfo=UTC)
+
+    await coord._import_intervals(readings)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    # No downward step, and the chain continued from 48 (not restarted from
+    # the mid-chain baseline the poisoned cutoff would have produced).
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    assert abs(sums[-1] - 50.0) < 1e-9
+
+
 async def test_two_overbound_readings_cannot_write_inf_sum(
     recorder_mock, hass: HomeAssistant
 ) -> None:

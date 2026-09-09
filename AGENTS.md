@@ -678,19 +678,24 @@ The HA Energy dashboard requires:
   rejected to `0.0`, never clamped to the bound — a zero delta leaves the sum
   untouched, whereas a clamped `1e6` writes a permanent false spike.
 - **Don't parse interval readings without telling the parser which day was
-  requested.** `parse_interval_readings` takes `expected_day`; every
-  `AglClient` fetch site must pass it (#242). Without it,
+  requested — and pass the local timezone.** `parse_interval_readings` takes
+  `expected_day` and `tz`; every `AglClient` fetch site must pass both
+  (#242, Codex P1 on PR #266 — `AglClient` gets `local_tz` from HA's
+  configured tz at construction). Without `expected_day`,
   `coordinator._import_intervals` derives its baseline cutoff as
   `min(hour_cons)` — purely from response content — so ONE interval carrying
   an old `dateTime` pins the cutoff before all real recorder history, the
   baseline resolves to `0.0` instead of the true multi-year sum, and the same
   import writes today's real hours on top of it: a large downward step in the
-  `sum` column (#114 class, from a single crafted timestamp). The window is
-  intentionally the requested day ± `INTERVAL_DAY_TOLERANCE`, NOT an exact
-  match: AGL interprets `period=` in the contract's local timezone and returns
-  `dateTime` in UTC, so a single-day query legitimately spans two UTC dates.
-  Tightening it would drop legitimate readings; the guard exists to bound the
-  cutoff, not to police the calendar.
+  `sum` column (#114 class, from a single crafted timestamp). With `tz` the
+  window is the true UTC shape of the requested LOCAL day
+  ± `INTERVAL_WINDOW_SLACK_HOURS` (AGL interprets `period=` in the contract's
+  local timezone and returns `dateTime` in UTC, so a single-day query spans
+  two UTC dates; DST is handled by the tzinfo). The tz-less ±1-DATE fallback
+  alone is NOT sufficient: it accepts every instant of the adjacent UTC date,
+  so an injected `D-1T00:00Z` reading still dragged the cutoff ~14 h early —
+  stored rows in that gap left out of the baseline but not re-emitted, a
+  #114 downward step with no 1970-style absurdity to catch.
 - **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
   unparenthesised form is intentional: it is `ruff format`'s canonical output
   for this repo's Python 3.14 target (PEP 758, where `except A, B:` means
