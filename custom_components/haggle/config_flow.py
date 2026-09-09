@@ -357,12 +357,12 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._contracts:
             return await self._async_create_entry(contract_number="", account_number="")
 
-        # Every data path is hardcoded to AGL's Electricity endpoints, so a
-        # gas contract can be selected but never served (#260). Filter before
-        # BOTH the single-contract fast path and the picker, or a gas-only
-        # account gets it auto-selected with no choice and no explanation.
+        # Filter to serviceable contracts before BOTH paths below (#260).
         serviceable = _serviceable_contracts(self._contracts)
         if not serviceable:
+            # Note: during reauth this discards a just-completed PKCE exchange
+            # (the token is never persisted) — correct, but the user must
+            # restart reauth after fixing the account (review note).
             return self.async_abort(reason="no_electricity_contract")
 
         if len(serviceable) == 1:

@@ -802,8 +802,10 @@ class TestParseOverviewSolar:
         """On a solar contract AGL puts "Sold To Grid" in the projection slot.
 
         Reading it positionally would publish feed-in credit as the bill
-        projection; worse, "+ $7.43" is not float-parseable so the coordinator's
-        _safe_float would clamp it to a confident, wrong $0.00 (#253).
+        projection — and since coordinator._money strips the "+", the result
+        would be a PLAUSIBLE wrong number (7.43), not an obviously-broken one
+        (#253; comment corrected per review — an earlier version claimed a
+        $0.00 floor that does not exist).
         """
         contracts = parse_overview(load_fixture("overview_solar_response.json"))
         assert contracts[0].bill_projection_label == ""

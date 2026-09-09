@@ -102,12 +102,8 @@ def _as_id(raw: Any) -> str:
     return ""
 
 
-# AGL renders one free-text "additional" label/value pair per contract in
-# /v3/overview, and REUSES that slot for different quantities: a plain
-# contract shows "Bill Projection" / "$139.15", while a solar contract shows
-# "Sold To Grid" / "+ $7.43". The pair is therefore only meaningful when read
-# together — reading additionalLabelValue positionally would publish feed-in
-# credit as the bill projection (#253).
+# AGL reuses one additionalLabel/Value slot per overview contract (#253);
+# see _projection_label below.
 _PROJECTION_LABEL_KEYWORD = "projection"
 
 
@@ -123,6 +119,11 @@ def _projection_label(contract: dict[str, Any]) -> str:
     """
     label = _as_str(contract.get("additionalLabel"))
     if _PROJECTION_LABEL_KEYWORD not in label.casefold():
+        if label and label != "Sold To Grid":
+            # The keyword itself is inferred from an anonymised fixture, not a
+            # confirmed capture — log the real label so a user can report what
+            # AGL actually calls it if the sensor stays unknown (#253).
+            _LOGGER.debug("Overview additionalLabel not a projection: %r", label)
         return ""
     return _as_str(contract.get("additionalLabelValue"))
 

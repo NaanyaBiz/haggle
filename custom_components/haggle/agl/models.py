@@ -30,10 +30,8 @@ class Contract:
     status: str  # "active" | ...
     has_solar: bool = False
     meter_type: str = "smart"
-    # AGL's own bill forecast for this contract, as the raw label AGL renders
-    # (e.g. "$139.15"). Empty when the overview carries no projection for the
-    # contract — notably on solar contracts, where AGL reuses the same
-    # `additionalLabelValue` slot for "Sold To Grid". See parser._projection_label.
+    # Raw bill-forecast label ("$139.15"); "" when absent — notably on solar,
+    # where AGL reuses the slot for "Sold To Grid" (parser._projection_label).
     bill_projection_label: str = ""
 
 

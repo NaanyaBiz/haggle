@@ -107,17 +107,9 @@ def _safe_float(raw: Any) -> float:
 
 
 def _money(label: str | None) -> str:
-    """Normalise an AGL currency label to a bare numeric string.
-
-    AGL renders money as display text, not numbers: "$45.00", "$1,234.56",
-    and — in the overview's shared additional-label slot — "+ $7.43". Strips
-    the symbol, thousands separators and a leading sign-marker, leaving a
-    string `_safe_float` can coerce. Returns "" for a missing/blank label so
-    callers can distinguish "no value" from a genuine 0.0.
-
-    A leading "-" is deliberately preserved: `_safe_float` clamps negatives to
-    0.0 with a warning, which is the intended guard, rather than a minus sign
-    being silently dropped to produce a positive number.
+    """Strip an AGL display-money label ("$1,234.56", "+ $7.43") to a numeric
+    string; "" for missing/blank. A leading "-" survives on purpose so the
+    negative-value guard downstream fires rather than being defeated here.
     """
     return (label or "").replace("$", "").replace(",", "").replace("+", "").strip()
 
@@ -222,9 +214,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # _prev_has_solar drives the reload-when-solar-appears path.
         self._has_solar: bool = False
         self._prev_has_solar: bool = False
-        # AGL's own bill forecast, read from /v3/overview each cycle (#253).
-        # The usage-summary endpoint does NOT carry it, so this is the only
-        # source. Sticky across a failed overview fetch, like _has_solar.
+        # AGL's bill forecast from /v3/overview (#253); sticky across a FAILED
+        # fetch only — a successful fetch assigns, including to empty.
         self._bill_projection_label: str = ""
         self._latest_generation_kwh: float = 0.0
         self._latest_generation_credit: float = 0.0
@@ -435,12 +426,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         projection: float | None = None
         period_kwh = _safe_float(summary.consumption_kwh)
         period_cost = _safe_float(_money(summary.cost_label))
-        # /v3/overview is the real source (#253); the usage-summary root is
-        # kept as a fallback only so the sensor still works if AGL ever starts
-        # returning it there. Overview wins when both are present.
-        proj_label = _money(self._bill_projection_label) or _money(
-            summary.projection_label
-        )
+        # /v3/overview only (#253). No usage-summary fallback: that response
+        # carries no additionalLabel to key on, so a fallback is unguardable —
+        # a solar summary value would sail past the label check straight into
+        # this sensor (review finding). The field has never been observed at
+        # the summary endpoint (blank in every release v0.1.0..v0.4.0).
+        proj_label = _money(self._bill_projection_label)
         if proj_label:
             projection = _safe_float(proj_label)
 
@@ -496,8 +487,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         for contract in contracts:
             if contract.contract_number == self.contract_number:
                 self._has_solar = self._has_solar or contract.has_solar
-                if contract.bill_projection_label:
-                    self._bill_projection_label = contract.bill_projection_label
+                # Assign, don't keep-on-empty: unlike has_solar (legitimately
+                # monotonic), AGL withdraws the projection — e.g. at period
+                # end — and a stale dollar figure is a wrong number, which the
+                # repo treats as worse than a blank one (#152 principle;
+                # review finding). Failure-stickiness is preserved by the
+                # early return in the except block above.
+                self._bill_projection_label = contract.bill_projection_label
                 return
 
     def _maybe_reload_for_new_tariffs(self) -> None:

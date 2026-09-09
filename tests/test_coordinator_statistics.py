@@ -973,10 +973,12 @@ class TestNumericGuards:
             end=date.today() + timedelta(days=15),
             consumption_kwh=float("inf"),
             cost_label="$inf",
-            projection_label="$nan",
+            projection_label="$nan",  # summary value is now IGNORED by design
         )
         mock_client.async_get_plan.return_value = _empty_plan()
         coord = _make_coordinator(hass, client=mock_client)
+        # The adversarial projection now arrives via the only live source.
+        coord._bill_projection_label = "$nan"
 
         today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
@@ -995,7 +997,8 @@ class TestNumericGuards:
         # Adversarial values must not propagate to recorder-bound HaggleData.
         assert result.consumption_period_kwh == 0.0
         assert result.consumption_period_cost_aud == 0.0
-        # "$nan" parses to nan → clamped to 0.0 (not None — proj_label was non-empty).
+        # "$nan" (via overview) parses to nan → clamped to 0.0 (not None —
+        # proj_label was non-empty). The summary's "$nan" is ignored entirely.
         assert result.bill_projection_aud == 0.0
 
     async def test_bill_projection_published_from_overview(
@@ -1020,8 +1023,24 @@ class TestNumericGuards:
             projection_label="",  # absent, as the real endpoint returns it
         )
         mock_client.async_get_plan.return_value = _empty_plan()
+        # The OVERVIEW mock is the only source — nothing pre-seeded, so this
+        # fails if _fetch_and_import stops calling _refresh_from_overview
+        # (review finding: the original pre-seeded the label, and the
+        # pipeline call could be deleted with the test still green).
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                bill_projection_label="$1,139.15",  # thousands separator
+            )
+        ]
         coord = _make_coordinator(hass, client=mock_client)
-        coord._bill_projection_label = "$1,139.15"  # thousands separator
+        assert coord._bill_projection_label == ""
 
         yesterday = datetime.now(UTC).date() - timedelta(days=1)
         with (
@@ -1937,13 +1956,16 @@ class TestSolarGeneration:
         await coord._refresh_from_overview()
         assert coord._bill_projection_label == "$139.15"
 
-    async def test_bill_projection_sticky_across_blank_overview(
+    async def test_bill_projection_clears_on_successful_empty_fetch(
         self, hass: HomeAssistant
     ) -> None:
-        """A cycle without a projection keeps the last known one, not blank.
+        """A SUCCESSFUL fetch with no projection clears the stored one.
 
-        Same stickiness rationale as has_solar: a transient omission should
-        not flap the sensor back to `unknown`.
+        Unlike has_solar (legitimately monotonic), AGL withdraws the
+        projection — e.g. at billing-period end. Keeping the old number
+        publishes a stale dollar figure indefinitely, and the repo's own
+        principle (#152) is that a wrong number is worse than a blank one
+        (review finding — this originally kept the stale value).
         """
         from custom_components.haggle.agl.models import Contract
 
@@ -1961,7 +1983,70 @@ class TestSolarGeneration:
         coord = _make_coordinator(hass, client=mock_client)
         coord._bill_projection_label = "$139.15"
         await coord._refresh_from_overview()
+        assert coord._bill_projection_label == ""
+
+    async def test_bill_projection_sticky_across_failed_fetch(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A failed overview fetch keeps the last known projection (no flap)."""
+        from custom_components.haggle.agl.client import AGLError
+
+        mock_client = AsyncMock()
+        mock_client.async_get_overview.side_effect = AGLError("boom")
+        coord = _make_coordinator(hass, client=mock_client)
+        coord._bill_projection_label = "$139.15"
+        await coord._refresh_from_overview()
         assert coord._bill_projection_label == "$139.15"
+
+    async def test_solar_contract_projection_stays_none_end_to_end(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Solar overview ("Sold To Grid") -> bill_projection_aud is None.
+
+        Guards the removed summary fallback too: the summary carries a value
+        here, and it must NOT leak through (review finding — the fallback was
+        unguardable because the summary has no label to key on).
+        """
+        from custom_components.haggle.agl.models import BillPeriod, Contract
+
+        mock_client = AsyncMock()
+        mock_client.async_get_usage_summary.return_value = BillPeriod(
+            start=date.today() - timedelta(days=15),
+            end=date.today() + timedelta(days=15),
+            consumption_kwh=200.0,
+            cost_label="$45.00",
+            projection_label="+ $7.43",  # what a summary fallback would grab
+        )
+        mock_client.async_get_plan.return_value = _empty_plan()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+                # has_solar deliberately False here: the leak this test guards
+                # (summary value bypassing the label key) is independent of
+                # the solar statistics pipeline, and mocking that pipeline's
+                # internals is not what this test is about.
+                bill_projection_label="",  # label-keyed: "Sold To Grid" -> ""
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+
+        yesterday = datetime.now(UTC).date() - timedelta(days=1)
+        with (
+            patch.object(
+                coord,
+                "_get_last_stat",
+                new_callable=AsyncMock,
+                return_value=(100.0, yesterday),
+            ),
+            patch.object(coord, "_fetch_range", new_callable=AsyncMock),
+        ):
+            result = await coord._fetch_and_import()
+
+        assert result.bill_projection_aud is None  # never 7.43, never 0.0
 
 
 # ---------------------------------------------------------------------------

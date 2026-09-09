@@ -503,10 +503,17 @@ and each item carries **both** a `consumption` block and a shape-identical
 `additionalLabel` + `additionalLabelValue` — and **reuses that slot for
 different quantities**:
 
-| Contract | `additionalLabel` | `additionalLabelValue` |
-|---|---|---|
-| Plain electricity | `"Bill Projection"` | `"$139.15"` |
-| Solar (`hasSolar: true`) | `"Sold To Grid"` | `"+ $7.43"` |
+| Contract | `additionalLabel` | `additionalLabelValue` | Evidence |
+|---|---|---|---|
+| Plain electricity | `"Bill Projection"` | `"$139.15"` | **UNCONFIRMED** — from the anonymised fixture only; no real `/v3/overview` capture is committed |
+| Solar (`hasSolar: true`) | `"Sold To Grid"` | `"+ $7.43"` | fixture matches the #128-era captures ("Sold To Grid" label pair documented under Solar Generation above) |
+
+The exact "Bill Projection" wording is therefore an assumption. The keyword
+match (`_projection_label`, substring "projection", case-insensitive) fails
+SAFE if AGL's real label differs — the sensor stays `unknown`, no wrong
+number — and the parser DEBUG-logs the unmatched label so a user can report
+the real text. If a user reports the sensor still `unknown` after v0.5.0 on
+a non-solar contract, ask for that DEBUG line and correct the keyword.
 
 The pair is only meaningful read **together**. `parser._projection_label`
 returns the value only when the label contains "projection"
@@ -514,12 +521,18 @@ returns the value only when the label contains "projection"
 `unknown`, never a confidently wrong number — the same discipline as
 `_classify_tariff`.
 
-**The usage-summary endpoint does NOT carry `additionalLabelValue`.**
+**The usage-summary endpoint has never been observed to carry
+`additionalLabelValue`** (not "definitively never returns it" — there is no
+real capture to prove a negative; graded per review).
 `/api/v2/usage/smart/Electricity/{contractNumber}?isRestricted=False`
-has no projection field. `parse_bill_period` still reads the root key as a
-harmless fallback, but the overview is the real source. This was #253: the
-Bill projection sensor read `unknown` in *every* release from v0.1.0 to
-v0.5.0-beta.1, because the summary was the only source wired up.
+showed no usable projection in any release v0.1.0–v0.4.0 (maintainer-
+confirmed blank on a live account throughout). `parse_bill_period` still
+parses the root key into `BillPeriod.projection_label`, but the coordinator
+deliberately does NOT consume it: the summary carries no `additionalLabel`
+to key on, so a fallback is unguardable — a solar contract's value would
+bypass the label check and publish feed-in credit as the projection. This
+was #253: the sensor read `unknown` in every release because the summary
+was the only source wired up.
 `tests/fixtures/bill_period_response.json` carries an
 `additionalLabelValue` that was invented in #13 to make the test pass (all
 fixtures are synthetic — `tests/fixtures/PROVENANCE.md`); it is not
@@ -531,7 +544,9 @@ endpoint. That is a documented limitation, not a bug.
 ### Contract fuel types
 
 `/v3/overview` returns `accounts[].contracts[].type` as
-`"electricityContract"` or `"gasContract"`. Every usage endpoint in
+`"electricityContract"` or `"gasContract"` — a vocabulary known only from
+the anonymised fixtures; other values may exist in the wild, which is one
+reason the filter below fails open. Every usage endpoint in
 `AglClient` is hardcoded to the `Electricity` path segment, so only
 electricity contracts are serviceable. `config_flow._serviceable_contracts`
 filters the rest out before both the picker and the single-contract
