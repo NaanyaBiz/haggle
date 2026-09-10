@@ -131,6 +131,20 @@ def _oauth_error_slug(error: object) -> str:
     return "unspecified"
 
 
+# Auth0 token material is printable non-space ASCII (base64url segments,
+# dots, the "v1." refresh prefix family). A credential outside that set —
+# empty, whitespace-only, or carrying embedded CR/LF/control characters —
+# is unusable: persisted, it discards the real grant on the next refresh;
+# in the Authorization header, CR/LF raises from aiohttp's header
+# validation OUTSIDE the AGLError family (Codex pass 4, PR #265).
+_TOKEN_CHARS = re.compile(r"[\x21-\x7e]+")
+
+
+def _plausible_token(token: str) -> bool:
+    """True when `token` is non-empty printable non-space ASCII."""
+    return _TOKEN_CHARS.fullmatch(token) is not None
+
+
 def _raise_for_token_error_status(status: int, text: str) -> NoReturn:
     """Classify a non-200 token response by its error slug, not bare status.
 
@@ -163,11 +177,14 @@ def _validated_token_fields(data: dict[str, Any]) -> tuple[str, str, str]:
         new_refresh_token = data["refresh_token"]
         if not isinstance(access_token, str) or not isinstance(new_refresh_token, str):
             raise TypeError("token fields are not strings")
-        if not access_token.strip() or not new_refresh_token.strip():
-            # .strip(): a whitespace-only credential is truthy, but
-            # persisting it discards the real grant just the same
-            # (Codex pass 3, PR #265).
-            raise ValueError("token fields are empty")
+        if not _plausible_token(access_token) or not _plausible_token(
+            new_refresh_token
+        ):
+            # Charset check, not just non-empty: whitespace-only slipped the
+            # truthiness check (pass 3) and "r\n" slips a .strip() check
+            # while persisting an invalid credential and breaking header
+            # construction downstream (pass 4).
+            raise ValueError("token fields are empty or malformed")
         id_token = data.get("id_token", "")
         if not isinstance(id_token, str):
             id_token = ""

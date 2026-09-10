@@ -365,6 +365,7 @@ class TestExchangeCodeMalformedResponses:
             {"access_token": "", "refresh_token": ""},
             {"access_token": "a", "refresh_token": ""},
             {"access_token": "a", "refresh_token": " "},
+            {"access_token": "a", "refresh_token": "r\n"},
         ],
     )
     async def test_missing_or_blank_tokens_raise_agl_error_not_auth(

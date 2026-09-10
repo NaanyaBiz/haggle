@@ -38,7 +38,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 
-from .agl.client import AGLAuthError, AGLError
+from .agl.client import AGLAuthError, AGLError, _plausible_token
 from .agl.parser import parse_overview
 
 if TYPE_CHECKING:
@@ -185,12 +185,14 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
         # translated cannot_connect, matching async_force_refresh's treatment
         # of the same condition (review finding, two independent reviewers).
         raise AGLError("Token response fields are not strings")
-    if not access_token.strip() or not refresh_token.strip():
-        # Same fault family as above: a 200 with missing/blank tokens is an
-        # upstream schema fault, not proof the user's credentials are bad.
-        # AGLAuthError here surfaced invalid_auth and told the user to
-        # re-authenticate for something retrying might fix (Codex pass 2).
-        # .strip(): whitespace-only is as unusable as empty (Codex pass 3).
+    if not _plausible_token(access_token) or not _plausible_token(refresh_token):
+        # Same fault family as above: a 200 with missing/blank/malformed
+        # tokens is an upstream schema fault, not proof the user's
+        # credentials are bad. AGLAuthError here surfaced invalid_auth and
+        # told the user to re-authenticate for something retrying might fix
+        # (Codex pass 2). Charset check mirrors _validated_token_fields:
+        # whitespace-only and embedded-control-character credentials are as
+        # unusable as empty (passes 3-4).
         raise AGLError("Token response missing access_token or refresh_token")
 
     auth_spki = connector.observed.get(AGL_AUTH_HOST_NAME, "")

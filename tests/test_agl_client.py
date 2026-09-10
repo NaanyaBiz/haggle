@@ -368,6 +368,11 @@ class TestMalformedButOkTokenResponses:
             {"access_token": "", "refresh_token": ""},
             {"access_token": "a", "refresh_token": " "},
             {"access_token": "\t", "refresh_token": "r"},
+            # Control chars survive a .strip() check ("r\n".strip() == "r"
+            # is nonempty) but persist an invalid credential and break
+            # Authorization-header construction (Codex pass 4).
+            {"access_token": "a", "refresh_token": "r\n"},
+            {"access_token": "a\r", "refresh_token": "r"},
         ):
             session = _make_session(body)
             with pytest.raises(AGLError) as exc:
