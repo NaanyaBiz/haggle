@@ -69,6 +69,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute is also present, making the existing quarterly-bill
   under-coverage limitation self-describing instead of silent.
 
+### Security
+
+- **Malformed-but-200 token responses no longer escape structured handling**
+  (#243). Two OAuth call sites shielded their transport layer but left the
+  schema-trusting code that follows it unguarded, so a 200 whose body was
+  valid JSON of the wrong shape raised a raw
+  `AttributeError`/`KeyError`/`TypeError`/`ValueError`/`OverflowError`.
+  Verified against the pre-fix code: `null`, `[]`, a missing
+  `access_token`, `expires_in: "<hostile>"` and `expires_in: 10**20` all
+  escaped as raw exceptions.
+  - **Availability.** Every coordinator catch site is built around the
+    `AGLError` family, so a raw escape crashed the update cycle before the
+    #155 failure-retry cadence could run.
+  - **Information disclosure.** `int("<hostile>")` puts its input into the
+    `ValueError` message, and `diagnostics.py` republishes
+    `str(last_exception)` verbatim into a file users attach to public
+    GitHub issues. A structured `error` field was separately echoed whole
+    into an `AGLAuthError` — a 500-character payload reached HA Persistent
+    Notifications intact. Both now degrade to a type name / a
+    length-capped, type-checked slug.
+  - Malformed bodies now raise **retryable** `AGLTransportError`, never
+    `AGLAuthError`: a bad response is not an auth failure and must not burn
+    a working grant on a reauth prompt.
+  - In the config flow, the same class previously aborted onboarding with
+    an untranslated "Unknown error"; it now surfaces the intended
+    `cannot_connect`. `_exchange_code` had no direct test coverage at all —
+    every existing config-flow test mocks it out.
+
 ### Changed
 
 - **Dev-dependency bump** (`pytest-homeassistant-custom-component` floor

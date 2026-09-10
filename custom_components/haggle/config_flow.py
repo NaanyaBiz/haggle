@@ -38,7 +38,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 
-from .agl.client import AGLAuthError, AGLError
+from .agl.client import AGLAuthError, AGLError, _plausible_token
 from .agl.parser import parse_overview
 
 if TYPE_CHECKING:
@@ -193,12 +193,37 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
             raise AGLAuthError(f"Token exchange failed: HTTP {resp.status}")
         if not resp.ok:
             raise AGLError(f"Token exchange error: HTTP {resp.status}")
-        body: dict[str, Any] = await resp.json()
+        try:
+            # content_type=None: Auth0 behind an Akamai challenge can return
+            # a 200 whose body is not JSON at all.
+            body = await resp.json(content_type=None)
+        except ValueError as err:
+            # json.JSONDecodeError subclasses ValueError. Raised as AGLError
+            # so async_step_exchange maps it to the translated
+            # `cannot_connect`, not an untranslated "Unknown error" (#243).
+            # No body text in the message — it surfaces in the config-flow UI.
+            raise AGLError("malformed response from AGL token endpoint") from err
 
-    access_token: str = body.get("access_token", "")
-    refresh_token: str = body.get("refresh_token", "")
-    if not access_token or not refresh_token:
-        raise AGLAuthError("Token response missing access_token or refresh_token")
+    # Wrong-shaped JSON (`null`, `[]`) would otherwise escape as AttributeError.
+    if not isinstance(body, dict):
+        raise AGLError("unexpected token-response shape from AGL token endpoint")
+
+    access_token = body.get("access_token", "")
+    refresh_token = body.get("refresh_token", "")
+    if not isinstance(access_token, str) or not isinstance(refresh_token, str):
+        # A response-shape fault, not an auth failure — AGLError maps to the
+        # translated cannot_connect, matching async_force_refresh's treatment
+        # of the same condition (review finding, two independent reviewers).
+        raise AGLError("Token response fields are not strings")
+    if not _plausible_token(access_token) or not _plausible_token(refresh_token):
+        # Same fault family as above: a 200 with missing/blank/malformed
+        # tokens is an upstream schema fault, not proof the user's
+        # credentials are bad. AGLAuthError here surfaced invalid_auth and
+        # told the user to re-authenticate for something retrying might fix
+        # (Codex pass 2). Charset check mirrors _validated_token_fields:
+        # whitespace-only and embedded-control-character credentials are as
+        # unusable as empty (passes 3-4).
+        raise AGLError("Token response missing access_token or refresh_token")
 
     auth_spki = connector.observed.get(AGL_AUTH_HOST_NAME, "")
     return access_token, refresh_token, auth_spki
