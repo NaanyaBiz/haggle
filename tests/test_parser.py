@@ -545,6 +545,47 @@ class TestIntervalWindowTzDerived:
         assert readings == []
 
 
+class TestTzForAddress:
+    """Contract-local timezone from the service address (Codex pass 3, #266).
+
+    The window must be the CONTRACT's local day; the state token before the
+    postcode is the best locality signal the API exposes. None (→ caller's
+    HA-tz fallback) whenever it doesn't parse.
+    """
+
+    @pytest.mark.parametrize(
+        ("address", "key"),
+        [
+            ("1 Sample Street SUBURB QLD 4000", "Australia/Brisbane"),
+            ("2 Example Rd TOWN NSW 2000", "Australia/Sydney"),
+            ("3 Test Ave PLACE ACT 2600", "Australia/Sydney"),
+            ("4 Demo St SPOT VIC 3000", "Australia/Melbourne"),
+            ("5 Trial Ct AREA SA 5000", "Australia/Adelaide"),
+            ("6 Mock Ln ZONE WA 6000", "Australia/Perth"),
+        ],
+    )
+    def test_state_maps_to_timezone(self, address: str, key: str) -> None:
+        from custom_components.haggle.agl.parser import tz_for_address
+
+        tz = tz_for_address(address)
+        assert tz is not None
+        assert getattr(tz, "key", None) == key
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "",
+            "1 Sample Street SUBURB 4000",  # no state token
+            "WA Street WOODVILLE",  # state token without a postcode after it
+            "totally unstructured",
+        ],
+    )
+    def test_unparseable_address_returns_none(self, address: str) -> None:
+        from custom_components.haggle.agl.parser import tz_for_address
+
+        assert tz_for_address(address) is None
+
+
 class TestParseOverview:
     def test_extracts_contracts(self) -> None:
         data = load_fixture("overview_response.json")

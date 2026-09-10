@@ -287,6 +287,50 @@ async def test_adjacent_date_injection_cannot_step_sum_down(
     assert abs(sums[-1] - 50.0) < 1e-9
 
 
+async def test_duplicate_slot_in_one_batch_replaces_not_sums(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Codex pass-3 P1 (PR #266) on the REAL statistics engine.
+
+    A multi-day _fetch_range appends every day's readings to one list and
+    imports it once. If day D's response carries a row inside the trailing-
+    slack window that day D+1's response then also returns, the same slot is
+    in the batch twice — and _bucket_hourly sums everything it is given, so
+    the hour was silently inflated (the recorder's idempotent overwrite only
+    dedupes ACROSS imports, not within one). _import_intervals now dedupes
+    by slot last-wins: days arrive in chronological order, so the later
+    day's response is authoritative for its own slots.
+    """
+    from custom_components.haggle.agl.models import IntervalReading
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 48))
+    await async_wait_recording_done(hass)
+
+    slot = datetime(2026, 6, 30, 14, tzinfo=UTC)
+    batch = [
+        # Day D's response: a trailing-slack copy of D+1's first slot,
+        # carrying an inflated value.
+        IntervalReading(dt=slot, kwh=5.0, cost_aud=1.50, rate_type="normal"),
+        # Day D+1's genuine response for the same slot, appended later.
+        IntervalReading(dt=slot, kwh=1.0, cost_aud=0.30, rate_type="normal"),
+        IntervalReading(
+            dt=slot + timedelta(hours=1), kwh=1.0, cost_aud=0.30, rate_type="normal"
+        ),
+    ]
+    await coord._import_intervals(batch)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    # 48 stored + 1.0 + 1.0 — NOT 48 + (5+1) + 1: the duplicate replaced.
+    assert abs(sums[-1] - 50.0) < 1e-9
+
+
 async def test_two_overbound_readings_cannot_write_inf_sum(
     recorder_mock, hass: HomeAssistant
 ) -> None:

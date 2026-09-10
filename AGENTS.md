@@ -681,7 +681,10 @@ The HA Energy dashboard requires:
   requested — and pass the local timezone.** `parse_interval_readings` takes
   `expected_day` and `tz`; every `AglClient` fetch site must pass both
   (#242, Codex P1 on PR #266 — `AglClient` gets `local_tz` from HA's
-  configured tz at construction). Without `expected_day`,
+  configured tz at construction, refined each overview cycle from the
+  contract's service-address state via `parser.tz_for_address`: the
+  CONTRACT's local day is the correct window and can differ from the HA
+  instance's timezone). Without `expected_day`,
   `coordinator._import_intervals` derives its baseline cutoff as
   `min(hour_cons)` — purely from response content — so ONE interval carrying
   an old `dateTime` pins the cutoff before all real recorder history, the

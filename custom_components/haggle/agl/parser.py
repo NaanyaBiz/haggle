@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -173,6 +175,45 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
                 )
             )
     return contracts
+
+
+# Australian state/territory (as it appears before the postcode in an AGL
+# service address, e.g. "1 Sample Street SUBURB QLD 4000") → IANA timezone.
+# ACT shares Sydney's rules.
+_STATE_TZ: dict[str, str] = {
+    "NSW": "Australia/Sydney",
+    "ACT": "Australia/Sydney",
+    "VIC": "Australia/Melbourne",
+    "QLD": "Australia/Brisbane",
+    "SA": "Australia/Adelaide",
+    "TAS": "Australia/Hobart",
+    "NT": "Australia/Darwin",
+    "WA": "Australia/Perth",
+}
+# State token immediately followed by a 4-digit postcode — anchoring on the
+# pair avoids false-positives on street/suburb words.
+_ADDRESS_STATE_RE = re.compile(r"\b(NSW|ACT|VIC|QLD|SA|TAS|NT|WA)\s+\d{4}\b")
+
+
+def tz_for_address(address: str) -> tzinfo | None:
+    """Best-effort timezone of an AGL service address, or None.
+
+    The interval-timestamp window must be the CONTRACT's local day, not the
+    HA instance's (Codex pass-3 P1, PR #266): a Sydney contract managed from
+    a Brisbane HA host is off by 1 h during DST, and the window's strict
+    lower bound would then drop the day's first slots on every fetch —
+    permanent undercount. The state token before the postcode is the best
+    contract-locality signal the API exposes. None on no match (or missing
+    tzdata) — callers keep their existing fallback. Totality is inherited:
+    parse_overview coerces address via _as_str, so input is always str.
+    """
+    match = _ADDRESS_STATE_RE.search(address)
+    if match is None:
+        return None
+    try:
+        return ZoneInfo(_STATE_TZ[match.group(1)])
+    except KeyError, OSError:
+        return None
 
 
 def _out_of_window_predicate(

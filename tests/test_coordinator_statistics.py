@@ -1843,6 +1843,57 @@ class TestSolarGeneration:
         await coord._refresh_has_solar()
         assert coord._has_solar is True
 
+    async def test_refresh_derives_contract_tz_from_address(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Codex pass-3 P1 (PR #266): the window tz must be the CONTRACT's.
+
+        A Sydney contract managed from a Brisbane HA host is off by 1 h
+        during DST, and the window's strict lower bound would drop the
+        day's first slots on every fetch — permanent undercount. The
+        overview cycle refines client.local_tz from the service address.
+        """
+        from custom_components.haggle.agl.models import Contract
+
+        mock_client = AsyncMock()
+        mock_client.local_tz = None
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="2 Example Rd TOWN NSW 2000",
+                fuel_type="electricityContract",
+                status="active",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        await coord._refresh_has_solar()
+        assert getattr(mock_client.local_tz, "key", None) == "Australia/Sydney"
+
+    async def test_unparseable_address_keeps_fallback_tz(
+        self, hass: HomeAssistant
+    ) -> None:
+        """No state token → keep whatever tz the client was constructed with."""
+        from zoneinfo import ZoneInfo
+
+        from custom_components.haggle.agl.models import Contract
+
+        sentinel_tz = ZoneInfo("Australia/Brisbane")
+        mock_client = AsyncMock()
+        mock_client.local_tz = sentinel_tz
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="",
+                fuel_type="electricityContract",
+                status="active",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        await coord._refresh_has_solar()
+        assert mock_client.local_tz is sentinel_tz
+
 
 # ---------------------------------------------------------------------------
 # Per-series backfill ranges (#128 beta.2) — solar catches up independently

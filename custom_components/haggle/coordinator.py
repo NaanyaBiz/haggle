@@ -44,7 +44,7 @@ from .agl.client import (
 )
 
 # Single numeric-guard implementation (#241) — a local near-duplicate had drifted.
-from .agl.parser import safe_float
+from .agl.parser import safe_float, tz_for_address
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -456,6 +456,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         for contract in contracts:
             if contract.contract_number == self.contract_number:
                 self._has_solar = self._has_solar or contract.has_solar
+                # The interval-timestamp window must be the CONTRACT's local
+                # day, not the HA instance's: a Sydney contract managed from
+                # a Brisbane HA host is off by 1 h during DST, and the strict
+                # lower bound would then drop the day's first slots on every
+                # fetch (Codex pass-3 P1, PR #266). Best source available is
+                # the service address's state; HA's tz (set at client
+                # construction) remains the fallback when it doesn't parse.
+                tz = tz_for_address(contract.address)
+                if tz is not None:
+                    self.client.local_tz = tz
                 return
 
     def _maybe_reload_for_new_tariffs(self) -> None:
@@ -1534,6 +1544,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         re-add them — spiking the cumulative sum every local midnight.
         """
         from homeassistant.const import UnitOfEnergy
+
+        # One meter reading per 30-min slot. A slot can appear twice in one
+        # multi-day batch — day D's response carrying a row inside the
+        # trailing-slack window that day D+1's response then also returns —
+        # and _bucket_hourly sums everything it is given, so within a single
+        # import a duplicated slot silently inflates consumption, cost, and
+        # ToU statistics (Codex pass-3 P1, PR #266; the recorder's
+        # idempotent-overwrite only dedupes ACROSS imports, not within one).
+        # Last-wins: days are fetched in chronological order, so the later
+        # day's response is authoritative for its own slots.
+        by_slot: dict[datetime, IntervalReading] = {}
+        for r in intervals:
+            by_slot[r.dt] = r
+        intervals = list(by_slot.values())
 
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = (
