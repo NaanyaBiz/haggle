@@ -244,7 +244,16 @@ merge.
   (write-only output, third-party code on every PR).
 - Every PR is gated by a `Dependency review` check: known-vulnerable
   dependency changes fail at **moderate** severity or above across all
-  scopes, and copyleft licences (GPL/AGPL/SSPL family) are denied.
+  scopes, and **network-copyleft** licences (AGPL/SSPL family) are denied.
+  Plain GPL was removed from the denylist on 2026-09-09 (RA-17): the
+  released artifact contains zero third-party code, so redistribution
+  obligations cannot arise, and the Home Assistant transitive tree carries
+  GPL-3.0 packages this project can neither drop nor redistribute. Two
+  documented limits on the check itself, both recorded in [#262](https://github.com/NaanyaBiz/haggle/issues/262):
+  it matches SPDX identifiers and does not normalise legacy trove
+  classifiers, and it evaluates only the base..head diff, so a dependency
+  already in the tree is never re-examined. It is a tripwire, not a
+  guarantee.
 - `hacs/action` and `home-assistant/actions` are SHA-of-branch pins —
   upstream cuts no tagged releases. Accepted: they are the ecosystem's
   own validation gates, and the SHA still freezes the code.
@@ -614,6 +623,7 @@ its own rows.
 | RA-14 | Residual STRIDE threats accepted per the threat-model register: I-3 (service address as entry title), R-1 (no token-rotation audit trail), D-2 residual (no two-phase persist), E-3 (borrowed client_id supports elevated scopes), S-3 (no callback-host check). | Per-threat rationale + tripwires in [docs/threat-model.md](docs/threat-model.md) §4–5. | Accepted — @naanyabiz, 2026-07-13 | Annually / on trigger |
 | RA-15 | (Pointer) The dated acceptances embedded elsewhere in this file — Scorecard "Accepted at N" scores, the scorecard-action mutable container tag, hacs/hassfest branch-SHA pins, the phcc range pin and HA transitive tree, warn-only SPKI pin mismatch — are standing acceptances on the same terms as this register. | See the respective sections. | Accepted — @naanyabiz, 2026-07-13 | Annually |
 | RA-16 | Maintainer no longer holds a live AGL account (migrated his own household to Amber, 2026-07-28): cannot personally validate any AGL-authenticated flow — login, polling, statistics reconciliation, diagnostics content — end-to-end, pre-merge or pre-release. | Beta-soak acceptance, the downgrade test, and diagnostics E2E verification (docs/releasing.md, docs/testing.md) now depend entirely on volunteer beta testers reporting on GitHub issues; a release or change requiring live-AGL verification is held, not shipped, if no volunteer confirms it within a reasonable window. | Accepted — @naanyabiz, 2026-07-28 | On regaining a live AGL account / on second maintainer |
+| RA-17 | Licence gate narrowed to network copyleft (AGPL/SSPL) on 2026-09-09; plain GPL is no longer denied, and the dependency tree knowingly contains three GPL-3.0 packages (`hass-nabucasa`, `snitun`, `pyric`) transitively from `homeassistant`. The check is additionally SPDX-only (misses trove-classifier declarations) and diff-scoped (never re-examines dependencies already in the tree). | The released artifact ships zero third-party code — `haggle.zip` is `custom_components/haggle/` alone (`manifest.json` `requirements: []`), verified by the release SBOMs — so no dependency is redistributed and copyleft obligations do not attach. The estate is dev/CI-only. AGPL/SSPL remain denied and appear nowhere in the tree. Both check limitations are tracked in #262; the full-tree sweep proposed there is the closing control. | Accepted — @naanyabiz, 2026-09-09 | Annually / if the project ever vendors or redistributes a dependency |
 
 ## Coordinated Disclosure
 
