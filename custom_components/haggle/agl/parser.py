@@ -102,6 +102,32 @@ def _as_id(raw: Any) -> str:
     return ""
 
 
+# AGL reuses one additionalLabel/Value slot per overview contract (#253);
+# see _projection_label below.
+_PROJECTION_LABEL_KEYWORD = "projection"
+
+
+def _projection_label(contract: dict[str, Any]) -> str:
+    """Return additionalLabelValue only when additionalLabel marks it a projection.
+
+    Substring match on "projection" (case-insensitive) rather than an exact
+    "Bill Projection" compare, so a casing or wording tweak on AGL's side
+    degrades to the correct value rather than to silence. Anything that does
+    not identify itself as a projection returns "" and the sensor stays
+    `unknown` — never a confidently wrong number (same discipline as
+    _classify_tariff).
+    """
+    label = _as_str(contract.get("additionalLabel"))
+    if _PROJECTION_LABEL_KEYWORD not in label.casefold():
+        if label and label != "Sold To Grid":
+            # The keyword itself is inferred from an anonymised fixture, not a
+            # confirmed capture — log the real label so a user can report what
+            # AGL actually calls it if the sensor stays unknown (#253).
+            _LOGGER.debug("Overview additionalLabel not a projection: %r", label)
+        return ""
+    return _as_str(contract.get("additionalLabelValue"))
+
+
 def parse_overview(data: dict[str, Any]) -> list[Contract]:
     """Parse /api/v3/overview response.
 
@@ -127,6 +153,7 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
                     status=_as_str(c.get("status")),
                     has_solar=bool(c.get("hasSolar", False)),
                     meter_type=_as_str(c.get("meterType"), "smart"),
+                    bill_projection_label=_projection_label(c),
                 )
             )
     return contracts

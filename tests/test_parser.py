@@ -280,6 +280,45 @@ class TestParseOverview:
         assert c.has_solar is False
         assert c.meter_type == "smart"
 
+    def test_bill_projection_read_from_overview(self) -> None:
+        """The projection comes from /v3/overview, its only source (#253).
+
+        The usage-summary endpoint does not carry `additionalLabelValue` —
+        confirmed by the sensor reading `unknown` in every release through
+        v0.4.0 — so parse_bill_period alone can never populate it.
+        """
+        contracts = parse_overview(load_fixture("overview_response.json"))
+        assert contracts[0].bill_projection_label == "$90.00"
+
+    def test_projection_ignored_when_label_is_not_a_projection(self) -> None:
+        """additionalLabelValue is only read when its label says "projection".
+
+        AGL reuses the same slot for different quantities, so a positional
+        read would publish the wrong number under the projection sensor.
+        """
+        data = load_fixture("overview_response.json")
+        contract = data["accounts"][0]["contracts"][0]
+        contract["additionalLabel"] = "Sold To Grid"
+        contract["additionalLabelValue"] = "+ $7.43"
+
+        assert parse_overview(data)[0].bill_projection_label == ""
+
+    def test_projection_label_match_is_case_insensitive(self) -> None:
+        """Casing/wording drift on AGL's side degrades to the value, not silence."""
+        data = load_fixture("overview_response.json")
+        data["accounts"][0]["contracts"][0]["additionalLabel"] = "ESTIMATED PROJECTION"
+
+        assert parse_overview(data)[0].bill_projection_label == "$90.00"
+
+    def test_projection_absent_when_label_pair_missing(self) -> None:
+        """A contract with no additional-label pair yields no projection."""
+        data = load_fixture("overview_response.json")
+        contract = data["accounts"][0]["contracts"][0]
+        del contract["additionalLabel"]
+        del contract["additionalLabelValue"]
+
+        assert parse_overview(data)[0].bill_projection_label == ""
+
     def test_empty_accounts_returns_empty(self) -> None:
         contracts = parse_overview({"accounts": []})
         assert contracts == []
@@ -758,6 +797,18 @@ class TestParseOverviewSolar:
         assert len(contracts) == 1
         assert contracts[0].has_solar is True
         assert contracts[0].contract_number == "9999999999"
+
+    def test_solar_contract_yields_no_bill_projection(self) -> None:
+        """On a solar contract AGL puts "Sold To Grid" in the projection slot.
+
+        Reading it positionally would publish feed-in credit as the bill
+        projection — and since coordinator._money strips the "+", the result
+        would be a PLAUSIBLE wrong number (7.43), not an obviously-broken one
+        (#253; comment corrected per review — an earlier version claimed a
+        $0.00 floor that does not exist).
+        """
+        contracts = parse_overview(load_fixture("overview_solar_response.json"))
+        assert contracts[0].bill_projection_label == ""
 
 
 # ---------------------------------------------------------------------------
