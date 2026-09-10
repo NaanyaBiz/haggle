@@ -435,6 +435,38 @@ class TestMalformedButOkTokenResponses:
         with pytest.raises(AGLAuthError):
             await auth.async_force_refresh(session)
 
+    async def test_deeply_nested_json_body_stays_in_the_aglerror_family(
+        self,
+    ) -> None:
+        """json.loads raises RecursionError (not ValueError) on ~100k nesting.
+
+        A raw RecursionError bypasses every AGLError catch site and crashes
+        the update cycle before the retry machinery runs (#151 class;
+        Codex pass 5). Both the 200 path and the non-200 slug parse must
+        wrap it.
+        """
+        nested = "[" * 100_000 + "]" * 100_000
+
+        async def persist(token: str) -> None:
+            pass
+
+        # 200 path: resp.json itself raising RecursionError.
+        session = _make_session({}, status=200)
+        resp = session.post.return_value
+        resp.json = AsyncMock(side_effect=RecursionError("depth"))
+        auth = AglAuth("v1.initial", persist)
+        with pytest.raises(AGLError) as exc:
+            await auth.async_force_refresh(session)
+        assert not isinstance(exc.value, AGLAuthError)
+
+        # non-200 path: the slug re-parse of hostile text.
+        session = _make_session({}, status=503)
+        session.post.return_value.text = AsyncMock(return_value=nested)
+        auth = AglAuth("v1.initial", persist)
+        with pytest.raises(AGLError) as exc:
+            await auth.async_force_refresh(session)
+        assert not isinstance(exc.value, AGLAuthError)
+
     async def test_http500_is_retryable_not_reauth(self) -> None:
         """An Auth0 5xx is a blip, not a dead grant (Codex taxonomy, PR #265)."""
         session = _make_session({"error": "server_error"}, status=500)

@@ -159,7 +159,10 @@ def _raise_for_token_error_status(status: int, text: str) -> NoReturn:
         body_json = json.loads(text)
         if isinstance(body_json, dict):
             code = _oauth_error_slug(body_json.get("error"))
-    except ValueError:
+    except ValueError, RecursionError:
+        # RecursionError: json.loads on a deeply nested (but valid) body is
+        # not a ValueError, and a raw escape here bypasses the AGLError
+        # retry family (#151 class; Codex pass 5, PR #265).
         code = ""
     if code in _TERMINAL_GRANT_ERRORS:
         raise AGLAuthError(f"Token refresh error: {code}")
@@ -354,7 +357,10 @@ class AglAuth:
             raise AGLTransportError(
                 f"transport error during token refresh: {type(err).__name__}"
             ) from err
-        except json.JSONDecodeError as err:
+        except (json.JSONDecodeError, RecursionError) as err:
+            # RecursionError: deeply nested valid JSON raises it instead of
+            # JSONDecodeError (Codex pass 5 — same shield as the non-200
+            # branch and _get).
             raise AGLTransportError("non-JSON response from token endpoint") from err
 
         # Schema-trusting section (#243): a malformed-but-200 body raises
@@ -442,7 +448,7 @@ class AglClient:
             return await self._get_raw(url)
         except _TRANSPORT_ERRORS as err:
             raise AGLTransportError(f"transport error: {type(err).__name__}") from err
-        except json.JSONDecodeError as err:
+        except (json.JSONDecodeError, RecursionError) as err:
             # Body may be an Akamai/HTML page; never surface it (#151).
             raise AGLTransportError("non-JSON response from AGL endpoint") from err
 
