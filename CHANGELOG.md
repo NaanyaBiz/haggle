@@ -97,6 +97,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `cannot_connect`. `_exchange_code` had no direct test coverage at all —
     every existing config-flow test mocks it out.
 
+### Changed
+
+- **Dev-dependency bump** (`pytest-homeassistant-custom-component` floor
+  0.13.361, `uv lock` resolved 0.13.364 → `homeassistant` 2026.9.1;
+  `ruff` 0.16.6, `mypy` 2.3.1, `pre-commit` 4.6.2, `zizmor` 1.30.0):
+  Dependabot raised the `pyproject.toml` floors but left `uv.lock` stale,
+  so the `uv lock --check` CI gate (#185) failed — regenerated here, which
+  is the whole point of that gate. `ruff` 0.16.6 enabled no new rules
+  against this tree (check, format, and mypy all clean, no source edits).
+  The `hacs.json` runtime floor stays at 2026.7.0 deliberately: nothing in
+  this bump is a runtime requirement (`manifest.json` ships no
+  `requirements`, so users get HA from core), and lifting it would strand
+  HACS users on 2026.7/2026.8 — including the #253 reporter — for no
+  behavioural gain.
+- **`pip` 26.1.2 → 26.2** in the `uv` group, closing
+  `GHSA-qwm4-qh6w-59xr` (doubly-encoded package URLs from indexes).
+  Dev-lockfile only.
+
+### Fixed
+
+- **Bill projection sensor no longer reads `unknown`** (#253): the sensor has
+  never worked in any released version. `parse_bill_period` read the
+  projection from `additionalLabelValue` at the root of the *usage-summary*
+  response, where AGL does not return it — the parser's own comment said as
+  much ("callers can populate from overview") but no caller ever did, and
+  `parse_overview` discarded the field entirely. The projection is now read
+  from `/v3/overview`, which the coordinator already fetches every cycle, so
+  there is no extra request.
+  - The usage-summary root is **not** consumed at all (review finding: it
+    carries no label to key on, so a fallback there is unguardable — a
+    solar value would bypass the check). A projection AGL withdraws is
+    cleared on the next successful poll rather than lingering stale; only
+    a FAILED overview fetch keeps the previous value.
+  - Read is **label-keyed**, not positional. AGL reuses one
+    `additionalLabel`/`additionalLabelValue` slot per contract for different
+    quantities: a plain contract shows `"Bill Projection" / "$139.15"`, a
+    solar contract shows `"Sold To Grid" / "+ $7.43"`. Reading the value
+    positionally would publish feed-in credit as the bill projection.
+  - **Known limitation:** on a solar contract AGL occupies that slot with
+    "Sold To Grid", so no projection is available from this endpoint and the
+    sensor stays `unknown` — deliberately, rather than showing a wrong number.
+- **Setup no longer offers, or silently auto-selects, a contract it cannot
+  serve** (#260): every usage endpoint is hardcoded to AGL's `Electricity`
+  path, but contract discovery listed every contract on the account. An
+  account whose only contract was gas had it auto-selected with no choice and
+  no warning, producing a config entry where every call failed unexplained;
+  mixed accounts offered gas as a valid-looking option. Non-electricity
+  contracts are now filtered before both the picker and the single-contract
+  fast path, and a gas-only account aborts with a clear message. The filter
+  fails open — a contract whose fuel type AGL does not report stays
+  selectable, since locking out a working install would be worse than the
+  bug being fixed.
+
+### Security
+
+- **Release artifact now fails closed on symlinks** (#246). `release.yml`
+  built `haggle.zip` with `zip -r` and no `-y`, which **dereferences**
+  symlinks — the link is stored as a regular file containing the target's
+  live bytes. Verified empirically: a link to a file outside the tree
+  produced a zip entry holding that file's content verbatim. Since HACS
+  extracts this artifact straight into
+  `<config>/custom_components/haggle/`, a symlink committed under the
+  integration directory would have inlined arbitrary repo or runner
+  content into the published release — the project's highest-consequence
+  supply-chain surface. The build now refuses outright if any symlink
+  exists under `custom_components/haggle/`, and also passes `-y`. The
+  guard is the control: `-y` alone merely converts content-inlining into
+  a traversal path extracted on the user's machine, so neither measure is
+  sufficient by itself. No user-facing change; no shipped release was
+  affected (the integration directory has never contained a symlink).
+- **Licence gate narrowed to network copyleft (AGPL/SSPL); plain GPL no
+  longer denied** (RA-17). The released artifact ships zero third-party
+  code — `haggle.zip` is `custom_components/haggle/` alone
+  (`manifest.json` `requirements: []`), which the release SBOMs attest —
+  so no dependency is ever redistributed and plain-copyleft obligations
+  cannot attach. Meanwhile the Home Assistant transitive tree carries
+  three GPL-3.0 packages this project can neither drop nor redistribute
+  (`hass-nabucasa`, its own dependency `snitun`, and `pyric`).
+  The previous denylist blocked exactly **one** of those three — not by
+  policy but by metadata accident: `hass-nabucasa` declares a modern SPDX
+  `license_expression`, while the other two declare only a legacy trove
+  classifier the action does not normalise. It blocked a parent while
+  admitting its own child, and fired on declaration format rather than
+  licence. AGPL/SSPL stay denied: genuinely surprising obligations,
+  absent from the tree today, and a real signal if they ever appear.
+  No user-facing change.
+- **Licence-gate limitations now recorded rather than assumed away**
+  (#262): the check matches SPDX identifiers only (trove classifiers slip
+  through) and is diff-scoped, so a dependency already in the tree is
+  never re-examined — which is why `hass-nabucasa` went unexamined from
+  #52 until #258. `SECURITY.md § Supply chain` and the CO-5.1 / CO-5.2 /
+  CO-7.1 / CO-9.2 / CO-12.3 conformance rows previously described the
+  gate without either qualification, overstating its assurance.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
