@@ -26,7 +26,7 @@ dependencies = [
     # HA 2026.4 closed the 13 CVEs v0.1.0 inherited (SCA-M01..M05, SCA-L01..L08,
     # SCA-H02) via aiohttp==3.13.5 + cryptography>=46.0.6 + orjson>=3.11.6;
     # 2026.5.0 keeps those at-or-above. HA 2026.4+ also requires Python 3.14.2.
-    "homeassistant>=2026.7.4",
+    "homeassistant>=2026.8.3",
     # HA 2026.7.0 relaxed its exact aiohttp pin, so the resolver now lands
     # 3.14.1+ (closes the 2026-06/07 aiohttp advisory cluster; supersedes
     # Dependabot #106). Users always get aiohttp from HA core, not from us —
@@ -53,13 +53,13 @@ dev = [
     # homeassistant 2026.8.0 BETA builds, unresolvable without enabling
     # prereleases. homeassistant 2026.8.0 stable shipped shortly after, so
     # this floor bump (2026-08-07) resolves cleanly again.
-    "pytest-homeassistant-custom-component>=0.13.351,<0.14",
-    "ruff>=0.16.1",
-    "mypy>=2.3.0",
-    "pre-commit>=4.6.1",
+    "pytest-homeassistant-custom-component>=0.13.361,<0.14",
+    "ruff>=0.16.5",
+    "mypy>=2.3.1",
+    "pre-commit>=4.6.2",
     # Workflow security audit (CI step + pre-commit local hook). Rust binary
     # wheels from PyPI; version governed by uv.lock like ruff/mypy.
-    "zizmor>=1.29.0",
+    "zizmor>=1.30.0",
 ]
 
 [project.urls]
