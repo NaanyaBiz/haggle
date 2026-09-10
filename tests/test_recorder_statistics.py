@@ -481,6 +481,35 @@ async def test_earliest_stat_date_reports_local_calendar_day(
     assert earliest == date(2026, 6, 29)
 
 
+async def test_duplicate_solar_slot_replaces_not_sums(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Codex pass-4 P1 (PR #266): the dedupe must cover generation too.
+
+    Pass 3 deduped _import_intervals only; _import_generation's hourly loop
+    still summed a slot appearing twice in one batch, inflating the
+    generation and feed-in-credit series through the identical trailing-slack
+    overlap. Both importers now share _dedupe_slots.
+    """
+    coord = _make_coordinator(hass)
+    stat_id_gen, _ = coord._generation_stat_ids()
+
+    slot = datetime(2026, 6, 30, 2, tzinfo=UTC)
+    batch = [
+        # Day D's trailing-slack copy with an inflated value.
+        IntervalReading(dt=slot, kwh=4.0, cost_aud=0.80, rate_type="normal"),
+        # Day D+1's genuine response for the same slot.
+        IntervalReading(dt=slot, kwh=1.5, cost_aud=0.25, rate_type="normal"),
+    ]
+    await coord._import_generation(batch)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id_gen)
+    assert len(rows) == 1
+    # 1.5, not 5.5: the duplicate replaced.
+    assert abs(rows[-1]["sum"] - 1.5) < 1e-9
+
+
 async def test_earliest_stat_date_ignores_rows_before_since(
     recorder_mock, hass: HomeAssistant
 ) -> None:

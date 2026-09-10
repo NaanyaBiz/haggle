@@ -111,6 +111,26 @@ def _clamped_poll_interval(options: Mapping[str, Any]) -> timedelta:
     return timedelta(hours=hours)
 
 
+def _dedupe_slots(intervals: list[IntervalReading]) -> list[IntervalReading]:
+    """One meter reading per 30-min slot, last-wins.
+
+    A slot can appear twice in one multi-day batch — day D's response
+    carrying a row inside the trailing-slack window that day D+1's response
+    then also returns — and both hourly aggregators SUM everything they are
+    given, so within a single import a duplicated slot silently inflates the
+    statistics (consumption/cost/ToU AND generation/credit — Codex pass-3
+    and pass-4 P1s, PR #266; the recorder's idempotent overwrite only
+    dedupes ACROSS imports, not within one). Last-wins: days are fetched in
+    chronological order, so the later day's response is authoritative for
+    its own slots. Shared by _import_intervals and _import_generation so
+    the two paths cannot drift apart again.
+    """
+    by_slot: dict[datetime, IntervalReading] = {}
+    for r in intervals:
+        by_slot[r.dt] = r
+    return list(by_slot.values())
+
+
 @dataclass
 class HaggleData:
     """Typed coordinator data returned from _async_update_data."""
@@ -1545,19 +1565,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """
         from homeassistant.const import UnitOfEnergy
 
-        # One meter reading per 30-min slot. A slot can appear twice in one
-        # multi-day batch — day D's response carrying a row inside the
-        # trailing-slack window that day D+1's response then also returns —
-        # and _bucket_hourly sums everything it is given, so within a single
-        # import a duplicated slot silently inflates consumption, cost, and
-        # ToU statistics (Codex pass-3 P1, PR #266; the recorder's
-        # idempotent-overwrite only dedupes ACROSS imports, not within one).
-        # Last-wins: days are fetched in chronological order, so the later
-        # day's response is authoritative for its own slots.
-        by_slot: dict[datetime, IntervalReading] = {}
-        for r in intervals:
-            by_slot[r.dt] = r
-        intervals = list(by_slot.values())
+        intervals = _dedupe_slots(intervals)
 
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = (
@@ -1716,6 +1724,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         (data lag is 24-48 h, well inside the window).
         """
         from homeassistant.const import UnitOfEnergy
+
+        intervals = _dedupe_slots(intervals)
 
         hour_kwh: dict[datetime, float] = {}
         hour_credit: dict[datetime, float] = {}
