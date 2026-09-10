@@ -467,6 +467,10 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
     # most recent header so a ToU band ("Peak"/"Off Peak"/"Shoulder") can be
     # inferred even when the per-rate title is generic ("First N kWh").
     current_header = ""
+    # The rates list is unbounded response content — counted rejections with
+    # ONE summary, same flood rationale as parse_interval_readings (Codex
+    # pass 6, PR #266).
+    rejections = NumericRejections()
 
     for rate_raw in _as_list(payload.get("gstInclusiveRates")):
         rate = _as_dict(rate_raw)
@@ -477,7 +481,7 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
         if kind != "detail":
             continue
         rate_type = _as_str(rate.get("type"))
-        price = safe_float(rate.get("price"))
+        price = safe_float(rate.get("price"), rejections=rejections)
         title = _as_str(rate.get("title"))
         if rate_type == "c/day" and "supply" in title.lower():
             supply_charge = price
@@ -510,9 +514,14 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
             continue
         title = _as_str(rate.get("title"))
         if "feed-in" in title.lower() or "feed in" in title.lower():
-            feed_in_rate = safe_float(rate.get("price"))
+            feed_in_rate = safe_float(rate.get("price"), rejections=rejections)
             break
 
+    if rejections.count:
+        _LOGGER.warning(
+            "Rejected %d non-finite/negative/over-bound plan rate value(s)",
+            rejections.count,
+        )
     return PlanRates(
         product_name=product_name,
         unit_rates=unit_rates,

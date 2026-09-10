@@ -145,6 +145,27 @@ class TestParsePlanAllowlist:
         assert "evil_callback" not in rate
         assert "validTo" not in rate
 
+    def test_many_overbound_prices_emit_one_summary_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Codex pass 6 (PR #266): per-row WARNINGs over an unbounded rates
+        list are the same MITM log-flood vector fixed for intervals."""
+        import logging
+
+        data = {
+            "productName": "Hostile",
+            "gstInclusiveRates": [
+                {"kind": "detail", "type": "c/kWh", "title": f"r{i}", "price": 1e300}
+                for i in range(500)
+            ],
+        }
+        with caplog.at_level(logging.WARNING):
+            plan = parse_plan(data)
+        assert all(r["price"] == 0.0 for r in plan.unit_rates)
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "500" in warnings[0].getMessage()
+
     def test_extreme_price_clamped_to_zero(self) -> None:
         data = {
             "productName": "Smart Saver",
