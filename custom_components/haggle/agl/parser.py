@@ -192,7 +192,17 @@ _STATE_TZ: dict[str, str] = {
 }
 # State token immediately followed by a 4-digit postcode — anchoring on the
 # pair avoids false-positives on street/suburb words.
-_ADDRESS_STATE_RE = re.compile(r"\b(NSW|ACT|VIC|QLD|SA|TAS|NT|WA)\s+\d{4}\b")
+_ADDRESS_STATE_RE = re.compile(r"\b(NSW|ACT|VIC|QLD|SA|TAS|NT|WA)\s+(\d{4})\b")
+
+# Sub-state timezone exceptions, postcode-keyed. Broken Hill (+9:30/+10:30)
+# runs 30 min behind Sydney time, so the state-level zone would re-open a
+# 30-minute leading window on the baseline cutoff there (Codex pass 5,
+# PR #266). Remaining micro-exceptions (Lord Howe Island, Eucla) are
+# recorded as an accepted residual on the follow-up issue — populations
+# AGL is unlikely to serve, and the counted-drop WARNING is the tripwire.
+_POSTCODE_TZ: dict[tuple[str, str], str] = {
+    ("NSW", "2880"): "Australia/Broken_Hill",
+}
 
 
 def tz_for_address(address: str) -> tzinfo | None:
@@ -210,8 +220,12 @@ def tz_for_address(address: str) -> tzinfo | None:
     match = _ADDRESS_STATE_RE.search(address)
     if match is None:
         return None
+    state, postcode = match.group(1), match.group(2)
+    key = _POSTCODE_TZ.get((state, postcode)) or _STATE_TZ.get(state)
+    if key is None:
+        return None
     try:
-        return ZoneInfo(_STATE_TZ[match.group(1)])
+        return ZoneInfo(key)
     except KeyError, OSError:
         return None
 

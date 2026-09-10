@@ -562,6 +562,10 @@ class TestTzForAddress:
             ("4 Demo St SPOT VIC 3000", "Australia/Melbourne"),
             ("5 Trial Ct AREA SA 5000", "Australia/Adelaide"),
             ("6 Mock Ln ZONE WA 6000", "Australia/Perth"),
+            # Sub-state exception: Broken Hill runs +9:30/+10:30, 30 min
+            # behind Sydney — the state zone would re-open a 30-minute
+            # leading window on the baseline cutoff (Codex pass 5).
+            ("7 Mine Rd BROKEN HILL NSW 2880", "Australia/Broken_Hill"),
         ],
     )
     def test_state_maps_to_timezone(self, address: str, key: str) -> None:
