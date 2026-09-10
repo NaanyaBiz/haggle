@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 from urllib.parse import parse_qs, urlparse
 
@@ -255,12 +255,17 @@ async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> N
 
 
 async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) -> None:
-    """Two discovered contracts show the select_contract form."""
+    """Two discovered ELECTRICITY contracts show the select_contract form.
+
+    Deliberately two electricity contracts: pairing one with a gas contract
+    would now exercise the #260 filter (which reduces the pair to one and
+    auto-selects) rather than the multi-contract selector this test is for.
+    """
     second = Contract(
         contract_number="1111111111",
         account_number="1234567890",
-        address="1 Sample Street SUBURB QLD 4000",
-        fuel_type="gasContract",
+        address="2 Sample Street SUBURB QLD 4000",
+        fuel_type="electricityContract",
         status="active",
     )
     result = await hass.config_entries.flow.async_init(
@@ -288,6 +293,125 @@ async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) 
 
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "select_contract"
+
+
+def _gas(number: str = "1111111111") -> Contract:
+    return Contract(
+        contract_number=number,
+        account_number="1234567890",
+        address="1 Sample Street SUBURB QLD 4000",
+        fuel_type="gasContract",
+        status="active",
+    )
+
+
+async def _run_discovery(hass: HomeAssistant, contracts: list[Contract]) -> Any:
+    """Drive the flow to the point where contract selection happens."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    callback_url = _make_callback_url(
+        result["description_placeholders"]["authorize_url"]
+    )
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("access_tok", "refresh_tok", "deadbeef" * 8),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=(contracts, "cafef00d" * 8),
+        ),
+    ):
+        return await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CALLBACK_URL_FIELD: callback_url}
+        )
+
+
+async def test_gas_only_account_aborts_instead_of_autoselecting(
+    hass: HomeAssistant,
+) -> None:
+    """A gas-only account aborts rather than silently creating a dead entry (#260).
+
+    Regression for the single-contract fast path: it took no fuel type into
+    account, so a gas-only account had its contract auto-selected with no user
+    choice, and every later call hit /Electricity/{gasContractNumber}.
+    """
+    result = await _run_discovery(hass, [_gas()])
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_electricity_contract"
+
+
+async def test_gas_contract_filtered_out_of_selector(hass: HomeAssistant) -> None:
+    """A mixed account auto-selects the electricity contract, never offering gas."""
+    result = await _run_discovery(hass, [_CONTRACT, _gas()])
+
+    # Only one serviceable contract remains, so the fast path takes it.
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_CONTRACT_NUMBER] == _CONTRACT.contract_number
+
+
+async def test_unknown_fuel_type_still_selectable(hass: HomeAssistant) -> None:
+    """An unreported fuel type must NOT lock a user out — the filter fails open.
+
+    Locking out a working electricity install because AGL renamed or dropped
+    the `type` field would be a worse failure than the one #260 fixes, so
+    only a positively-identified non-electricity fuel is excluded.
+    """
+    unknown = Contract(
+        contract_number="2222222222",
+        account_number="1234567890",
+        address="1 Sample Street SUBURB QLD 4000",
+        fuel_type="",
+        status="active",
+    )
+    result = await _run_discovery(hass, [unknown])
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_CONTRACT_NUMBER] == "2222222222"
+
+
+async def test_unrecognized_nonempty_fuel_still_selectable(
+    hass: HomeAssistant,
+) -> None:
+    """A renamed/unknown NONEMPTY fuel type must also fail open (Codex, PR #261).
+
+    The first cut required the literal "electricity" substring, which kept
+    empty types but silently excluded any unknown nonempty wording (e.g. a
+    renamed `powerContract`) — on a single-contract account that aborted
+    setup entirely. The filter is a denylist of known-unservable fuels, not
+    an allowlist of known-good ones.
+    """
+    renamed = Contract(
+        contract_number="3333333333",
+        account_number="1234567890",
+        address="1 Sample Street SUBURB QLD 4000",
+        fuel_type="powerContract",
+        status="active",
+    )
+    result = await _run_discovery(hass, [renamed])
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_CONTRACT_NUMBER] == "3333333333"
+
+
+async def test_serviceable_filter_is_case_insensitive(hass: HomeAssistant) -> None:
+    """Fuel-type matching tolerates casing/wording drift on AGL's side."""
+    from custom_components.haggle.config_flow import _serviceable_contracts
+
+    variants = [
+        Contract("1", "a", "", "ElectricityContract", "active"),
+        Contract("2", "a", "", "electricity", "active"),
+        Contract("3", "a", "", "gasContract", "active"),
+        Contract("4", "a", "", "GASCONTRACT", "active"),
+        Contract("5", "a", "", "", "active"),
+    ]
+    kept = [c.contract_number for c in _serviceable_contracts(variants)]
+
+    assert kept == ["1", "2", "5"]
 
 
 async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:
