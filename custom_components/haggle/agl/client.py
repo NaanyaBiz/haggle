@@ -163,7 +163,10 @@ def _validated_token_fields(data: dict[str, Any]) -> tuple[str, str, str]:
         new_refresh_token = data["refresh_token"]
         if not isinstance(access_token, str) or not isinstance(new_refresh_token, str):
             raise TypeError("token fields are not strings")
-        if not access_token or not new_refresh_token:
+        if not access_token.strip() or not new_refresh_token.strip():
+            # .strip(): a whitespace-only credential is truthy, but
+            # persisting it discards the real grant just the same
+            # (Codex pass 3, PR #265).
             raise ValueError("token fields are empty")
         id_token = data.get("id_token", "")
         if not isinstance(id_token, str):

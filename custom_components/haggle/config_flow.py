@@ -185,11 +185,12 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
         # translated cannot_connect, matching async_force_refresh's treatment
         # of the same condition (review finding, two independent reviewers).
         raise AGLError("Token response fields are not strings")
-    if not access_token or not refresh_token:
+    if not access_token.strip() or not refresh_token.strip():
         # Same fault family as above: a 200 with missing/blank tokens is an
         # upstream schema fault, not proof the user's credentials are bad.
         # AGLAuthError here surfaced invalid_auth and told the user to
         # re-authenticate for something retrying might fix (Codex pass 2).
+        # .strip(): whitespace-only is as unusable as empty (Codex pass 3).
         raise AGLError("Token response missing access_token or refresh_token")
 
     auth_spki = connector.observed.get(AGL_AUTH_HOST_NAME, "")

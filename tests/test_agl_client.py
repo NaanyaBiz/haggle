@@ -362,11 +362,18 @@ class TestMalformedButOkTokenResponses:
             persisted.append(token)
 
         auth = AglAuth("v1.initial", persist)
-        session = _make_session({"access_token": "", "refresh_token": ""})
-        with pytest.raises(AGLError) as exc:
-            await auth.async_force_refresh(session)
+        # Whitespace-only is as unusable as empty — truthy, so it slipped
+        # past the pass-2 non-empty check (Codex pass 3).
+        for body in (
+            {"access_token": "", "refresh_token": ""},
+            {"access_token": "a", "refresh_token": " "},
+            {"access_token": "\t", "refresh_token": "r"},
+        ):
+            session = _make_session(body)
+            with pytest.raises(AGLError) as exc:
+                await auth.async_force_refresh(session)
+            assert not isinstance(exc.value, AGLAuthError)
 
-        assert not isinstance(exc.value, AGLAuthError)
         assert persisted == []
         assert auth._refresh_token == "v1.initial"
 
