@@ -106,6 +106,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Release artifact now fails closed on symlinks** (#246). `release.yml`
+  built `haggle.zip` with `zip -r` and no `-y`, which **dereferences**
+  symlinks — the link is stored as a regular file containing the target's
+  live bytes. Verified empirically: a link to a file outside the tree
+  produced a zip entry holding that file's content verbatim. Since HACS
+  extracts this artifact straight into
+  `<config>/custom_components/haggle/`, a symlink committed under the
+  integration directory would have inlined arbitrary repo or runner
+  content into the published release — the project's highest-consequence
+  supply-chain surface. The build now refuses outright if any symlink
+  exists under `custom_components/haggle/`, and also passes `-y`. The
+  guard is the control: `-y` alone merely converts content-inlining into
+  a traversal path extracted on the user's machine, so neither measure is
+  sufficient by itself. No user-facing change; no shipped release was
+  affected (the integration directory has never contained a symlink).
 - **Licence gate narrowed to network copyleft (AGPL/SSPL); plain GPL no
   longer denied** (RA-17). The released artifact ships zero third-party
   code — `haggle.zip` is `custom_components/haggle/` alone
