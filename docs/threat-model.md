@@ -173,7 +173,8 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
 
 ## 4. Threat register and dispositions
 
-18 threats from the 2026-05-02 STRIDE assessment, tracked to disposition.
+Threats from the 2026-05-02 STRIDE assessment, extended as new threats
+are identified, tracked to disposition.
 "Accepted" rows are standing risk acceptances recorded in SECURITY.md's
 risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 
@@ -197,6 +198,7 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. In force since 2026-07: HACS installs the attested zip itself (`zip_release`), per-release attested SBOMs, and fail-closed ancestry + tag-signature release gates. |
 | E-2 | Open-schema `dict(rate)` passthrough into runtime state | **Mitigated** | Allowlist parsing; "don't forward raw AGL response dicts" is a standing AGENTS.md rule. |
 | E-3 | Borrowed iOS `client_id` supports account-modification scopes the integration doesn't request | **Accepted with tripwire** | `AGL_OAUTH_SCOPE` contains no write scopes; **any change to the scope constant is an impact re-assessment + regulatory re-determination trigger** (§7, §9) and a mandatory security-review item. |
+| E-4 | Symlink committed under `custom_components/haggle/` inlines out-of-tree file content into the HACS release artifact | **Mitigated** | `zip -r` without `-y` dereferences symlinks — the link is stored as a regular file holding the target's live bytes (verified empirically, #246). `release.yml` now fails closed: any symlink under the zipped tree aborts the build, and `-y` is applied as defence in depth (`-y` alone would store a traversal path extracted on the user's machine). Exploitation requires the symlink to survive the `protect-main` PR gate; the guard exists because this repo normalises a committed symlink (`CLAUDE.md -> AGENTS.md`), plausibly lowering reviewer scrutiny of a new one. Guard logic is exercised by `tests/test_release_guard.py` against the literal workflow text. |
 
 ## 5. Residual-threat notes
 
