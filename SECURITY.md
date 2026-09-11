@@ -440,7 +440,14 @@ a pull request is required (squash merge only), the branch must be up to
 date with `main`, commits must be signed (squash merges are
 GitHub-signed; the signature rule was enabled 2026-07-13 and is under
 observation against the next automated Dependabot cycle — it will be
-rolled back by PR if it blocks automation), and all **eight** required
+rolled back by PR if it blocks automation), a PR carrying commits GitHub
+cannot attribute to a user account needs one extra approving review
+(`require_extra_approval_for_unattributed_changes` — GitHub added the
+field platform-side and defaulted it on; adopted into the baseline
+2026-09-09 because it tightens the gate. `required_approving_review_count`
+stays 0, so an approval is demanded only in the unattributed case, which
+no PR has hit to date — same observe-and-roll-back-by-PR stance as the
+signature rule above), and all **eight** required
 status checks must pass — `Test (Python 3.14)` (ruff, mypy, the
 shellcheck/actionlint/zizmor workflow audit, and pytest with the
 ratcheting coverage floor), `Hassfest`, `HACS validation`,
