@@ -235,7 +235,12 @@ class; widening any agent's grants re-opens this section.
 identity with the committed policy in `.claude/settings.json` (narrow
 allowlist, deny list, guard-main-branch hook) plus per-machine local
 settings. Untrusted inputs it processes (its prompt-injection surface):
-AGL API responses, GitHub issue/PR content, fetched web pages.
+AGL API responses, GitHub issue/PR content, fetched web pages, and git
+ref/worktree names interpolated into the per-prompt context block —
+git accepts `<`, `>`, `"`, `'` in ref names, so an attacker-named branch
+(acquired e.g. via `gh pr checkout`) could forge instruction-shaped
+markup; `inject-branch-context.sh` strips to a strict allowlist before
+emission (#244).
 *Grant union (post-hardening, 2026-07-13)*: read/write to the working
 tree; routine local git and feature-branch pushes; the build/test/lint
 toolchain; read-only HA MCP tools. The per-machine allowlist was pruned
@@ -262,6 +267,31 @@ rules add a live prompt on this machine. Every commit carries the
 AI-provenance trailer (enforced by a local commit-msg hook — a
 convention rather than a server-side control, backstopped by the PR
 history and session links in every commit message).
+
+**Hook execution integrity (TOFU-pinned, #245).** The `.claude/hooks/*`
+scripts execute automatically inside every Claude Code session (on edits,
+Bash calls, and prompt submission), and Claude Code loads hook
+configuration from settings files with **no content verification, no
+cross-session approval, and live file-watching** (verified against
+v2.1.239, 2026-09-11). Checking out an untrusted branch — no agent action
+required — could therefore have replaced either the scripts or a
+committed hooks block and executed under the maintainer's identity on the
+next ordinary action. Mitigation mirrors the TLS TOFU design: the hook
+*wiring* lives only in the untracked `.claude/settings.local.json`
+(symlink-shared across worktrees, out of reach of any checkout), each
+command verifies ALL hook scripts against the untracked SHA-256 pin store
+`.claude/hooks.sha256` before executing, and mismatch or a missing store
+**fails closed** (exit 2 blocks the triggering action) with a re-pin
+instruction. Trust is granted only by the maintainer running
+`scripts/pin-hooks.sh` after reviewing the diffs; the committed
+`.claude/hooks-wiring.json` is the policy record the installer copies
+from, shown as a diff at install time. The committed `settings.json`
+carries permissions only — never re-add a hooks block to it. *Residuals,
+accepted*: `scripts/*.sh` run manually by the maintainer (or via the
+agent's `Bash(./scripts/*)` allow) are NOT pinned — a hostile branch can
+modify them, and the control is reading before running; and the pins
+protect hook execution inside Claude Code sessions only, which is the
+entire surface hooks execute on.
 
 **Automated triage routine.** A daily-cron-only hosted Claude agent
 (deliberately *not* event-triggered — issue events would let attackers

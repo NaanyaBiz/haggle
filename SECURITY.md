@@ -413,8 +413,22 @@ merge, tag, and release.
 
 | Agent | Untrusted inputs | Grant union | Blast radius if hijacked |
 |---|---|---|---|
-| Interactive dev agent (Claude Code, under the maintainer's identity) | AGL API responses; GitHub issue/PR content it reads; fetched web pages | Working-tree read/write; routine local git + feature-branch push; the build/test/lint toolchain. No standing grant to merge PRs, push to `main`, push tags, release, or reach remote hosts — each forces a live human prompt; reading the `gh` auth token is denied outright. | The local checkout plus feature branches. It cannot self-merge, self-release, or reach infrastructure beyond the repo without a human approving; direct `main` pushes are server-rejected by the ruleset. |
+| Interactive dev agent (Claude Code, under the maintainer's identity) | AGL API responses; GitHub issue/PR content it reads; fetched web pages; git ref/worktree names interpolated into per-prompt context (sanitized to a strict allowlist — #244) | Working-tree read/write; routine local git + feature-branch push; the build/test/lint toolchain. No standing grant to merge PRs, push to `main`, push tags, release, or reach remote hosts — each forces a live human prompt; reading the `gh` auth token is denied outright. | The local checkout plus feature branches. It cannot self-merge, self-release, or reach infrastructure beyond the repo without a human approving; direct `main` pushes are server-rejected by the ruleset. |
 | Automated triage routine (`haggle-triage`, daily-cron hosted agent — spec and prompt committed at [docs/agents/triage-routine.md](docs/agents/triage-routine.md)) | All issue/PR/comment/diff/attachment content | Cron-only (deliberately not event-triggered — issue events would let attackers summon it); fresh session per run; comments, labels, and PR branches only. It never merges, never pushes to `main`, never tags or releases, and never modifies `release.yml`, CODEOWNERS, LICENSE, NOTICE, or this file. | Spam/noise on this repo's issues and PRs; a hijacked run is bounded by the zero-bypass ruleset and the human-gated merge/tag/release boundary. |
+
+**Hook execution integrity (#245).** The `.claude/hooks/*` scripts fire
+automatically inside every Claude Code session, and Claude Code performs
+no content verification of them (and no cross-session approval of hook
+config — verified 2026-09-11). The hook wiring therefore lives only in
+the untracked `.claude/settings.local.json`, every hook command verifies
+the whole scripts directory against the untracked TOFU pin store
+`.claude/hooks.sha256` before executing, and a mismatch or missing store
+fails closed with a re-pin instruction. Trust is granted exclusively by
+the maintainer running `scripts/pin-hooks.sh` after reviewing hook
+diffs; `.claude/hooks-wiring.json` is the committed policy record. The
+committed `settings.json` carries permissions only. Accepted residual:
+`scripts/*.sh` invoked manually (or via the agent's `./scripts/*` allow)
+are not pinned — read before running. Full treatment: threat model §6.
 
 The triage routine's configuration and prompt are under repo-first
 change control: [docs/agents/triage-routine.md](docs/agents/triage-routine.md)

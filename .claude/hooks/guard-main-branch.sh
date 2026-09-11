@@ -22,10 +22,24 @@ git_dir="."
 if echo "$cmd" | grep -qE 'git[[:space:]]+-C[[:space:]]+'; then
     git_dir="$(echo "$cmd" | grep -oE 'git[[:space:]]+-C[[:space:]]+[^[:space:]]+' | head -1 | awk '{print $NF}')"
 elif echo "$cmd" | grep -qE '^cd[[:space:]]+'; then
-    git_dir="$(echo "$cmd" | grep -oE '^cd[[:space:]]+[^[:space:]&]+' | awk '{print $2}')"
+    git_dir="$(echo "$cmd" | grep -oE '^cd[[:space:]]+[^[:space:]&;|]+' | awk '{print $2}')"
+fi
+# Strip surrounding quotes: `cd "$WT" && git commit` captured `"$WT"` with
+# literal quotes; the unresolvable string then fell back to the CWD (often
+# the main worktree) and false-blocked legitimate worktree commits
+# (hook-robustness cluster with #244/#245, observed 2026-09-09).
+git_dir="${git_dir%\"}"; git_dir="${git_dir#\"}"
+git_dir="${git_dir%\'}"; git_dir="${git_dir#\'}"
+
+# An unresolvable target (unexpanded $VAR, nonexistent path) means we cannot
+# know the branch. Defer to the server-side protect-main ruleset — the
+# enforced zero-bypass floor; this hook is the advisory convenience layer —
+# rather than guessing from the CWD, which is what false-blocked.
+if [[ "$git_dir" != "." && ! -d "$git_dir" ]]; then
+    exit 0
 fi
 
-branch="$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+branch="$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 if [[ "$branch" == "main" ]]; then
     # Allow bypass via env var in the *calling shell* OR as a prefix in the
     # command string (e.g. `HAGGLE_ALLOW_MAIN_PUSH=1 git commit ...`).

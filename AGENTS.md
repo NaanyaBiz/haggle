@@ -97,6 +97,7 @@ tests/
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
 ├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition classes
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
+├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
 └── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
 
 docs/
@@ -116,13 +117,16 @@ docs/
 scripts/
 ├── delivery_metrics.py  # quarterly CO-18.3 delivery metrics + CHANGELOG/tag/release reconciliation (docs/delivery-metrics.md)
 ├── wt                   # bash worktree helper (new / list / rm)
+├── pin-hooks.sh         # re-pin .claude hook scripts + install wiring into settings.local.json AFTER reviewing diffs (#245 TOFU control)
 ├── access-review.sh     # quarterly access review (SECURITY.md "Access Review") — asserts the expected access surface + prints the manual checklist; read-only, maintainer-run with local gh auth, deliberately not CI
 ├── export-settings.sh   # admin-run: re-export control-plane baselines into .github/settings/ (PR-first on any settings change)
 ├── normalize-ruleset.jq / normalize-repo-public.jq  # shared normalizers (export script + settings-drift workflow)
 └── validate_manifest.py # used by the validate-manifest Claude hook
 
 .claude/
-├── settings.json        # committed hooks config
+├── settings.json        # committed permission policy (permissions ONLY — hook wiring deliberately lives in the untracked settings.local.json, see #245)
+├── hooks-wiring.json    # policy record for the hook wiring; installed into settings.local.json by scripts/pin-hooks.sh after review
+├── hooks/               # the four hook scripts — TOFU-pinned via .claude/hooks.sha256 (untracked)
 ├── agents/              # 8 subagent definitions (5 domain + 3 review)
 └── commands/            # 5 slash commands (new-entity, wt, release, hassfest, pr)
 
@@ -935,6 +939,17 @@ The HA Energy dashboard requires:
   requirement blocks a legitimate flow (the first Dependabot cycle is the
   watch item), roll it back PR-first via `.github/settings/`, never as a
   silent toggle.
+- **Don't re-add a `hooks` block to the committed `.claude/settings.json`,
+  and never commit `.claude/hooks.sha256`.** Claude Code loads hooks from
+  settings files with no content verification, no cross-session approval,
+  and live file-watching, so anything a branch checkout can modify must not
+  wire hook execution (#245). The wiring lives in the untracked
+  `settings.local.json` (installed from `.claude/hooks-wiring.json` by
+  `./scripts/pin-hooks.sh`), and every hook verifies the scripts against
+  the untracked TOFU pin store before executing. After ANY edit to
+  `.claude/hooks/*.sh`, re-run `./scripts/pin-hooks.sh` (after reviewing
+  the diff) or every hook fails closed with a BLOCKED message — that
+  failure mode is the control working, not a bug.
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had

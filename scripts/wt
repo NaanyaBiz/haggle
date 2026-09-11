@@ -43,6 +43,12 @@ cmd_new() {
     if [[ -f "$MAIN_WORKTREE/.claude/settings.local.json" ]]; then
         ln -s "$MAIN_WORKTREE/.claude/settings.local.json" "$worktree_path/.claude/settings.local.json"
     fi
+    # Share the hook TOFU pin store (#245): one trust anchor for every
+    # worktree, so a hostile branch checked out anywhere fails the same
+    # verification. Untracked by design — never commit it.
+    if [[ -f "$MAIN_WORKTREE/.claude/hooks.sha256" ]]; then
+        ln -s "$MAIN_WORKTREE/.claude/hooks.sha256" "$worktree_path/.claude/hooks.sha256"
+    fi
 
     echo "Worktree created at \`$worktree_path\`."
     echo "Open a new Claude Code session there to work on feature \`$branch\` in isolation."
