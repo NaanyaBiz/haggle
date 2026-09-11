@@ -423,7 +423,12 @@ config — verified 2026-09-11). The hook wiring therefore lives only in
 the untracked `.claude/settings.local.json`, every hook command verifies
 the whole scripts directory against the untracked TOFU pin store
 `.claude/hooks.sha256` before executing, and a mismatch or missing store
-fails closed with a re-pin instruction. Trust is granted exclusively by
+fails closed with a re-pin instruction (blocking the triggering action
+on PreToolUse/UserPromptSubmit; on PostToolUse the guarantee is that the
+tampered hook never runs). Because git silently overwrites gitignored
+files when a branch force-tracks them, the wiring additionally REFUSES a
+pin store that is tracked in git, and a ci.yml gate fails any PR that
+tracks either local-trust file. Trust is granted exclusively by
 the maintainer running `scripts/pin-hooks.sh` after reviewing hook
 diffs; `.claude/hooks-wiring.json` is the committed policy record. The
 committed `settings.json` carries permissions only. Accepted residual:

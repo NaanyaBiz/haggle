@@ -87,7 +87,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are stripped to a strict character allowlist. The
   `guard-main-branch.sh` false positive on `cd "$VAR" && git commit`
   from a worktree is also fixed (unresolvable targets defer to the
-  server-side ruleset instead of guessing from the CWD).
+  server-side ruleset instead of guessing from the CWD). Adversarial
+  review of the control itself then closed three more holes: a hostile
+  branch force-tracking (`git add -f`) its own pin store — git silently
+  overwrites gitignored files on checkout — is refused at runtime (a
+  TRACKED pin store is never trusted) and blocked by a CI gate;
+  `pin-hooks.sh` refuses symlinked hook scripts (shasum follows links)
+  and shows the committed delta vs origin/main, which `git status`
+  cannot; and the hash tooling falls back from `shasum` to `sha256sum`
+  so the fail-closed design cannot self-DoS a Perl-less Linux host.
 
 - **`safe_float` now bounds magnitude, not just finiteness** (#241;
   renamed from `_safe_float` — it is a cross-module API, review finding).

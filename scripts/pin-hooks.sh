@@ -16,6 +16,27 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 PIN_FILE=".claude/hooks.sha256"
 
+# Portable SHA-256: macOS ships shasum (perl), minimal Linux ships
+# sha256sum (coreutils); the two produce/consume the same file format.
+sha256() {
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$@"
+    else
+        sha256sum "$@"
+    fi
+}
+
+# Refuse if the local-trust files are TRACKED: git silently overwrites
+# gitignored files on checkout, so a branch force-tracking them (git
+# add -f) is substituting the trust anchor — never pin on top of that
+# (security-review P1 on PR #269; ci.yml carries the matching gate).
+for f in "$PIN_FILE" .claude/settings.local.json; do
+    if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+        echo "Error: $f is TRACKED in git — refusing to pin. Remove it from the branch first (#245)." >&2
+        exit 1
+    fi
+done
+
 shopt -s nullglob
 scripts=(.claude/hooks/*.sh)
 shopt -u nullglob
@@ -24,13 +45,36 @@ if [[ ${#scripts[@]} -eq 0 ]]; then
     exit 1
 fi
 
-# Show the reviewer exactly what trust is being granted: per-script git
-# status (a Modified/Untracked marker means you are pinning content that
-# is not what HEAD ships) and the hash delta vs the existing pins.
+# A symlinked hook script is a substitution vector: shasum follows the
+# link, so the pin would record the TARGET's hash and exec would run
+# whatever the link points at (security-review P2 on PR #269).
+for s in "${scripts[@]}"; do
+    if [[ -L "$s" ]]; then
+        echo "Error: $s is a SYMLINK — refusing to pin (#245)." >&2
+        exit 1
+    fi
+done
+
+# Show the reviewer exactly what trust is being granted. NOTE: committed
+# content from a checked-out branch is CLEAN in git status — the
+# reviewable delta for a branch under review is the diff vs origin/main,
+# so both diffs are shown.
 echo "Pinning ${#scripts[@]} hook script(s) on branch: $(git rev-parse --abbrev-ref HEAD)"
+if git rev-parse --verify -q origin/main >/dev/null; then
+    if ! git diff --quiet origin/main...HEAD -- .claude/hooks/ .claude/hooks-wiring.json 2>/dev/null; then
+        echo "--- committed delta vs origin/main (REVIEW THIS) ---"
+        git --no-pager diff origin/main...HEAD -- .claude/hooks/ .claude/hooks-wiring.json
+        echo "---------------------------------------------------"
+    fi
+fi
+if ! git diff --quiet HEAD -- .claude/hooks/ .claude/hooks-wiring.json 2>/dev/null; then
+    echo "--- uncommitted working-tree delta (REVIEW THIS) ---"
+    git --no-pager diff HEAD -- .claude/hooks/ .claude/hooks-wiring.json
+    echo "----------------------------------------------------"
+fi
 for s in "${scripts[@]}"; do
     status="$(git status --porcelain -- "$s")"
-    new_hash="$(shasum -a 256 "$s" | cut -d' ' -f1)"
+    new_hash="$(sha256 "$s" | cut -d' ' -f1)"
     old_hash=""
     if [[ -f "$PIN_FILE" ]]; then
         old_hash="$(grep -F " $s" "$PIN_FILE" 2>/dev/null | cut -d' ' -f1 || true)"
@@ -46,7 +90,7 @@ for s in "${scripts[@]}"; do
     fi
 done
 
-shasum -a 256 "${scripts[@]}" > "$PIN_FILE"
+sha256 "${scripts[@]}" > "$PIN_FILE"
 echo "Pins written to $PIN_FILE ($(wc -l < "$PIN_FILE" | tr -d ' ') entries)."
 echo "Shared across worktrees via the scripts/wt symlink; never commit this file."
 
@@ -60,7 +104,7 @@ WIRING_TEMPLATE=".claude/hooks-wiring.json"
 LOCAL_SETTINGS=".claude/settings.local.json"
 
 if ! command -v jq >/dev/null 2>&1; then
-    echo "Error: jq is required to install the hook wiring (brew install jq)" >&2
+    echo "Error: jq is required to install the hook wiring (e.g. brew install jq / apt install jq)" >&2
     exit 1
 fi
 if [[ ! -f "$WIRING_TEMPLATE" ]]; then

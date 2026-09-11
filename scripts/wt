@@ -38,8 +38,8 @@ cmd_new() {
         ln -s "$MAIN_WORKTREE/.venv" "$worktree_path/.venv"
     fi
 
-    # Share committed Claude settings; local overrides stay separate.
-    ln -s "$MAIN_WORKTREE/.claude/settings.json" "$worktree_path/.claude/settings.json" 2>/dev/null || true
+    # Share local Claude settings (committed settings.json is already
+    # present from the checkout itself).
     if [[ -f "$MAIN_WORKTREE/.claude/settings.local.json" ]]; then
         ln -s "$MAIN_WORKTREE/.claude/settings.local.json" "$worktree_path/.claude/settings.local.json"
     fi

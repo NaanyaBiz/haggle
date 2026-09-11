@@ -278,11 +278,24 @@ required — could therefore have replaced either the scripts or a
 committed hooks block and executed under the maintainer's identity on the
 next ordinary action. Mitigation mirrors the TLS TOFU design: the hook
 *wiring* lives only in the untracked `.claude/settings.local.json`
-(symlink-shared across worktrees, out of reach of any checkout), each
-command verifies ALL hook scripts against the untracked SHA-256 pin store
-`.claude/hooks.sha256` before executing, and mismatch or a missing store
-**fails closed** (exit 2 blocks the triggering action) with a re-pin
-instruction. Trust is granted only by the maintainer running
+(symlink-shared across worktrees), each command verifies ALL hook scripts
+against the untracked SHA-256 pin store `.claude/hooks.sha256` before
+executing, and mismatch or a missing store **fails closed** (exit 2)
+with a re-pin instruction — on PreToolUse/UserPromptSubmit that blocks
+the triggering Bash call or prompt outright; on PostToolUse the edit has
+already happened and the guarantee is that the tampered hook itself
+never runs. "Untracked" alone is NOT out of reach of a checkout: git
+silently overwrites gitignored files when a branch force-tracks them
+(`git add -f`), so a hostile branch could substitute both scripts and a
+matching pin store (adversarial-review P1 on PR #269). Two layers close
+that: every wiring command REFUSES a pin store that is tracked in git
+(the substituted anchor betrays itself), and a ci.yml gate fails any PR
+tracking either local-trust file, so such a PR is red before review and
+unmergeable. The wiring file itself has the same force-track exposure
+with no self-check possible (attacker-supplied wiring wouldn't verify
+anything) — there the CI gate plus the file's visibility in the PR
+listing are the controls, and a worktree checkout replaces only that
+worktree's symlink, leaving the main anchor intact. Trust is granted only by the maintainer running
 `scripts/pin-hooks.sh` after reviewing the diffs; the committed
 `.claude/hooks-wiring.json` is the policy record the installer copies
 from, shown as a diff at install time. The committed `settings.json`
