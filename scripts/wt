@@ -38,10 +38,16 @@ cmd_new() {
         ln -s "$MAIN_WORKTREE/.venv" "$worktree_path/.venv"
     fi
 
-    # Share committed Claude settings; local overrides stay separate.
-    ln -s "$MAIN_WORKTREE/.claude/settings.json" "$worktree_path/.claude/settings.json" 2>/dev/null || true
+    # Share local Claude settings (committed settings.json is already
+    # present from the checkout itself).
     if [[ -f "$MAIN_WORKTREE/.claude/settings.local.json" ]]; then
         ln -s "$MAIN_WORKTREE/.claude/settings.local.json" "$worktree_path/.claude/settings.local.json"
+    fi
+    # Share the hook TOFU pin store (#245): one trust anchor for every
+    # worktree, so a hostile branch checked out anywhere fails the same
+    # verification. Untracked by design — never commit it.
+    if [[ -f "$MAIN_WORKTREE/.claude/hooks.sha256" ]]; then
+        ln -s "$MAIN_WORKTREE/.claude/hooks.sha256" "$worktree_path/.claude/hooks.sha256"
     fi
 
     echo "Worktree created at \`$worktree_path\`."
