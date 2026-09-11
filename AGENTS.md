@@ -59,7 +59,7 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract; options flow (solar statistics-writes toggle, poll-interval throttle)
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); options flow (solar statistics-writes toggle, poll-interval throttle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
@@ -67,7 +67,7 @@ custom_components/haggle/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
 │   ├── models.py        # TokenSet, Contract, IntervalReading, DailyReading, BillPeriod, PlanRates
-│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals
+│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals; label-keyed bill projection (_projection_label, #253)
 │   └── pinning.py       # SPKI extraction helper for Trust-On-First-Use TLS pinning
 ├── strings.json         # translatable config-flow strings
 └── translations/en.json # English strings (must mirror strings.json)
@@ -89,7 +89,7 @@ tests/
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
-├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, _safe_float
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float
 ├── test_pinning.py                  # SPKI extraction + host-name guards
 ├── fuzz/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
@@ -497,6 +497,63 @@ and each item carries **both** a `consumption` block and a shape-identical
   compare the *period* sensors (or per-day Energy dashboard bars), never the
   cumulative totals.
 
+### Bill Projection / the shared `additionalLabel` pair
+
+`/v3/overview` gives each contract ONE free-text label/value pair —
+`additionalLabel` + `additionalLabelValue` — and **reuses that slot for
+different quantities**:
+
+| Contract | `additionalLabel` | `additionalLabelValue` | Evidence |
+|---|---|---|---|
+| Plain electricity | `"Bill Projection"` | `"$139.15"` | **UNCONFIRMED** — from the anonymised fixture only; no real `/v3/overview` capture is committed |
+| Solar (`hasSolar: true`) | `"Sold To Grid"` | `"+ $7.43"` | fixture matches the #128-era captures ("Sold To Grid" label pair documented under Solar Generation above) |
+
+The exact "Bill Projection" wording is therefore an assumption. The keyword
+match (`_projection_label`, substring "projection", case-insensitive) fails
+SAFE if AGL's real label differs — the sensor stays `unknown`, no wrong
+number — and the parser DEBUG-logs the unmatched label so a user can report
+the real text. If a user reports the sensor still `unknown` after v0.5.0 on
+a non-solar contract, ask for that DEBUG line and correct the keyword.
+
+The pair is only meaningful read **together**. `parser._projection_label`
+returns the value only when the label contains "projection"
+(case-insensitive); anything else returns `""` and the sensor stays
+`unknown`, never a confidently wrong number — the same discipline as
+`_classify_tariff`.
+
+**The usage-summary endpoint has never been observed to carry
+`additionalLabelValue`** (not "definitively never returns it" — there is no
+real capture to prove a negative; graded per review).
+`/api/v2/usage/smart/Electricity/{contractNumber}?isRestricted=False`
+showed no usable projection in any release v0.1.0–v0.4.0 (maintainer-
+confirmed blank on a live account throughout). `parse_bill_period` still
+parses the root key into `BillPeriod.projection_label`, but the coordinator
+deliberately does NOT consume it: the summary carries no `additionalLabel`
+to key on, so a fallback is unguardable — a solar contract's value would
+bypass the label check and publish feed-in credit as the projection. This
+was #253: the sensor read `unknown` in every release because the summary
+was the only source wired up.
+`tests/fixtures/bill_period_response.json` carries an
+`additionalLabelValue` that was invented in #13 to make the test pass (all
+fixtures are synthetic — `tests/fixtures/PROVENANCE.md`); it is not
+evidence of API behaviour.
+
+Solar contracts therefore have **no** bill projection available from this
+endpoint. That is a documented limitation, not a bug.
+
+### Contract fuel types
+
+`/v3/overview` returns `accounts[].contracts[].type` as
+`"electricityContract"` or `"gasContract"` — a vocabulary known only from
+the anonymised fixtures; other values may exist in the wild, which is one
+reason the filter below fails open. Every usage endpoint in
+`AglClient` is hardcoded to the `Electricity` path segment, so only
+electricity contracts are serviceable. `config_flow._serviceable_contracts`
+filters the rest out before both the picker and the single-contract
+auto-select fast path (#260), and **fails open**: a contract whose `type`
+is empty or unrecognised is kept, because locking out a working install
+over a renamed string is worse than the bug the filter fixes.
+
 ### Plan / Rates
 
 ```
@@ -665,10 +722,44 @@ The HA Energy dashboard requires:
   can include diagnostic fields (`mfa_token`, internal trace IDs); AGL BFF URLs
   carry the contract number (PII). Pattern:
   `_LOGGER.debug("…body: %s", text[:200]); raise AGLError(f"HTTP {status} …")`.
-- **Don't use unbounded `float()` coercion on AGL response values**. Use the
-  `_safe_float` helpers in `agl/parser.py` / `coordinator.py` so `inf`/`nan`/
-  negative values can't reach `async_add_external_statistics` and corrupt the
-  cumulative-sum series.
+- **Don't use unbounded `float()` coercion on AGL response values**. Use
+  `safe_float` from `agl/parser.py` — now the SINGLE implementation, imported
+  by `coordinator.py` rather than duplicated (the two copies had already
+  drifted: one returned `-0.0`, the other `0.0`) — so `inf`/`nan`/negative
+  **and implausibly large** values can't reach
+  `async_add_external_statistics` and corrupt the cumulative-sum series.
+  "Finite" was never a sufficient bound (#241): `1e308` is finite and passed
+  straight through, and `1e308 + 1e308` evaluates to `inf` with no exception,
+  so two such readings in one hourly bucket produced exactly the non-finite
+  `sum` the check existed to prevent. Values above `MAX_AGL_NUMERIC` are
+  rejected to `0.0`, never clamped to the bound — a zero delta leaves the sum
+  untouched, whereas a clamped `1e6` writes a permanent false spike.
+- **Don't parse interval readings without telling the parser which day was
+  requested — and pass the local timezone.** `parse_interval_readings` takes
+  `expected_day` and `tz`; every `AglClient` fetch site must pass both
+  (#242, Codex P1 on PR #266 — `AglClient` gets `local_tz` from HA's
+  configured tz at construction, refined each overview cycle from the
+  contract's service-address state via `parser.tz_for_address`: the
+  CONTRACT's local day is the correct window and can differ from the HA
+  instance's timezone). Without `expected_day`,
+  `coordinator._import_intervals` derives its baseline cutoff as
+  `min(hour_cons)` — purely from response content — so ONE interval carrying
+  an old `dateTime` pins the cutoff before all real recorder history, the
+  baseline resolves to `0.0` instead of the true multi-year sum, and the same
+  import writes today's real hours on top of it: a large downward step in the
+  `sum` column (#114 class, from a single crafted timestamp). With `tz` the
+  window is the true UTC shape of the requested LOCAL day, with
+  `INTERVAL_WINDOW_TRAILING_SLACK_HOURS` of TRAILING-only slack (AGL
+  interprets `period=` in the contract's local timezone and returns
+  `dateTime` in UTC, so a single-day query spans two UTC dates; DST is
+  handled by the tzinfo). Never add LEADING slack: the baseline cutoff is
+  `min(hour_cons)`, so leading slack of any width re-admits the cutoff
+  attack at that width, while a late row cannot lower the min (Codex
+  pass-2 P1 on PR #266). The tz-less ±1-DATE fallback
+  alone is NOT sufficient: it accepts every instant of the adjacent UTC date,
+  so an injected `D-1T00:00Z` reading still dragged the cutoff ~14 h early —
+  stored rows in that gap left out of the baseline but not re-emitted, a
+  #114 downward step with no 1970-style absurdity to catch.
 - **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
   unparenthesised form is intentional: it is `ruff format`'s canonical output
   for this repo's Python 3.14 target (PEP 758, where `except A, B:` means
@@ -693,6 +784,27 @@ The HA Energy dashboard requires:
   delivered the meter reads (with a non-`none` type, even). Inserting them
   creates phantom flat rows that the resume logic skips past forever once AGL
   backfills the real reads. `parse_interval_readings` filters them.
+- **Don't read `additionalLabelValue` from `/v3/overview` positionally.**
+  AGL reuses that one slot per contract for different quantities — "Bill
+  Projection" on a plain contract, "Sold To Grid" on a solar one. Always
+  gate on `additionalLabel` (`parser._projection_label`). A positional read
+  publishes solar feed-in credit as the bill projection; and because
+  `coordinator._money` strips the `+` from `"+ $7.43"`, the result is a
+  *plausible* wrong number (7.43), not an obviously-broken one — the label
+  key is the actual control, not the number formatting.
+- **Don't trust `tests/fixtures/bill_period_response.json`'s
+  `additionalLabelValue` as an API fact.** It was invented in #13 to make
+  `test_projection_label_from_root` pass, one PR after #12 documented that
+  the field is *not* in the usage summary. Every fixture except
+  `solar_hourly_response.json` is synthetic (`tests/fixtures/PROVENANCE.md`)
+  — a fixture is only evidence of API behaviour if PROVENANCE.md says it was
+  captured.
+- **Don't let the config flow offer a contract the client can't fetch.**
+  All usage endpoints are `Electricity`-only; discovery returns gas
+  contracts too. Filter through `_serviceable_contracts` before BOTH the
+  picker and the `len(...) == 1` auto-select path — the fast path was the
+  worse half of #260, silently selecting a gas contract on a gas-only
+  account with no user choice and no error.
 - **Don't put `AGL` (or any close variant) in `DeviceInfo.manufacturer`.**
   HA's "Service info" card renders `model by manufacturer`; this is an
   unofficial third-party integration and labelling the device as if AGL
@@ -779,6 +891,26 @@ The HA Energy dashboard requires:
   When adding a new client method, route it through `_get` or replicate the
   shield; `_fetch_with_heal_accounting` is the belt-and-braces layer that
   counts an attempt on ANY sweep exit regardless.
+- **Don't leave schema-trusting code outside the transport shield.** A
+  `try` that catches only `_TRANSPORT_ERRORS`/`JSONDecodeError` around the
+  `resp.json()` call does nothing for the `data["..."]` / `int(...)` /
+  `datetime.fromtimestamp(...)` block *after* it. A 200 whose body is valid
+  JSON of the wrong shape (`null`, `[]`, `{"expires_in": "x"}`) raises
+  `AttributeError`/`KeyError`/`TypeError`/`ValueError`/`OverflowError`,
+  which bypasses every coordinator catch site (all built around the
+  `AGLError` family), skips the #155 retry cadence, and lands in
+  `last_exception` → published diagnostics. Guard the shape explicitly
+  (`isinstance(data, dict)`) and wrap the conversions, raising a *retryable*
+  `AGLTransportError` — never `AGLAuthError`, which would burn a working
+  grant on a reauth prompt for what is not an auth failure (#243).
+- **Don't interpolate an AGL/Auth0 response *field* into an exception
+  message either.** The "no raw bodies in exceptions" rule is usually read
+  as being about `resp.text()`, but a single field is enough: `f"Token
+  refresh error: {error}"` echoed a 500-character structured payload, and
+  `int(hostile)` puts its input into the `ValueError` text. Both reach HA
+  Persistent Notifications and `diagnostics.py`'s `str(last_exception)`,
+  which users attach to public issues. Echo a length-capped, type-checked
+  slug or the exception *type name* only (#243).
 - **Don't hardcode release version strings in README/info.md/docs.** The
   release flow bumps `manifest.json` + `CHANGELOG.md` only, so a pinned
   `vX.Y.Z` anywhere else rots on the next release (the README advertised

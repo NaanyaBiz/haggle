@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -43,6 +42,9 @@ from .agl.client import (
     AGLRateLimitError,
     AGLTransportError,
 )
+
+# Single numeric-guard implementation (#241) — a local near-duplicate had drifted.
+from .agl.parser import safe_float, tz_for_address
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -94,16 +96,12 @@ _LOGGER = logging.getLogger(__name__)
 _EARLIEST_HISTORY = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-def _safe_float(raw: Any) -> float:
-    """Coerce raw API value to a non-negative finite float, defaulting to 0.0."""
-    try:
-        value = float(raw)
-    except TypeError, ValueError:
-        return 0.0
-    if not math.isfinite(value) or value < 0:
-        _LOGGER.warning("Rejecting non-finite/negative coordinator value: %r", raw)
-        return 0.0
-    return value
+def _money(label: str | None) -> str:
+    """Strip an AGL display-money label ("$1,234.56", "+ $7.43") to a numeric
+    string; "" for missing/blank. A leading "-" survives on purpose so the
+    negative-value guard downstream fires rather than being defeated here.
+    """
+    return (label or "").replace("$", "").replace(",", "").replace("+", "").strip()
 
 
 def _clamped_poll_interval(options: Mapping[str, Any]) -> timedelta:
@@ -119,6 +117,26 @@ def _clamped_poll_interval(options: Mapping[str, Any]) -> timedelta:
         hours = DEFAULT_POLL_INTERVAL_HOURS
     hours = max(MIN_POLL_INTERVAL_HOURS, min(MAX_POLL_INTERVAL_HOURS, hours))
     return timedelta(hours=hours)
+
+
+def _dedupe_slots(intervals: list[IntervalReading]) -> list[IntervalReading]:
+    """One meter reading per 30-min slot, last-wins.
+
+    A slot can appear twice in one multi-day batch — day D's response
+    carrying a row inside the trailing-slack window that day D+1's response
+    then also returns — and both hourly aggregators SUM everything they are
+    given, so within a single import a duplicated slot silently inflates the
+    statistics (consumption/cost/ToU AND generation/credit — Codex pass-3
+    and pass-4 P1s, PR #266; the recorder's idempotent overwrite only
+    dedupes ACROSS imports, not within one). Last-wins: days are fetched in
+    chronological order, so the later day's response is authoritative for
+    its own slots. Shared by _import_intervals and _import_generation so
+    the two paths cannot drift apart again.
+    """
+    by_slot: dict[datetime, IntervalReading] = {}
+    for r in intervals:
+        by_slot[r.dt] = r
+    return list(by_slot.values())
 
 
 @dataclass
@@ -206,6 +224,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # _prev_has_solar drives the reload-when-solar-appears path.
         self._has_solar: bool = False
         self._prev_has_solar: bool = False
+        # AGL's bill forecast from /v3/overview (#253); sticky across a FAILED
+        # fetch only — a successful fetch assigns, including to empty.
+        self._bill_projection_label: str = ""
         self._latest_generation_kwh: float = 0.0
         self._latest_generation_credit: float = 0.0
         # Last-seen bill period start — surfaced in diagnostics so period-vs-app
@@ -289,7 +310,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # Fetch live sensor data first — summary gives bill_start for endpoint selection.
         summary = await self.client.async_get_usage_summary(self.contract_number)
         plan = await self.client.async_get_plan(self.contract_number)
-        await self._refresh_has_solar()
+        await self._refresh_from_overview()
 
         bill_start = self.last_bill_start = summary.start
 
@@ -349,7 +370,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         unit_rate_aud: float | None = None
         for rate in plan.unit_rates:
             if rate.get("type") == "c/kWh":
-                cents = _safe_float(rate.get("price"))
+                cents = safe_float(rate.get("price"))
                 unit_rate_aud = cents / 100.0
                 break
 
@@ -413,13 +434,18 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Parse bill-period totals.
         projection: float | None = None
-        period_kwh = _safe_float(summary.consumption_kwh)
-        period_cost = _safe_float(
-            (summary.cost_label or "").lstrip("$").replace(",", "")
-        )
-        proj_label = (summary.projection_label or "").lstrip("$").replace(",", "")
+        # safe_float here is the single bounded implementation from
+        # agl.parser (#241) — the unbounded local copy stays deleted.
+        period_kwh = safe_float(summary.consumption_kwh)
+        period_cost = safe_float(_money(summary.cost_label))
+        # /v3/overview only (#253). No usage-summary fallback: that response
+        # carries no additionalLabel to key on, so a fallback is unguardable —
+        # a solar summary value would sail past the label check straight into
+        # this sensor (review finding). The field has never been observed at
+        # the summary endpoint (blank in every release v0.1.0..v0.4.0).
+        proj_label = _money(self._bill_projection_label)
         if proj_label:
-            projection = _safe_float(proj_label)
+            projection = safe_float(proj_label)
 
         return HaggleData(
             consumption_period_kwh=period_kwh,
@@ -448,13 +474,21 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             feed_in_rate_aud_per_kwh=feed_in_rate_aud,
         )
 
-    async def _refresh_has_solar(self) -> None:
-        """Update the solar flag from /v3/overview.
+    async def _refresh_from_overview(self) -> None:
+        """Update the solar flag and bill projection from /v3/overview.
 
-        Sticky-on-failure: an overview error keeps the previous flag rather
+        Sticky-on-failure: an overview error keeps the previous values rather
         than flapping the generation series off for one cycle. hasSolar never
         goes back to False once seen True in-process — retiring a solar system
         mid-contract is rare enough that a reload/restart picking it up is fine.
+
+        The bill projection lives ONLY here (#253): the usage-summary endpoint
+        does not carry `additionalLabelValue`, which is why the sensor read
+        `unknown` in every release up to v0.5.0-beta.1. Unlike has_solar the
+        projection is NOT sticky across a successful fetch: AGL withdraws the
+        label (period end, solar contracts), and a stale dollar figure is a
+        wrong number — worse than a blank one (#152 principle). Stickiness
+        applies only to a FAILED fetch, via the early return below.
         """
         try:
             contracts = await self.client.async_get_overview()
@@ -466,7 +500,35 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         for contract in contracts:
             if contract.contract_number == self.contract_number:
                 self._has_solar = self._has_solar or contract.has_solar
+                # Assign, don't keep-on-empty: unlike has_solar (legitimately
+                # monotonic), AGL withdraws the projection — e.g. at period
+                # end — and a stale dollar figure is a wrong number, which the
+                # repo treats as worse than a blank one (#152 principle;
+                # review finding). Failure-stickiness is preserved by the
+                # early return in the except block above.
+                self._bill_projection_label = contract.bill_projection_label
+                # The interval-timestamp window must be the CONTRACT's local
+                # day, not the HA instance's: a Sydney contract managed from
+                # a Brisbane HA host is off by 1 h during DST, and the strict
+                # lower bound would then drop the day's first slots on every
+                # fetch (Codex pass-3 P1, PR #266). Best source available is
+                # the service address's state; HA's tz (set at client
+                # construction) remains the fallback when it doesn't parse.
+                tz = tz_for_address(contract.address)
+                if tz is not None:
+                    self.client.local_tz = tz
                 return
+        # HTTP-successful overview WITHOUT the configured contract (contract
+        # removed from the account, or its contractNumber dropped as malformed
+        # by the totality guards): nothing current supports the stored
+        # projection, so clear it rather than showing it indefinitely (Codex
+        # review finding on PR #261). has_solar deliberately stays sticky —
+        # it gates whether the generation series is written at all, and
+        # flapping it off on one odd payload would halt statistics writes.
+        self._bill_projection_label = ""
+        _LOGGER.debug(
+            "Configured contract absent from overview; cleared bill projection"
+        )
 
     def _maybe_reload_for_new_tariffs(self) -> None:
         """Schedule a reload when a ToU band first appears after first refresh.
@@ -1545,6 +1607,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """
         from homeassistant.const import UnitOfEnergy
 
+        intervals = _dedupe_slots(intervals)
+
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = (
             self._bucket_hourly(intervals)
@@ -1702,6 +1766,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         (data lag is 24-48 h, well inside the window).
         """
         from homeassistant.const import UnitOfEnergy
+
+        intervals = _dedupe_slots(intervals)
 
         hour_kwh: dict[datetime, float] = {}
         hour_credit: dict[datetime, float] = {}

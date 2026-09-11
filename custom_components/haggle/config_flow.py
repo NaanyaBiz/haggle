@@ -38,7 +38,7 @@ from homeassistant.config_entries import (
 )
 from homeassistant.core import callback
 
-from .agl.client import AGLAuthError, AGLError
+from .agl.client import AGLAuthError, AGLError, _plausible_token
 from .agl.parser import parse_overview
 
 if TYPE_CHECKING:
@@ -74,6 +74,36 @@ from .const import (
 _LOGGER = logging.getLogger(__name__)
 
 CALLBACK_URL_FIELD = "callback_url"
+
+# Fuels positively identified as unservable by the Electricity-only client.
+# Fixture-known vocabulary: "electricityContract" | "gasContract".
+_NON_ELECTRICITY_FUELS = ("gas",)
+
+
+def _serviceable_contracts(contracts: list[Contract]) -> list[Contract]:
+    """Contracts this integration can actually serve (#260).
+
+    Every usage endpoint in `AglClient` is hardcoded to the `Electricity`
+    path segment, so a gas contract can be selected but never fetched — it
+    produces a config entry that fails every call with no explanation, and
+    on a gas-only account the single-contract fast path selects it silently.
+
+    Fails OPEN, not closed: a contract whose `type` AGL did not report (or
+    reports with unexpected wording — e.g. a renamed `powerContract`) is
+    treated as serviceable. Locking a working electricity user out because
+    AGL renamed a string is a worse failure than the one this filter fixes;
+    only a positively-identified non-electricity fuel is excluded, so the
+    predicate is a denylist of known-unservable fuels, NOT an allowlist of
+    known-good ones (Codex review finding on PR #261 — requiring the literal
+    "electricity" substring silently excluded every unknown nonempty type).
+    """
+    keep: list[Contract] = []
+    for contract in contracts:
+        fuel = contract.fuel_type.casefold()
+        if any(unservable in fuel for unservable in _NON_ELECTRICITY_FUELS):
+            continue
+        keep.append(contract)
+    return keep
 
 
 def _gen_pkce() -> tuple[str, str]:
@@ -163,12 +193,37 @@ async def _exchange_code(code: str, verifier: str) -> tuple[str, str, str]:
             raise AGLAuthError(f"Token exchange failed: HTTP {resp.status}")
         if not resp.ok:
             raise AGLError(f"Token exchange error: HTTP {resp.status}")
-        body: dict[str, Any] = await resp.json()
+        try:
+            # content_type=None: Auth0 behind an Akamai challenge can return
+            # a 200 whose body is not JSON at all.
+            body = await resp.json(content_type=None)
+        except ValueError as err:
+            # json.JSONDecodeError subclasses ValueError. Raised as AGLError
+            # so async_step_exchange maps it to the translated
+            # `cannot_connect`, not an untranslated "Unknown error" (#243).
+            # No body text in the message — it surfaces in the config-flow UI.
+            raise AGLError("malformed response from AGL token endpoint") from err
 
-    access_token: str = body.get("access_token", "")
-    refresh_token: str = body.get("refresh_token", "")
-    if not access_token or not refresh_token:
-        raise AGLAuthError("Token response missing access_token or refresh_token")
+    # Wrong-shaped JSON (`null`, `[]`) would otherwise escape as AttributeError.
+    if not isinstance(body, dict):
+        raise AGLError("unexpected token-response shape from AGL token endpoint")
+
+    access_token = body.get("access_token", "")
+    refresh_token = body.get("refresh_token", "")
+    if not isinstance(access_token, str) or not isinstance(refresh_token, str):
+        # A response-shape fault, not an auth failure — AGLError maps to the
+        # translated cannot_connect, matching async_force_refresh's treatment
+        # of the same condition (review finding, two independent reviewers).
+        raise AGLError("Token response fields are not strings")
+    if not _plausible_token(access_token) or not _plausible_token(refresh_token):
+        # Same fault family as above: a 200 with missing/blank/malformed
+        # tokens is an upstream schema fault, not proof the user's
+        # credentials are bad. AGLAuthError here surfaced invalid_auth and
+        # told the user to re-authenticate for something retrying might fix
+        # (Codex pass 2). Charset check mirrors _validated_token_fields:
+        # whitespace-only and embedded-control-character credentials are as
+        # unusable as empty (passes 3-4).
+        raise AGLError("Token response missing access_token or refresh_token")
 
     auth_spki = connector.observed.get(AGL_AUTH_HOST_NAME, "")
     return access_token, refresh_token, auth_spki
@@ -335,8 +390,16 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if not self._contracts:
             return await self._async_create_entry(contract_number="", account_number="")
 
-        if len(self._contracts) == 1:
-            c = self._contracts[0]
+        # Filter to serviceable contracts before BOTH paths below (#260).
+        serviceable = _serviceable_contracts(self._contracts)
+        if not serviceable:
+            # Note: during reauth this discards a just-completed PKCE exchange
+            # (the token is never persisted) — correct, but the user must
+            # restart reauth after fixing the account (review note).
+            return self.async_abort(reason="no_electricity_contract")
+
+        if len(serviceable) == 1:
+            c = serviceable[0]
             return await self._async_create_entry(
                 contract_number=c.contract_number,
                 account_number=c.account_number,
@@ -346,8 +409,8 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             chosen = user_input[CONF_CONTRACT_NUMBER]
             contract = next(
-                (c for c in self._contracts if c.contract_number == chosen),
-                self._contracts[0],
+                (c for c in serviceable if c.contract_number == chosen),
+                serviceable[0],
             )
             return await self._async_create_entry(
                 contract_number=contract.contract_number,
@@ -356,7 +419,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         options = {
-            c.contract_number: f"{c.address} ({c.fuel_type})" for c in self._contracts
+            c.contract_number: f"{c.address} ({c.fuel_type})" for c in serviceable
         }
         return self.async_show_form(
             step_id="select_contract",

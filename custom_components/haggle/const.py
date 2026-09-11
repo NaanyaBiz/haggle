@@ -54,6 +54,27 @@ BACKFILL_INTER_REQUEST_DELAY: Final = 0.5
 # async_add_external_statistics is idempotent on (statistic_id, start), so
 # this is a safe overwrite.
 REWINDOW_DAYS: Final = 7
+
+# Upper bound on any numeric read from an AGL response (#241): far above any
+# plausible reading (1e6 kWh/30 min ≈ 2 GW), never applied to the running
+# cumulative sum. Rationale: AGENTS.md "What NOT to Do".
+MAX_AGL_NUMERIC: Final = 1_000_000.0
+
+# Interval-timestamp window (#242): with a known local timezone the window is
+# [local midnight of the requested day, next local midnight + trailing slack),
+# computed in UTC — AGL reads `period=` in LOCAL time but returns UTC
+# timestamps. The slack is TRAILING ONLY (Codex pass-2 P1 on PR #266): the
+# baseline cutoff is min(hour_cons), so only rows EARLIER than the genuine
+# day start can drag it backward and step the cumulative sum down (#114
+# class) — a leading slack of any width re-opens that attack at the slack's
+# width, while a late row cannot lower the min (worst case it pre-writes the
+# next day's first slot, idempotently overwritten by that day's own fetch).
+# If AGL ever stamps a day edge in a fixed offset across a DST transition,
+# the strict lower bound would drop that first slot and the counted-drop
+# WARNING fires every cycle — revisit with real capture evidence then.
+INTERVAL_WINDOW_TRAILING_SLACK_HOURS: Final = 2
+# Fallback when no timezone is available: requested day ± this many DATES.
+INTERVAL_DAY_TOLERANCE: Final = 1
 # Max seconds to wait for the recorder to commit queued statistics after a
 # COMPLETE heal sweep before reading the bill-period baseline (#152). On
 # timeout the period sensors stay `unknown` for the cycle (safe fallback).

@@ -212,9 +212,13 @@ async def async_get_config_entry_diagnostics(
         statistics = await _series_coverage(hass, stat_ids)
 
         update_interval = coordinator.update_interval
-        # str(last_exception) is safe to publish: exception messages are
-        # body-scrubbed at raise time (AGENTS.md — raw AGL/Auth0 bodies never
-        # reach exception text) and the identifier scrub below applies on top.
+        # str(last_exception) is safe to publish ONLY because every raise
+        # site constructs its own message rather than echoing a response body
+        # (AGENTS.md), and the identifier scrub below applies on top. That is
+        # a convention, not a mechanism: #243 was exactly this invariant
+        # breaking — an unwrapped int() on a hostile `expires_in` put the
+        # offending value into a raw ValueError that landed here verbatim.
+        # A new raise site that interpolates response content re-opens it.
         last_exception = coordinator.last_exception
         coordinator_block = {
             "last_update_success": coordinator.last_update_success,

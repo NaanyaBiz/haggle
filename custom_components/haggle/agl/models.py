@@ -30,6 +30,9 @@ class Contract:
     status: str  # "active" | ...
     has_solar: bool = False
     meter_type: str = "smart"
+    # Raw bill-forecast label ("$139.15"); "" when absent — notably on solar,
+    # where AGL reuses the slot for "Sold To Grid" (parser._projection_label).
+    bill_projection_label: str = ""
 
 
 @dataclass(slots=True)

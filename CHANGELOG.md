@@ -69,6 +69,164 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute is also present, making the existing quarterly-bill
   under-coverage limitation self-describing instead of silent.
 
+### Security
+
+- **`safe_float` now bounds magnitude, not just finiteness** (#241;
+  renamed from `_safe_float` — it is a cross-module API, review finding).
+  `1e308` is finite, so it passed the guard unchanged — and
+  `1e308 + 1e308` evaluates to `inf` with no exception raised. Two such
+  readings in one hourly bucket, or a cumulative sum crossing the ceiling,
+  therefore produced exactly the non-finite `sum` the finite check existed
+  to prevent, corrupting a `haggle:*` series permanently. Values above
+  `MAX_AGL_NUMERIC` (1e6 — roughly 2 GW of continuous draw in a 30-minute
+  slot) are now rejected to `0.0`, never clamped to the bound, since a zero
+  delta leaves the sum untouched while a clamped 1e6 would write a
+  permanent false spike. The bound is part of the fuzz invariant.
+  - The two near-duplicate `safe_float` copies are collapsed into one:
+    `coordinator.py` imports the parser's. They had already drifted (one
+    returned `-0.0` where the other normalised to `0.0`), and an upper
+    bound added to one copy but not the other would be worse than none.
+  - `docs/threat-model.md` **T-1** claimed this was mitigated while naming
+    the exact value that defeated it. Corrected.
+- **Interval timestamps are validated against the requested day** (#242).
+  `parse_interval_readings` took no period argument and the client
+  discarded the `period=` it had just built, while
+  `coordinator._import_intervals` derives its cumulative-sum baseline
+  cutoff from `min(hour_cons)` — straight from response content. A single
+  injected interval with an old `dateTime` pinned that cutoff before all
+  real recorder history, so the baseline resolved to `0.0` instead of the
+  true multi-year total and the same import wrote today's genuine hours on
+  top of it: a large downward step in the `sum` column. That is the #114
+  failure class, reachable from one crafted timestamp rather than only a
+  resume-gap edge case. Readings outside the requested day's window are now
+  dropped, at all three fetch sites including solar. The window is derived
+  from the configured local timezone — local midnight to next local
+  midnight plus 2 h of trailing-only slack, computed in UTC (AGL reads
+  `period=` in the contract's local timezone and returns UTC, so a one-day
+  query legitimately spans two UTC dates; DST is handled by the timezone
+  data). A coarser ±1-date window applies only when no timezone is
+  available. Recorded as threat-model **T-4**.
+
+- **Malformed-but-200 token responses no longer escape structured handling**
+  (#243). Two OAuth call sites shielded their transport layer but left the
+  schema-trusting code that follows it unguarded, so a 200 whose body was
+  valid JSON of the wrong shape raised a raw
+  `AttributeError`/`KeyError`/`TypeError`/`ValueError`/`OverflowError`.
+  Verified against the pre-fix code: `null`, `[]`, a missing
+  `access_token`, `expires_in: "<hostile>"` and `expires_in: 10**20` all
+  escaped as raw exceptions.
+  - **Availability.** Every coordinator catch site is built around the
+    `AGLError` family, so a raw escape crashed the update cycle before the
+    #155 failure-retry cadence could run.
+  - **Information disclosure.** `int("<hostile>")` puts its input into the
+    `ValueError` message, and `diagnostics.py` republishes
+    `str(last_exception)` verbatim into a file users attach to public
+    GitHub issues. A structured `error` field was separately echoed whole
+    into an `AGLAuthError` — a 500-character payload reached HA Persistent
+    Notifications intact. Both now degrade to a type name / a
+    length-capped, type-checked slug.
+  - Malformed bodies now raise **retryable** `AGLTransportError`, never
+    `AGLAuthError`: a bad response is not an auth failure and must not burn
+    a working grant on a reauth prompt.
+  - In the config flow, the same class previously aborted onboarding with
+    an untranslated "Unknown error"; it now surfaces the intended
+    `cannot_connect`. `_exchange_code` had no direct test coverage at all —
+    every existing config-flow test mocks it out.
+
+### Changed
+
+- **Dev-dependency bump** (`pytest-homeassistant-custom-component` floor
+  0.13.361, `uv lock` resolved 0.13.364 → `homeassistant` 2026.9.1;
+  `ruff` 0.16.6, `mypy` 2.3.1, `pre-commit` 4.6.2, `zizmor` 1.30.0):
+  Dependabot raised the `pyproject.toml` floors but left `uv.lock` stale,
+  so the `uv lock --check` CI gate (#185) failed — regenerated here, which
+  is the whole point of that gate. `ruff` 0.16.6 enabled no new rules
+  against this tree (check, format, and mypy all clean, no source edits).
+  The `hacs.json` runtime floor stays at 2026.7.0 deliberately: nothing in
+  this bump is a runtime requirement (`manifest.json` ships no
+  `requirements`, so users get HA from core), and lifting it would strand
+  HACS users on 2026.7/2026.8 — including the #253 reporter — for no
+  behavioural gain.
+- **`pip` 26.1.2 → 26.2** in the `uv` group, closing
+  `GHSA-qwm4-qh6w-59xr` (doubly-encoded package URLs from indexes).
+  Dev-lockfile only.
+
+### Fixed
+
+- **Bill projection sensor no longer reads `unknown`** (#253): the sensor has
+  never worked in any released version. `parse_bill_period` read the
+  projection from `additionalLabelValue` at the root of the *usage-summary*
+  response, where AGL does not return it — the parser's own comment said as
+  much ("callers can populate from overview") but no caller ever did, and
+  `parse_overview` discarded the field entirely. The projection is now read
+  from `/v3/overview`, which the coordinator already fetches every cycle, so
+  there is no extra request.
+  - The usage-summary root is **not** consumed at all (review finding: it
+    carries no label to key on, so a fallback there is unguardable — a
+    solar value would bypass the check). A projection AGL withdraws is
+    cleared on the next successful poll rather than lingering stale; only
+    a FAILED overview fetch keeps the previous value.
+  - Read is **label-keyed**, not positional. AGL reuses one
+    `additionalLabel`/`additionalLabelValue` slot per contract for different
+    quantities: a plain contract shows `"Bill Projection" / "$139.15"`, a
+    solar contract shows `"Sold To Grid" / "+ $7.43"`. Reading the value
+    positionally would publish feed-in credit as the bill projection.
+  - **Known limitation:** on a solar contract AGL occupies that slot with
+    "Sold To Grid", so no projection is available from this endpoint and the
+    sensor stays `unknown` — deliberately, rather than showing a wrong number.
+- **Setup no longer offers, or silently auto-selects, a contract it cannot
+  serve** (#260): every usage endpoint is hardcoded to AGL's `Electricity`
+  path, but contract discovery listed every contract on the account. An
+  account whose only contract was gas had it auto-selected with no choice and
+  no warning, producing a config entry where every call failed unexplained;
+  mixed accounts offered gas as a valid-looking option. Non-electricity
+  contracts are now filtered before both the picker and the single-contract
+  fast path, and a gas-only account aborts with a clear message. The filter
+  fails open — a contract whose fuel type AGL does not report stays
+  selectable, since locking out a working install would be worse than the
+  bug being fixed.
+
+### Security
+
+- **Release artifact now fails closed on symlinks** (#246). `release.yml`
+  built `haggle.zip` with `zip -r` and no `-y`, which **dereferences**
+  symlinks — the link is stored as a regular file containing the target's
+  live bytes. Verified empirically: a link to a file outside the tree
+  produced a zip entry holding that file's content verbatim. Since HACS
+  extracts this artifact straight into
+  `<config>/custom_components/haggle/`, a symlink committed under the
+  integration directory would have inlined arbitrary repo or runner
+  content into the published release — the project's highest-consequence
+  supply-chain surface. The build now refuses outright if any symlink
+  exists under `custom_components/haggle/`, and also passes `-y`. The
+  guard is the control: `-y` alone merely converts content-inlining into
+  a traversal path extracted on the user's machine, so neither measure is
+  sufficient by itself. No user-facing change; no shipped release was
+  affected (the integration directory has never contained a symlink).
+- **Licence gate narrowed to network copyleft (AGPL/SSPL); plain GPL no
+  longer denied** (RA-17). The released artifact ships zero third-party
+  code — `haggle.zip` is `custom_components/haggle/` alone
+  (`manifest.json` `requirements: []`), which the release SBOMs attest —
+  so no dependency is ever redistributed and plain-copyleft obligations
+  cannot attach. Meanwhile the Home Assistant transitive tree carries
+  three GPL-3.0 packages this project can neither drop nor redistribute
+  (`hass-nabucasa`, its own dependency `snitun`, and `pyric`).
+  The previous denylist blocked exactly **one** of those three — not by
+  policy but by metadata accident: `hass-nabucasa` declares a modern SPDX
+  `license_expression`, while the other two declare only a legacy trove
+  classifier the action does not normalise. It blocked a parent while
+  admitting its own child, and fired on declaration format rather than
+  licence. AGPL/SSPL stay denied: genuinely surprising obligations,
+  absent from the tree today, and a real signal if they ever appear.
+  No user-facing change.
+- **Licence-gate limitations now recorded rather than assumed away**
+  (#262): the check matches SPDX identifiers only (trove classifiers slip
+  through) and is diff-scoped, so a dependency already in the tree is
+  never re-examined — which is why `hass-nabucasa` went unexamined from
+  #52 until #258. `SECURITY.md § Supply chain` and the CO-5.1 / CO-5.2 /
+  CO-7.1 / CO-9.2 / CO-12.3 conformance rows previously described the
+  gate without either qualification, overstating its assurance.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from

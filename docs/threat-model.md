@@ -67,7 +67,7 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
 ### TB-1: AGL HTTPS API → HA coordinator
 - **Controls**: TLS + TOFU SPKI pinning on both hosts (warn-only mismatch +
   persistent notification; documented remediation = Reconfigure re-pin);
-  allowlist parsing (no open-schema dict passthrough); `_safe_float`
+  allowlist parsing (no open-schema dict passthrough); `safe_float`
   clamping (finite, non-negative); parser totality fuzz-enforced weekly and
   on every PR (`fuzz.yml` — unconditional PR smoke run with cached corpus,
   a required check since PR #186).
@@ -104,7 +104,13 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
     third-party actions in the privileged release workflow; workflow-audit
     gates (actionlint, zizmor, shellcheck — PR #184).
   - Dependency-review gate on every PR (vulnerability severity + licence
-    denylist, pinned-scope enforcement — PR #184).
+    denylist, pinned-scope enforcement — PR #184). Since 2026-09-09 the
+    denylist covers network copyleft only (AGPL/SSPL) — plain GPL removed
+    under RA-17 (nothing is redistributed, so those obligations cannot
+    attach). Two recorded limits of the licence check (#262): SPDX-only
+    matching (trove-classifier-declared licences are unnormalised) and
+    diff-scoped evaluation (dependencies already in the tree are never
+    re-examined).
   - Control plane as code: rulesets and repo settings are declared under
     `.github/settings/` and re-verified by a weekly settings-drift workflow
     that files an issue on divergence (PR #188); settings changes are
@@ -133,10 +139,21 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
   tests serialize the whole payload and assert raw identifiers never appear
   (`tests/test_diagnostics.py`); `schema_version` gates machine parsing;
   the triage routine treats all attachment content as untrusted data.
+  `coordinator.last_exception` is republished verbatim as
+  `str(last_exception)`, so that field is only as clean as the exception
+  discipline upstream of it: it is safe *because* every raise site
+  constructs its own message, never echoing a response body. #243 showed
+  the gap — an unwrapped `int()` on a hostile `expires_in` produced
+  `ValueError: invalid literal for int() with base 10: '<attacker text>'`,
+  and a structured `error` field was echoed whole into an `AGLAuthError`.
+  Both now degrade to a type name / a length-capped slug.
 - **Assumptions to question**: users may attach *other* files (raw HA logs)
   that are not scrubbed — the issue template asks for the diagnostics file
   specifically; a crafted "diagnostics" attachment is a prompt-injection
-  vector against the triage routine — mitigations in §6.
+  vector against the triage routine — mitigations in §6. The
+  `last_exception` channel depends on a convention, not a mechanism: any
+  new raise site that interpolates response content re-opens it, and no
+  test can enumerate every such site.
 
 ### TB-6: Repo source / diff → Codex Security (OpenAI) API
 - **From**: the maintainer's local checkout — either the full repository
@@ -167,7 +184,8 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
 
 ## 4. Threat register and dispositions
 
-18 threats from the 2026-05-02 STRIDE assessment, tracked to disposition.
+Threats from the 2026-05-02 STRIDE assessment, extended as new threats
+are identified, tracked to disposition.
 "Accepted" rows are standing risk acceptances recorded in SECURITY.md's
 risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 
@@ -176,7 +194,8 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | S-1 | AGL endpoints MITM'd on the HA host's LAN (originally: "no certificate pinning") | **Mitigated; residual accepted** | TOFU SPKI pinning on both hosts (PRs #45/#48). Residual: warn-only mismatch + first-install pin capture — deliberate, documented in SECURITY.md; compensated by parser totality + fuzzing (#177, PR-gated since #186). |
 | S-2 | Shared AGL iOS `client_id` detectable/revocable by AGL | **Accepted** | Fleet-wide availability dependency (see §8). Hot-update of client identity declined — it would require phone-home infrastructure worse than the risk. Recovery = coordinated re-release via HACS. |
 | S-3 | Pasted callback URL not host/scheme-validated | **Accepted** (defence-in-depth gap) | Exploitation requires the state nonce (not externally exposed) and PKCE; impact is error-message quality (`config_flow.py::_extract_code` checks state only). May be closed opportunistically (reject URLs not starting `https://secure.agl.com.au/`). |
-| T-1 | Crafted numerics (1e308 / negative / NaN) poison recorder statistics | **Mitigated** | `_safe_float` clamps to finite non-negative; parser total over arbitrary JSON, fuzz-enforced on every PR + weekly deep run (`fuzz.yml`, PRs #177/#186). |
+| T-1 | Crafted numerics (1e308 / negative / NaN) poison recorder statistics | **Mitigated** | `safe_float` (renamed from `_safe_float` — it is now a cross-module API) clamps to finite, non-negative **and `<= MAX_AGL_NUMERIC` (1e6)**; parser total over arbitrary JSON, fuzz-enforced on every PR + weekly deep run (`fuzz.yml`, PRs #177/#186), with the upper bound now part of the fuzz invariant. Until #241 this row overstated the control while naming the exact value that defeated it: 1e308 is finite, so it passed through unchanged, and `1e308 + 1e308` evaluates to `inf` with no exception — two such readings in one hourly bucket produced the non-finite `sum` the clamp existed to prevent. Values above the bound are rejected to 0.0, never clamped to it (a clamped 1e6 would write a permanent false spike). |
+| T-4 | Crafted interval `dateTime` poisons the cumulative-sum baseline | **Mitigated** | `parse_interval_readings` validates each reading against the requested day ± `INTERVAL_DAY_TOLERANCE` and the client passes it at all three fetch sites (#242). Previously the parser took no period argument and the client discarded the `period=` it had just built, while `coordinator._import_intervals` derives its baseline cutoff as `min(hour_cons)` — straight from response content. One injected interval dated near `_EARLIEST_HISTORY` pinned the cutoff before all real recorder history, so `_baseline_sums_before` returned 0.0 instead of the true multi-year total and the same import wrote today's genuine hours on top of it: a large downward step in the `sum` column. That is the #114 failure class, but reachable from a single crafted timestamp rather than only a resume-gap edge case. That first cut bounded the window to the requested day ± 1 DATE (the parser had no timezone context), which Codex showed is still exploitable: an AEST day D starts at D-1T14:00Z, so every instant of D-1 was accepted and an injected D-1T00:00Z reading dragged the cutoff ~14 h early — stored rows in the gap excluded from the baseline but not re-emitted, a downward step with no 1970-style absurdity. The window is now derived from the configured local timezone (local midnight → next local midnight + `INTERVAL_WINDOW_TRAILING_SLACK_HOURS`, DST handled by the tzinfo; `AglClient` receives `local_tz` at construction); the ±1-DATE check remains only as the tz-less fallback. The slack is TRAILING only — pass 2 showed a leading slack re-admits the cutoff attack at its own width (the cutoff is `min(hour_cons)`, which only earlier-than-genuine rows can move), while a late row cannot lower the min. Pass 3 closed two residuals: the window tz is refined each overview cycle from the CONTRACT's service-address state (`tz_for_address` — a cross-timezone household would otherwise clip the day's first slots under DST), and `_import_intervals` dedupes slots within a batch last-wins (a slot appearing in two days' responses via the trailing slack was SUMMED by the hourly bucketing, inflating statistics — recorder idempotency only dedupes across imports). |
 | T-2 | Malicious GitHub Action via unpinned refs | **Mitigated** | All actions SHA-pinned with version comments (PR #42); repo Actions policy restricts to GitHub-owned + four pinned publisher patterns with SHA pinning required at policy level; actionlint/zizmor workflow-audit gates (PR #184); `continue-on-error` removed from HACS validation; no third-party actions in the privileged release workflow; Dependabot maintains pins; policy state snapshotted in `.github/settings/` with weekly drift detection (PR #188). |
 | T-3 | Refresh-token prefix written to entity registry as `unique_id` | **Mitigated** | Fallback is `sha256(refresh_token)[:16]` (PR #43). |
 | R-1 | No structured audit trail of token-rotation events | **Accepted** | Debug-level persist log exists; external use of a stolen token surfaces as a reauth event. A structured audit log is disproportionate — accepted; revisit if account-takeover reports appear. |
@@ -191,6 +210,7 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. In force since 2026-07: HACS installs the attested zip itself (`zip_release`), per-release attested SBOMs, and fail-closed ancestry + tag-signature release gates. |
 | E-2 | Open-schema `dict(rate)` passthrough into runtime state | **Mitigated** | Allowlist parsing; "don't forward raw AGL response dicts" is a standing AGENTS.md rule. |
 | E-3 | Borrowed iOS `client_id` supports account-modification scopes the integration doesn't request | **Accepted with tripwire** | `AGL_OAUTH_SCOPE` contains no write scopes; **any change to the scope constant is an impact re-assessment + regulatory re-determination trigger** (§7, §9) and a mandatory security-review item. |
+| E-4 | Symlink committed under `custom_components/haggle/` inlines out-of-tree file content into the HACS release artifact | **Mitigated** | `zip -r` without `-y` dereferences symlinks — the link is stored as a regular file holding the target's live bytes (verified empirically, #246). `release.yml` now fails closed: any symlink under the zipped tree aborts the build, and `-y` is applied as defence in depth (`-y` alone would store a traversal path extracted on the user's machine). Exploitation requires the symlink to survive the `protect-main` PR gate; the guard exists because this repo normalises a committed symlink (`CLAUDE.md -> AGENTS.md`), plausibly lowering reviewer scrutiny of a new one. Guard logic is exercised by `tests/test_release_guard.py` against the literal workflow text. |
 
 ## 5. Residual-threat notes
 

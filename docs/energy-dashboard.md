@@ -35,7 +35,7 @@ not for the Energy dashboard:
 | **Consumption** | Cumulative kWh ever imported by the integration. Mirrors the statistics total; moves once per daily poll. Not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |
 | **Consumption this period** | kWh so far in the current AGL billing period (matches the app's "Usage So Far"). Not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |
 | **Consumption cost** | AUD so far in the current billing period. |
-| **Bill projection** | AGL's own forecast for the current bill. |
+| **Bill projection** | AGL's own forecast for the current bill, read from the account overview. **Solar contracts:** AGL uses that slot for "Sold To Grid" instead, so no projection is available and this sensor stays `unknown` — it deliberately shows nothing rather than the wrong number ([#253](https://github.com/NaanyaBiz/haggle/issues/253)). Read `unknown` on a non-solar contract in v0.4.0 and earlier; fixed in v0.5.0. |
 | **Unit rate / Supply charge** | Your plan's c/kWh (as AUD/kWh) and daily supply charge. |
 | **Unit rate (peak / off-peak / shoulder)** | Per-band rates — ToU contracts only. |
 | **Solar generation / Solar feed-in credit** | Cumulative exported kWh / credited AUD ever imported — solar contracts only. Like **Consumption**, these are running totals: do not compare them to the app's billing-period tile. **Solar generation** is not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |

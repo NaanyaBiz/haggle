@@ -6,8 +6,11 @@ TOTAL over arbitrary JSON — a parser crash is a MITM-triggerable failed poll
 cycle. This harness enforces two invariants:
 
   1. No exception escapes any parse_* function for any json.loads() value.
-  2. Every numeric field returned is finite and >= 0 (the _safe_float
-     guarantee — protects the recorder's cumulative-sum statistics).
+  2. Every numeric field returned is finite, >= 0, and <= MAX_AGL_NUMERIC
+     (the safe_float guarantee — protects the recorder's cumulative-sum
+     statistics). The upper bound is part of the invariant since #241:
+     "finite" alone let 1e308 through, and two of those in one hourly
+     bucket sum to inf with no exception raised.
 
 Run locally (needs the dev env for the homeassistant import chain):
     uv sync --extra dev
@@ -24,6 +27,7 @@ from __future__ import annotations
 import json
 import math
 import sys
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import atheris
@@ -32,6 +36,28 @@ import atheris
 # atheris.instrument_imports()/instrument_all() would sweep in the whole
 # homeassistant import chain and make startup prohibitively slow.
 from custom_components.haggle.agl import parser
+from custom_components.haggle.const import (
+    INTERVAL_DAY_TOLERANCE,
+    INTERVAL_WINDOW_TRAILING_SLACK_HOURS,
+    MAX_AGL_NUMERIC,
+)
+
+# Fixed day for the windowed passes — fuzz inputs may carry any timestamp, and
+# the invariant is that everything RETURNED lies within the window.
+_FUZZ_EXPECTED_DAY = date(2026, 1, 15)
+# tz-less fallback pass: coarse ±1-DATE window.
+_FUZZ_WINDOW = (
+    _FUZZ_EXPECTED_DAY - timedelta(days=INTERVAL_DAY_TOLERANCE),
+    _FUZZ_EXPECTED_DAY + timedelta(days=INTERVAL_DAY_TOLERANCE),
+)
+# tz-derived pass (Codex P1, PR #266): the exact UTC shape of one local day
+# plus trailing-only slack. UTC keeps the harness deterministic and
+# tzdata-independent.
+_FUZZ_TZ_WINDOW = (
+    datetime(2026, 1, 15, tzinfo=UTC),  # strict lower bound — no leading slack
+    datetime(2026, 1, 16, tzinfo=UTC)
+    + timedelta(hours=INTERVAL_WINDOW_TRAILING_SLACK_HOURS),
+)
 
 for _fn_name in (
     "parse_overview",
@@ -40,7 +66,7 @@ for _fn_name in (
     "parse_bill_period",
     "parse_plan",
     "_classify_tariff",
-    "_safe_float",
+    "safe_float",
     "_as_dict",
     "_as_list",
     "_as_str",
@@ -54,6 +80,8 @@ def _check_amount(value: float) -> None:
         raise AssertionError(f"non-finite value escaped a parser: {value!r}")
     if value < 0:
         raise AssertionError(f"negative value escaped a parser: {value!r}")
+    if value > MAX_AGL_NUMERIC:
+        raise AssertionError(f"unbounded value escaped a parser: {value!r}")
 
 
 def test_one_input(data: bytes) -> None:
@@ -64,6 +92,32 @@ def test_one_input(data: bytes) -> None:
 
     for source_field in ("consumption", "feedIn"):
         for reading in parser.parse_interval_readings(obj, source_field=source_field):
+            _check_amount(reading.kwh)
+            _check_amount(reading.cost_aud)
+        # Windowed passes (#242 / T-4): with expected_day set, every RETURNED
+        # reading must lie inside the window — a crafted timestamp escaping
+        # it is exactly the baseline-cutoff attack the guard exists to stop.
+        # Fallback (tz-less) pass: coarse ±1-DATE window.
+        for reading in parser.parse_interval_readings(
+            obj, source_field=source_field, expected_day=_FUZZ_EXPECTED_DAY
+        ):
+            if not (_FUZZ_WINDOW[0] <= reading.dt.date() <= _FUZZ_WINDOW[1]):
+                raise AssertionError(
+                    f"out-of-window timestamp escaped the guard: {reading.dt!r}"
+                )
+            _check_amount(reading.kwh)
+            _check_amount(reading.cost_aud)
+        # tz-derived pass: the tight local-day window (Codex P1, PR #266).
+        for reading in parser.parse_interval_readings(
+            obj,
+            source_field=source_field,
+            expected_day=_FUZZ_EXPECTED_DAY,
+            tz=UTC,
+        ):
+            if not (_FUZZ_TZ_WINDOW[0] <= reading.dt < _FUZZ_TZ_WINDOW[1]):
+                raise AssertionError(
+                    f"timestamp escaped the tz-derived window: {reading.dt!r}"
+                )
             _check_amount(reading.kwh)
             _check_amount(reading.cost_aud)
 
