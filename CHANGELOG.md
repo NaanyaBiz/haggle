@@ -96,6 +96,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and shows the committed delta vs origin/main, which `git status`
   cannot; and the hash tooling falls back from `shasum` to `sha256sum`
   so the fail-closed design cannot self-DoS a Perl-less Linux host.
+  Cross-vendor review then found that `git -C <path> commit` had NEVER
+  matched the main-branch guard (the entry pattern required commit/push
+  immediately after `git` — the `-C` handling below it was dead code),
+  fixed along with `$PWD`-target resolution; the wiring installer now
+  writes through the worktree symlink instead of forking it; and for
+  the irreducible checkout-time wiring-substitution window (Claude Code
+  loads hook config from any working-tree settings file with no
+  approval), `pin-hooks.sh` generates an optional managed-settings
+  deployment (`allowManagedHooksOnly`) that closes it completely at
+  machine-policy level.
 
 - **`safe_float` now bounds magnitude, not just finiteness** (#241;
   renamed from `_safe_float` — it is a cross-module API, review finding).

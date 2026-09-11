@@ -118,21 +118,49 @@ if [[ -n "$tmpl_status" ]]; then
     git --no-pager diff -- "$WIRING_TEMPLATE" | head -40 || true
 fi
 
-if [[ -f "$LOCAL_SETTINGS" ]]; then
-    current="$(jq -S '.hooks // {}' "$LOCAL_SETTINGS")"
+# Resolve through the worktree symlink BEFORE writing: `mv` onto the
+# symlink path would replace the LINK with a private copy, silently
+# forking this worktree's wiring away from the shared anchor while every
+# other worktree kept the stale version (Codex P1 on PR #269).
+TARGET="$LOCAL_SETTINGS"
+if [[ -L "$LOCAL_SETTINGS" || -f "$LOCAL_SETTINGS" ]]; then
+    TARGET="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$LOCAL_SETTINGS")"
+fi
+
+if [[ -f "$TARGET" ]]; then
+    current="$(jq -S '.hooks // {}' "$TARGET")"
 else
     current="{}"
-    echo "{}" > "$LOCAL_SETTINGS"
+    echo "{}" > "$TARGET"
 fi
 proposed="$(jq -S '.hooks' "$WIRING_TEMPLATE")"
 
 if [[ "$current" == "$proposed" ]]; then
-    echo "Hook wiring in $LOCAL_SETTINGS already matches the template."
+    echo "Hook wiring in $TARGET already matches the template."
 else
-    echo "Updating hook wiring in $LOCAL_SETTINGS (diff vs installed):"
+    echo "Updating hook wiring in $TARGET (diff vs installed):"
     diff <(printf '%s\n' "$current") <(printf '%s\n' "$proposed") || true
     tmp="$(mktemp)"
-    jq --slurpfile w "$WIRING_TEMPLATE" '.hooks = $w[0].hooks' "$LOCAL_SETTINGS" > "$tmp"
-    mv "$tmp" "$LOCAL_SETTINGS"
-    echo "Wiring installed. Claude Code picks it up via its settings watcher."
+    jq --slurpfile w "$WIRING_TEMPLATE" '.hooks = $w[0].hooks' "$TARGET" > "$tmp"
+    mv "$tmp" "$TARGET"
+    echo "Wiring installed at $TARGET. Claude Code picks it up via its settings watcher."
 fi
+
+# --- managed-settings hardening (optional, recommended) --------------------
+# settings.local.json wiring still has one residual: a hostile branch can
+# force-track settings files and Claude Code loads hook config from the
+# working tree with no approval (Codex P1s on PR #269). The COMPLETE fix is
+# macOS managed settings: allowManagedHooksOnly restricts hook execution to
+# managed-deployed hooks, and NO project file can override it. The wiring
+# commands no-op outside a checkout carrying .claude/hooks-wiring.json, so
+# machine-global deployment is safe. Generate the artifact; deploying it
+# needs admin rights and is the maintainer's deliberate machine-policy call.
+MANAGED_OUT=".claude/managed-settings.generated.json"
+jq '{allowManagedHooksOnly: true, hooks: .hooks}' "$WIRING_TEMPLATE" > "$MANAGED_OUT"
+echo ""
+echo "Optional hardening (closes the tracked-settings wiring residual):"
+echo "  sudo mkdir -p '/Library/Application Support/ClaudeCode'"
+echo "  sudo install -m 644 $MANAGED_OUT '/Library/Application Support/ClaudeCode/managed-settings.json'"
+echo "NOTE: allowManagedHooksOnly disables user/project hooks in EVERY repo"
+echo "on this machine — merge by hand instead if a managed-settings.json"
+echo "already exists or other projects rely on their own hooks."

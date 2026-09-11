@@ -291,11 +291,28 @@ matching pin store (adversarial-review P1 on PR #269). Two layers close
 that: every wiring command REFUSES a pin store that is tracked in git
 (the substituted anchor betrays itself), and a ci.yml gate fails any PR
 tracking either local-trust file, so such a PR is red before review and
-unmergeable. The wiring file itself has the same force-track exposure
-with no self-check possible (attacker-supplied wiring wouldn't verify
-anything) — there the CI gate plus the file's visibility in the PR
-listing are the controls, and a worktree checkout replaces only that
-worktree's symlink, leaving the main anchor intact. Trust is granted only by the maintainer running
+unmergeable. Cross-vendor review (Codex on PR #269) then
+sharpened the residual into its true shape: Claude Code loads hook
+config from ANY working-tree settings file with no approval and a live
+watcher, so a hostile branch can (a) force-track its own
+`settings.local.json`, displacing the wiring before any runtime check
+can execute, or (b) simply re-add a `hooks` block to the tracked
+`settings.json` — both wire attacker commands at checkout time, before
+the CI gate can flag anything for a live session. In the default
+(local-wiring) posture these remain RECORDED RESIDUALS mitigated by the
+CI gate (the PR is red and unmergeable), the file's visibility in the
+PR listing, and worktree symlinks isolating a hostile checkout's blast
+radius to that worktree. The COMPLETE closure is the managed-settings
+posture: `allowManagedHooksOnly: true` plus the wiring deployed at
+`/Library/Application Support/ClaudeCode/managed-settings.json`, which
+sits above every project file in Claude Code's precedence and cannot be
+overridden by anything a checkout contains (verified against v2.1.239);
+the wiring commands no-op outside a checkout carrying the tracked
+policy-record marker, so machine-global deployment is safe.
+`scripts/pin-hooks.sh` generates the deployment artifact and prints the
+install commands — deploying it is an admin-rights machine-policy
+decision recorded as the recommended posture, made deliberately by the
+maintainer rather than by this repo. Trust is granted only by the maintainer running
 `scripts/pin-hooks.sh` after reviewing the diffs; the committed
 `.claude/hooks-wiring.json` is the policy record the installer copies
 from, shown as a diff at install time. The committed `settings.json`

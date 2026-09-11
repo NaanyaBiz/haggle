@@ -949,7 +949,11 @@ The HA Energy dashboard requires:
   the untracked TOFU pin store before executing. After ANY edit to
   `.claude/hooks/*.sh`, re-run `./scripts/pin-hooks.sh` (after reviewing
   the diff) or every hook fails closed with a BLOCKED message — that
-  failure mode is the control working, not a bug.
+  failure mode is the control working, not a bug. The wiring commands
+  no-op in any checkout lacking `.claude/hooks-wiring.json`, so they are
+  safe under the optional machine-global managed-settings deployment the
+  script prints (the complete fix for checkout-time wiring substitution
+  — threat-model §6).
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had

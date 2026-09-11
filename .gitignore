@@ -40,6 +40,7 @@ Thumbs.db
 .claude/settings.local.json
 # Hook TOFU pin store (#245) — local trust anchor, never committed
 .claude/hooks.sha256
+.claude/managed-settings.generated.json
 .claude/.credentials.json
 # Local-only devops notes and private context (never reaches public repo)
 .claude/local/

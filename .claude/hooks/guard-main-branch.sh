@@ -11,8 +11,11 @@ if [[ -z "$cmd" ]]; then
     exit 0
 fi
 
-# Only inspect git commit / git push.
-if ! echo "$cmd" | grep -qE '(^|[[:space:]])git[[:space:]]+(commit|push)([[:space:]]|$)'; then
+# Only inspect git commit / git push — including the `git -C <path>` form,
+# which the old pattern (commit/push required IMMEDIATELY after `git`)
+# never matched at all: every -C-form commit bypassed the guard and the
+# -C extraction below was dead code (found chasing Codex P2 on PR #269).
+if ! echo "$cmd" | grep -qE '(^|[[:space:]])git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(commit|push)([[:space:]]|$)'; then
     exit 0
 fi
 
@@ -31,10 +34,21 @@ fi
 git_dir="${git_dir%\"}"; git_dir="${git_dir#\"}"
 git_dir="${git_dir%\'}"; git_dir="${git_dir#\'}"
 
-# An unresolvable target (unexpanded $VAR, nonexistent path) means we cannot
-# know the branch. Defer to the server-side protect-main ruleset — the
-# enforced zero-bypass floor; this hook is the advisory convenience layer —
-# rather than guessing from the CWD, which is what false-blocked.
+# $PWD trivially expands to the CWD — resolve it instead of treating it
+# as unresolvable, so `git -C "$PWD" commit` on main still blocks
+# (Codex P2 on PR #269).
+# shellcheck disable=SC2016 # matching the LITERAL unexpanded string is the point
+if [[ "$git_dir" == '$PWD' || "$git_dir" == '${PWD}' ]]; then
+    git_dir="."
+fi
+
+# Any OTHER unresolvable target (unexpanded $VAR, nonexistent path) means we
+# cannot know the branch. Defer to the server-side protect-main ruleset —
+# the enforced zero-bypass floor; this hook is the advisory convenience
+# layer — rather than guessing from the CWD, which is what false-blocked
+# legitimate worktree commits. Accepted residual: a variable that happens
+# to expand to the main worktree slips the LOCAL block; the commit is then
+# rejected at push by the ruleset and recoverable with a reset.
 if [[ "$git_dir" != "." && ! -d "$git_dir" ]]; then
     exit 0
 fi

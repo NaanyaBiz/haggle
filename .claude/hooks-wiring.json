@@ -14,6 +14,10 @@
     "silently overwrites gitignored files on checkout, so a force-tracked",
     "(git add -f) pin file would otherwise substitute the trust anchor \u2014",
     "the security-review P1 on PR #269. ci.yml carries the matching gate.",
+    "Commands first no-op when .claude/hooks-wiring.json is absent, so the",
+    "same wiring is safe to deploy machine-globally via managed settings",
+    "(allowManagedHooksOnly) \u2014 the COMPLETE fix for the checkout-time",
+    "wiring-substitution residual; see scripts/pin-hooks.sh output.",
     "Never re-add a hooks block to the committed .claude/settings.json."
   ],
   "hooks": {
@@ -23,7 +27,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/format-python.sh'"
+            "command": "sh -c 'if [ ! -f .claude/hooks-wiring.json ]; then exit 0; fi; if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/format-python.sh'"
           }
         ]
       },
@@ -32,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/validate-manifest.sh'"
+            "command": "sh -c 'if [ ! -f .claude/hooks-wiring.json ]; then exit 0; fi; if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/validate-manifest.sh'"
           }
         ]
       }
@@ -43,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/guard-main-branch.sh'"
+            "command": "sh -c 'if [ ! -f .claude/hooks-wiring.json ]; then exit 0; fi; if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/guard-main-branch.sh'"
           }
         ]
       }
@@ -53,7 +57,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "sh -c 'if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/inject-branch-context.sh'"
+            "command": "sh -c 'if [ ! -f .claude/hooks-wiring.json ]; then exit 0; fi; if git ls-files --error-unmatch .claude/hooks.sha256 >/dev/null 2>&1; then echo \"BLOCKED: .claude/hooks.sha256 is TRACKED in git \u2014 the checked-out branch is supplying its own hook pins (#245). Remove it from the branch, restore your pins: ./scripts/pin-hooks.sh\" >&2; exit 2; fi; if command -v shasum >/dev/null 2>&1; then shasum -a 256 -c .claude/hooks.sha256 >/dev/null 2>&1; else sha256sum -c .claude/hooks.sha256 >/dev/null 2>&1; fi || { echo \"BLOCKED: .claude/hooks/* does not match the local TOFU pins (.claude/hooks.sha256). If you just checked out or pulled a branch, REVIEW the hook diffs, then re-pin: ./scripts/pin-hooks.sh (#245)\" >&2; exit 2; }; exec .claude/hooks/inject-branch-context.sh'"
           }
         ]
       }

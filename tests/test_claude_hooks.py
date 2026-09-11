@@ -213,6 +213,17 @@ class TestGuardMainBranch:
         )
         assert result.returncode == 0
 
+    def test_pwd_target_on_main_still_blocks(self, tmp_path) -> None:
+        """Codex P2 (PR #269): `git -C "$PWD" commit` trivially expands to
+        the CWD — it must not slip through the unresolvable-target deferral."""
+        repo = _git_repo(tmp_path, branch="main")
+        result = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload('git -C "$PWD" commit -m x'),
+            cwd=repo,
+        )
+        assert result.returncode == 2
+
     def test_override_prefix_is_honoured(self, tmp_path) -> None:
         repo = _git_repo(tmp_path, branch="main")
         result = _run(
@@ -252,6 +263,9 @@ def _sandbox(tmp_path: pathlib.Path) -> pathlib.Path:
         script = box / ".claude" / "hooks" / name
         script.write_text("#!/bin/sh\necho RAN-" + name + "\nexit 0\n")
         script.chmod(0o755)
+    # The repo marker: without it the wiring no-ops (foreign-project guard
+    # for machine-global managed-settings deployment).
+    shutil.copy(WIRING, box / ".claude" / "hooks-wiring.json")
     import hashlib
 
     lines = []
@@ -268,6 +282,27 @@ class TestHookIntegrityWiring:
     @pytest.fixture(autouse=True)
     def _tools(self) -> None:
         _require("git", "bash", "sha")
+
+    def test_wiring_noops_outside_a_marked_repo(self, tmp_path) -> None:
+        """The commands must be safe to deploy machine-globally (managed
+        settings): in a project without the tracked policy-record marker
+        they exit 0 silently — no verification, no exec, no block."""
+        box = _sandbox(tmp_path)
+        (box / ".claude" / "hooks-wiring.json").unlink()
+        (box / ".claude" / "hooks.sha256").unlink()
+        for command in _wiring_commands():
+            result = subprocess.run(
+                ["bash", "-c", command],
+                input="{}",
+                capture_output=True,
+                text=True,
+                cwd=box,
+                timeout=30,
+                check=False,
+            )
+            assert result.returncode == 0, command
+            assert result.stdout == ""
+            assert result.stderr == ""
 
     def test_tracked_pin_store_is_refused(self, tmp_path) -> None:
         """Security-review P1 (PR #269): git silently overwrites gitignored
@@ -426,6 +461,22 @@ class TestPinHooksScript:
         result = self._run_pin(repo)
         assert result.returncode == 1
         assert "TRACKED" in result.stderr
+
+    def test_install_writes_through_the_worktree_symlink(self, tmp_path) -> None:
+        """Codex P1 (PR #269): `mv` onto the symlink path would replace the
+        LINK with a private copy, silently forking this worktree's wiring
+        away from the shared anchor. The installer must resolve the link
+        and update the TARGET, leaving the symlink in place."""
+        _require("jq")
+        repo = self._repo(tmp_path)
+        anchor = tmp_path / "main-anchor-settings.json"
+        anchor.write_text("{}")
+        link = repo / ".claude" / "settings.local.json"
+        link.symlink_to(anchor)
+        result = self._run_pin(repo)
+        assert result.returncode == 0, result.stderr
+        assert link.is_symlink(), "installer replaced the shared symlink"
+        assert "hooks" in json.loads(anchor.read_text())
 
     def test_happy_path_pins_and_installs_wiring(self, tmp_path) -> None:
         _require("jq")

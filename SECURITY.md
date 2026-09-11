@@ -428,7 +428,12 @@ on PreToolUse/UserPromptSubmit; on PostToolUse the guarantee is that the
 tampered hook never runs). Because git silently overwrites gitignored
 files when a branch force-tracks them, the wiring additionally REFUSES a
 pin store that is tracked in git, and a ci.yml gate fails any PR that
-tracks either local-trust file. Trust is granted exclusively by
+tracks either local-trust file. The remaining checkout-time
+wiring-substitution window (force-tracked settings files; a hooks block
+re-added to the tracked settings.json) is a recorded residual in the
+default posture — fully closed by the optional managed-settings
+deployment (`allowManagedHooksOnly`) that `scripts/pin-hooks.sh`
+generates and documents, which no project file can override. Trust is granted exclusively by
 the maintainer running `scripts/pin-hooks.sh` after reviewing hook
 diffs; `.claude/hooks-wiring.json` is the committed policy record. The
 committed `settings.json` carries permissions only. Accepted residual:
