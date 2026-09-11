@@ -71,6 +71,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **`safe_float` now bounds magnitude, not just finiteness** (#241;
+  renamed from `_safe_float` — it is a cross-module API, review finding).
+  `1e308` is finite, so it passed the guard unchanged — and
+  `1e308 + 1e308` evaluates to `inf` with no exception raised. Two such
+  readings in one hourly bucket, or a cumulative sum crossing the ceiling,
+  therefore produced exactly the non-finite `sum` the finite check existed
+  to prevent, corrupting a `haggle:*` series permanently. Values above
+  `MAX_AGL_NUMERIC` (1e6 — roughly 2 GW of continuous draw in a 30-minute
+  slot) are now rejected to `0.0`, never clamped to the bound, since a zero
+  delta leaves the sum untouched while a clamped 1e6 would write a
+  permanent false spike. The bound is part of the fuzz invariant.
+  - The two near-duplicate `safe_float` copies are collapsed into one:
+    `coordinator.py` imports the parser's. They had already drifted (one
+    returned `-0.0` where the other normalised to `0.0`), and an upper
+    bound added to one copy but not the other would be worse than none.
+  - `docs/threat-model.md` **T-1** claimed this was mitigated while naming
+    the exact value that defeated it. Corrected.
+- **Interval timestamps are validated against the requested day** (#242).
+  `parse_interval_readings` took no period argument and the client
+  discarded the `period=` it had just built, while
+  `coordinator._import_intervals` derives its cumulative-sum baseline
+  cutoff from `min(hour_cons)` — straight from response content. A single
+  injected interval with an old `dateTime` pinned that cutoff before all
+  real recorder history, so the baseline resolved to `0.0` instead of the
+  true multi-year total and the same import wrote today's genuine hours on
+  top of it: a large downward step in the `sum` column. That is the #114
+  failure class, reachable from one crafted timestamp rather than only a
+  resume-gap edge case. Readings outside the requested day's window are now
+  dropped, at all three fetch sites including solar. The window is derived
+  from the configured local timezone — local midnight to next local
+  midnight plus 2 h of trailing-only slack, computed in UTC (AGL reads
+  `period=` in the contract's local timezone and returns UTC, so a one-day
+  query legitimately spans two UTC dates; DST is handled by the timezone
+  data). A coarser ±1-date window applies only when no timezone is
+  available. Recorded as threat-model **T-4**.
+
 - **Malformed-but-200 token responses no longer escape structured handling**
   (#243). Two OAuth call sites shielded their transport layer but left the
   schema-trusting code that follows it unguarded, so a 200 whose body was

@@ -118,7 +118,7 @@ reporter on request. The short version:
 |---|---|
 | AGL HTTPS API → HA coordinator | TLS + Trust-On-First-Use SPKI pinning (see below). |
 | HA user browser → config flow | OAuth state nonce + PKCE S256. |
-| AGL JSON → HA recorder/statistics | Allowlist-style parsing; numeric values clamped to non-negative finite floats. |
+| AGL JSON → HA recorder/statistics | Allowlist-style parsing; numeric values clamped to non-negative finite floats bounded by `MAX_AGL_NUMERIC`; interval timestamps validated against the requested contract-local day, and duplicate slots within an import batch replaced rather than summed (threat-model T-4). |
 | GitHub Actions → HACS installers | All Actions SHA-pinned; release artefacts attested via `actions/attest-build-provenance`. HACS installs the attested zip itself (hacs.json `zip_release`); SPDX + CycloneDX SBOMs are attested against the same digest. |
 | HA diagnostics → public GitHub issue | Built to be public: refresh token redacted, account/contract HMAC-anonymised, final scrub pass + leak tests; parsed by the daily triage routine strictly as untrusted data. |
 

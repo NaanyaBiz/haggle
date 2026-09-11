@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -43,6 +42,9 @@ from .agl.client import (
     AGLRateLimitError,
     AGLTransportError,
 )
+
+# Single numeric-guard implementation (#241) — a local near-duplicate had drifted.
+from .agl.parser import safe_float, tz_for_address
 from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
@@ -94,18 +96,6 @@ _LOGGER = logging.getLogger(__name__)
 _EARLIEST_HISTORY = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-def _safe_float(raw: Any) -> float:
-    """Coerce raw API value to a non-negative finite float, defaulting to 0.0."""
-    try:
-        value = float(raw)
-    except TypeError, ValueError:
-        return 0.0
-    if not math.isfinite(value) or value < 0:
-        _LOGGER.warning("Rejecting non-finite/negative coordinator value: %r", raw)
-        return 0.0
-    return value
-
-
 def _money(label: str | None) -> str:
     """Strip an AGL display-money label ("$1,234.56", "+ $7.43") to a numeric
     string; "" for missing/blank. A leading "-" survives on purpose so the
@@ -127,6 +117,26 @@ def _clamped_poll_interval(options: Mapping[str, Any]) -> timedelta:
         hours = DEFAULT_POLL_INTERVAL_HOURS
     hours = max(MIN_POLL_INTERVAL_HOURS, min(MAX_POLL_INTERVAL_HOURS, hours))
     return timedelta(hours=hours)
+
+
+def _dedupe_slots(intervals: list[IntervalReading]) -> list[IntervalReading]:
+    """One meter reading per 30-min slot, last-wins.
+
+    A slot can appear twice in one multi-day batch — day D's response
+    carrying a row inside the trailing-slack window that day D+1's response
+    then also returns — and both hourly aggregators SUM everything they are
+    given, so within a single import a duplicated slot silently inflates the
+    statistics (consumption/cost/ToU AND generation/credit — Codex pass-3
+    and pass-4 P1s, PR #266; the recorder's idempotent overwrite only
+    dedupes ACROSS imports, not within one). Last-wins: days are fetched in
+    chronological order, so the later day's response is authoritative for
+    its own slots. Shared by _import_intervals and _import_generation so
+    the two paths cannot drift apart again.
+    """
+    by_slot: dict[datetime, IntervalReading] = {}
+    for r in intervals:
+        by_slot[r.dt] = r
+    return list(by_slot.values())
 
 
 @dataclass
@@ -360,7 +370,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         unit_rate_aud: float | None = None
         for rate in plan.unit_rates:
             if rate.get("type") == "c/kWh":
-                cents = _safe_float(rate.get("price"))
+                cents = safe_float(rate.get("price"))
                 unit_rate_aud = cents / 100.0
                 break
 
@@ -424,8 +434,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         # Parse bill-period totals.
         projection: float | None = None
-        period_kwh = _safe_float(summary.consumption_kwh)
-        period_cost = _safe_float(_money(summary.cost_label))
+        # safe_float here is the single bounded implementation from
+        # agl.parser (#241) — the unbounded local copy stays deleted.
+        period_kwh = safe_float(summary.consumption_kwh)
+        period_cost = safe_float(_money(summary.cost_label))
         # /v3/overview only (#253). No usage-summary fallback: that response
         # carries no additionalLabel to key on, so a fallback is unguardable —
         # a solar summary value would sail past the label check straight into
@@ -433,7 +445,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # the summary endpoint (blank in every release v0.1.0..v0.4.0).
         proj_label = _money(self._bill_projection_label)
         if proj_label:
-            projection = _safe_float(proj_label)
+            projection = safe_float(proj_label)
 
         return HaggleData(
             consumption_period_kwh=period_kwh,
@@ -495,6 +507,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 # review finding). Failure-stickiness is preserved by the
                 # early return in the except block above.
                 self._bill_projection_label = contract.bill_projection_label
+                # The interval-timestamp window must be the CONTRACT's local
+                # day, not the HA instance's: a Sydney contract managed from
+                # a Brisbane HA host is off by 1 h during DST, and the strict
+                # lower bound would then drop the day's first slots on every
+                # fetch (Codex pass-3 P1, PR #266). Best source available is
+                # the service address's state; HA's tz (set at client
+                # construction) remains the fallback when it doesn't parse.
+                tz = tz_for_address(contract.address)
+                if tz is not None:
+                    self.client.local_tz = tz
                 return
         # HTTP-successful overview WITHOUT the configured contract (contract
         # removed from the account, or its contractNumber dropped as malformed
@@ -1585,6 +1607,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """
         from homeassistant.const import UnitOfEnergy
 
+        intervals = _dedupe_slots(intervals)
+
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = (
             self._bucket_hourly(intervals)
@@ -1742,6 +1766,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         (data lag is 24-48 h, well inside the window).
         """
         from homeassistant.const import UnitOfEnergy
+
+        intervals = _dedupe_slots(intervals)
 
         hour_kwh: dict[datetime, float] = {}
         hour_credit: dict[datetime, float] = {}

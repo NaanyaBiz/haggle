@@ -89,7 +89,7 @@ tests/
 ├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
-├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, _safe_float
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float
 ├── test_pinning.py                  # SPKI extraction + host-name guards
 ├── fuzz/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
@@ -722,10 +722,44 @@ The HA Energy dashboard requires:
   can include diagnostic fields (`mfa_token`, internal trace IDs); AGL BFF URLs
   carry the contract number (PII). Pattern:
   `_LOGGER.debug("…body: %s", text[:200]); raise AGLError(f"HTTP {status} …")`.
-- **Don't use unbounded `float()` coercion on AGL response values**. Use the
-  `_safe_float` helpers in `agl/parser.py` / `coordinator.py` so `inf`/`nan`/
-  negative values can't reach `async_add_external_statistics` and corrupt the
-  cumulative-sum series.
+- **Don't use unbounded `float()` coercion on AGL response values**. Use
+  `safe_float` from `agl/parser.py` — now the SINGLE implementation, imported
+  by `coordinator.py` rather than duplicated (the two copies had already
+  drifted: one returned `-0.0`, the other `0.0`) — so `inf`/`nan`/negative
+  **and implausibly large** values can't reach
+  `async_add_external_statistics` and corrupt the cumulative-sum series.
+  "Finite" was never a sufficient bound (#241): `1e308` is finite and passed
+  straight through, and `1e308 + 1e308` evaluates to `inf` with no exception,
+  so two such readings in one hourly bucket produced exactly the non-finite
+  `sum` the check existed to prevent. Values above `MAX_AGL_NUMERIC` are
+  rejected to `0.0`, never clamped to the bound — a zero delta leaves the sum
+  untouched, whereas a clamped `1e6` writes a permanent false spike.
+- **Don't parse interval readings without telling the parser which day was
+  requested — and pass the local timezone.** `parse_interval_readings` takes
+  `expected_day` and `tz`; every `AglClient` fetch site must pass both
+  (#242, Codex P1 on PR #266 — `AglClient` gets `local_tz` from HA's
+  configured tz at construction, refined each overview cycle from the
+  contract's service-address state via `parser.tz_for_address`: the
+  CONTRACT's local day is the correct window and can differ from the HA
+  instance's timezone). Without `expected_day`,
+  `coordinator._import_intervals` derives its baseline cutoff as
+  `min(hour_cons)` — purely from response content — so ONE interval carrying
+  an old `dateTime` pins the cutoff before all real recorder history, the
+  baseline resolves to `0.0` instead of the true multi-year sum, and the same
+  import writes today's real hours on top of it: a large downward step in the
+  `sum` column (#114 class, from a single crafted timestamp). With `tz` the
+  window is the true UTC shape of the requested LOCAL day, with
+  `INTERVAL_WINDOW_TRAILING_SLACK_HOURS` of TRAILING-only slack (AGL
+  interprets `period=` in the contract's local timezone and returns
+  `dateTime` in UTC, so a single-day query spans two UTC dates; DST is
+  handled by the tzinfo). Never add LEADING slack: the baseline cutoff is
+  `min(hour_cons)`, so leading slack of any width re-admits the cutoff
+  attack at that width, while a late row cannot lower the min (Codex
+  pass-2 P1 on PR #266). The tz-less ±1-DATE fallback
+  alone is NOT sufficient: it accepts every instant of the adjacent UTC date,
+  so an injected `D-1T00:00Z` reading still dragged the cutoff ~14 h early —
+  stored rows in that gap left out of the baseline but not re-emitted, a
+  #114 downward step with no 1970-style absurdity to catch.
 - **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
   unparenthesised form is intentional: it is `ruff format`'s canonical output
   for this repo's Python 3.14 target (PEP 758, where `except A, B:` means

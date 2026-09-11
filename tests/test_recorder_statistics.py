@@ -160,6 +160,227 @@ async def test_rewindow_overwrite_no_midnight_spike(
     assert abs(sums[-1] - 48.0) < 1e-9
 
 
+async def test_poisoned_old_timestamp_cannot_step_sum_down(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """T-4 (#242) on the REAL statistics engine — the test docs/testing.md
+    requires for any baseline/cumulative-sum change.
+
+    Build a mature 48 h chain (sum reaches 48.0). Then import a later batch
+    that ALSO carries one interval timestamped 1970 — the crafted-timestamp
+    attack. Pre-fix, that row pins the baseline cutoff at 1970, the baseline
+    resolves to 0.0, and the new rows restart the chain near zero: a massive
+    downward step in the recorder's sum column.
+
+    The parser's window guard drops the 1970 row before it ever reaches
+    _import_intervals, so this test feeds the POST-PARSER path exactly as the
+    client wires it: parse_interval_readings(payload, expected_day=...).
+    """
+    from custom_components.haggle.agl.parser import parse_interval_readings
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 48))
+    await async_wait_recording_done(hass)
+
+    # Attack batch: two legitimate hours for 2026-06-30 plus one 1970 row.
+    day = date(2026, 6, 30)
+
+    def _item(iso: str) -> dict:
+        return {
+            "dateTime": iso,
+            "consumption": {"type": "normal", "quantity": 1.0, "amount": 0.30},
+        }
+
+    payload = {
+        "sections": [
+            {
+                "items": [
+                    _item("2026-06-30T14:00:00Z"),
+                    _item("2026-06-30T15:00:00Z"),
+                    _item("1970-01-02T00:00:00Z"),  # the poison
+                ]
+            }
+        ]
+    }
+    readings = parse_interval_readings(payload, expected_day=day)
+    assert len(readings) == 2, "window guard must drop the 1970 row"
+
+    await coord._import_intervals(readings)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    # No downward step anywhere, and the chain continued from 48, not from 0.
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    assert abs(sums[-1] - 50.0) < 1e-9
+    # And no phantom 1970 row was written (start is an epoch float here).
+    assert all(
+        datetime.fromtimestamp(row["start"], tz=UTC).year >= 2026 for row in rows
+    )
+
+
+async def test_adjacent_date_injection_cannot_step_sum_down(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Codex P1 (PR #266) on the REAL statistics engine — the adjacent-date
+    variant the 1970 test misses.
+
+    For an AEST contract, day D legitimately starts at D-1T14:00Z, and the
+    old ±1-DATE window therefore accepted EVERY instant of D-1. An injected
+    D-1T00:00Z reading (here 2026-06-30T00:00Z against requested day
+    2026-07-01) sat INSIDE the mature stored chain: it pinned the baseline
+    cutoff ~14 h early, the baseline resolved to the sum as of that hour, and
+    the day's genuine rows were then written far below the stored tip — a
+    downward step in the sum column with no 1970-style absurdity to catch.
+    The tz-derived window (local day ± 2 h slack) drops the injected row.
+    """
+    from zoneinfo import ZoneInfo
+
+    from custom_components.haggle.agl.parser import parse_interval_readings
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 48))
+    await async_wait_recording_done(hass)
+
+    # Requested local day 2026-07-01 (AEST): true window starts 06-30T14:00Z.
+    day = date(2026, 7, 1)
+
+    def _item(iso: str) -> dict:
+        return {
+            "dateTime": iso,
+            "consumption": {"type": "normal", "quantity": 1.0, "amount": 0.30},
+        }
+
+    payload = {
+        "sections": [
+            {
+                "items": [
+                    _item("2026-06-30T14:00:00Z"),  # genuine first slot
+                    _item("2026-06-30T15:00:00Z"),
+                    # The poison: same UTC DATE as a genuine slot, so the old
+                    # date window passed it; 14 h before the true local start.
+                    _item("2026-06-30T00:00:00Z"),
+                ]
+            }
+        ]
+    }
+    readings = parse_interval_readings(
+        payload, expected_day=day, tz=ZoneInfo("Australia/Brisbane")
+    )
+    assert len(readings) == 2, "tz window must drop the adjacent-date poison"
+    assert min(r.dt for r in readings) == datetime(2026, 6, 30, 14, tzinfo=UTC)
+
+    await coord._import_intervals(readings)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    # No downward step, and the chain continued from 48 (not restarted from
+    # the mid-chain baseline the poisoned cutoff would have produced).
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    assert abs(sums[-1] - 50.0) < 1e-9
+
+
+async def test_duplicate_slot_in_one_batch_replaces_not_sums(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Codex pass-3 P1 (PR #266) on the REAL statistics engine.
+
+    A multi-day _fetch_range appends every day's readings to one list and
+    imports it once. If day D's response carries a row inside the trailing-
+    slack window that day D+1's response then also returns, the same slot is
+    in the batch twice — and _bucket_hourly sums everything it is given, so
+    the hour was silently inflated (the recorder's idempotent overwrite only
+    dedupes ACROSS imports, not within one). _import_intervals now dedupes
+    by slot last-wins: days arrive in chronological order, so the later
+    day's response is authoritative for its own slots.
+    """
+    from custom_components.haggle.agl.models import IntervalReading
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 48))
+    await async_wait_recording_done(hass)
+
+    slot = datetime(2026, 6, 30, 14, tzinfo=UTC)
+    batch = [
+        # Day D's response: a trailing-slack copy of D+1's first slot,
+        # carrying an inflated value.
+        IntervalReading(dt=slot, kwh=5.0, cost_aud=1.50, rate_type="normal"),
+        # Day D+1's genuine response for the same slot, appended later.
+        IntervalReading(dt=slot, kwh=1.0, cost_aud=0.30, rate_type="normal"),
+        IntervalReading(
+            dt=slot + timedelta(hours=1), kwh=1.0, cost_aud=0.30, rate_type="normal"
+        ),
+    ]
+    await coord._import_intervals(batch)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    # 48 stored + 1.0 + 1.0 — NOT 48 + (5+1) + 1: the duplicate replaced.
+    assert abs(sums[-1] - 50.0) < 1e-9
+
+
+async def test_two_overbound_readings_cannot_write_inf_sum(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#241's exact scenario at the recorder layer: two 1e308 readings in one
+    hourly bucket. Pre-fix, safe_float passed them through, _bucket_hourly
+    summed them to inf, and the recorder stored a non-finite sum. Post-fix
+    they reject to 0.0 -> zero-delta hours, sum chain flat and finite.
+    """
+    import math
+
+    coord = _make_coordinator(hass)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    t0 = datetime(2026, 6, 28, 14, tzinfo=UTC)
+    await coord._import_intervals(_hourly_intervals(t0, 24))
+    await async_wait_recording_done(hass)
+
+    from custom_components.haggle.agl.parser import parse_interval_readings
+
+    def _item(iso: str, qty: float) -> dict:
+        return {
+            "dateTime": iso,
+            "consumption": {"type": "normal", "quantity": qty, "amount": 0.30},
+        }
+
+    payload = {
+        "sections": [
+            {
+                "items": [
+                    # Two half-hour slots in the SAME hour, both over-bound.
+                    _item("2026-06-29T14:00:00Z", 1e308),
+                    _item("2026-06-29T14:30:00Z", 1e308),
+                    # One sane reading after, so the batch isn't empty-ish.
+                    _item("2026-06-29T15:00:00Z", 1.0),
+                ]
+            }
+        ]
+    }
+    readings = parse_interval_readings(payload, expected_day=date(2026, 6, 29))
+    await coord._import_intervals(readings)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    sums = [row["sum"] for row in rows]
+    assert all(math.isfinite(v) for v in sums), sums
+    assert all(b >= a for a, b in pairwise(sums)), sums
+    # 24 legit + the sane 1.0; the two 1e308s contributed exactly nothing.
+    assert abs(sums[-1] - 25.0) < 1e-9
+
+
 async def test_band_reachback_baseline_after_long_absence(
     recorder_mock, hass: HomeAssistant
 ) -> None:
@@ -258,6 +479,35 @@ async def test_earliest_stat_date_reports_local_calendar_day(
 
     earliest = await coord._earliest_stat_date(stat_id_gen, t0 - timedelta(days=1))
     assert earliest == date(2026, 6, 29)
+
+
+async def test_duplicate_solar_slot_replaces_not_sums(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Codex pass-4 P1 (PR #266): the dedupe must cover generation too.
+
+    Pass 3 deduped _import_intervals only; _import_generation's hourly loop
+    still summed a slot appearing twice in one batch, inflating the
+    generation and feed-in-credit series through the identical trailing-slack
+    overlap. Both importers now share _dedupe_slots.
+    """
+    coord = _make_coordinator(hass)
+    stat_id_gen, _ = coord._generation_stat_ids()
+
+    slot = datetime(2026, 6, 30, 2, tzinfo=UTC)
+    batch = [
+        # Day D's trailing-slack copy with an inflated value.
+        IntervalReading(dt=slot, kwh=4.0, cost_aud=0.80, rate_type="normal"),
+        # Day D+1's genuine response for the same slot.
+        IntervalReading(dt=slot, kwh=1.5, cost_aud=0.25, rate_type="normal"),
+    ]
+    await coord._import_generation(batch)
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id_gen)
+    assert len(rows) == 1
+    # 1.5, not 5.5: the duplicate replaced.
+    assert abs(rows[-1]["sum"] - 1.5) < 1e-9
 
 
 async def test_earliest_stat_date_ignores_rows_before_since(
