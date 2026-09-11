@@ -23,6 +23,7 @@ from homeassistant.components import persistent_notification
 from homeassistant.const import Platform
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from .agl.client import AglAuth, AglClient
 from .agl.pinning import AGL_AUTH_HOST_NAME, HagglePinningConnector
@@ -130,7 +131,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     connector = HagglePinningConnector(on_new_connection=_check_pin)
     session = aiohttp.ClientSession(connector=connector)
     auth = AglAuth(refresh_token, _persist_refresh_token)
-    client = AglClient(auth, session)
+    # HA's configured tz stands in for the contract's local tz (the property
+    # hosts the HA instance) — it bounds the interval-timestamp window to the
+    # true UTC shape of one local day (Codex P1, PR #266).
+    client = AglClient(auth, session, local_tz=dt_util.get_default_time_zone())
     coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
     await coordinator.async_config_entry_first_refresh()

@@ -20,10 +20,22 @@ from __future__ import annotations
 
 import logging
 import math
-from datetime import UTC, date, datetime
-from typing import Any, cast
+import re
+from datetime import UTC, date, datetime, timedelta, tzinfo
+from typing import TYPE_CHECKING, Any, cast
+from zoneinfo import ZoneInfo
 
-from ..const import TARIFF_OFFPEAK, TARIFF_PEAK, TARIFF_SHOULDER
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+from ..const import (
+    INTERVAL_DAY_TOLERANCE,
+    INTERVAL_WINDOW_TRAILING_SLACK_HOURS,
+    MAX_AGL_NUMERIC,
+    TARIFF_OFFPEAK,
+    TARIFF_PEAK,
+    TARIFF_SHOULDER,
+)
 from .models import BillPeriod, Contract, DailyReading, IntervalReading, PlanRates
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,18 +62,51 @@ def _classify_tariff(text: str) -> str | None:
     return None
 
 
-def _safe_float(raw: Any) -> float:
-    """Coerce raw API value to a non-negative finite float.
+class NumericRejections:
+    """Counter out-param for :func:`safe_float` at batch call sites.
 
-    Treats inf/nan/negative as 0.0 with a warning, so adversarial or corrupt
-    AGL responses cannot poison the recorder via async_add_external_statistics.
+    A crafted interval response can carry thousands of over-bound values —
+    two per item — and a synchronous WARNING for each would stall the event
+    loop and flood the log through the same MITM-influenceable surface the
+    guard defends (Codex finding on PR #266; same class as the out-of-window
+    timestamp counter in parse_interval_readings). Batch parsers pass one of
+    these, count silently, and emit a single bounded summary after the loop.
+    """
+
+    __slots__ = ("count",)
+
+    def __init__(self) -> None:
+        self.count = 0
+
+
+def safe_float(raw: Any, *, rejections: NumericRejections | None = None) -> float:
+    """Coerce a raw API value to a non-negative, finite float <= MAX_AGL_NUMERIC.
+
+    inf/nan/negative and over-bound values become 0.0 (never clamped to the
+    bound — a zero delta leaves a cumulative sum untouched; a clamped 1e6
+    would write a permanent false spike). Single implementation (#241);
+    coordinator.py imports it. Full rationale: AGENTS.md "What NOT to Do".
+
+    With ``rejections`` given, a rejection is counted instead of logged —
+    the caller emits ONE summary. Without it (single-value call sites: plan
+    rates, usage summary), the per-call WARNING stands, with the repr
+    truncated so hostile content can't flood a single log line.
     """
     try:
         value = float(raw or 0.0)
     except TypeError, ValueError:
         return 0.0
     if not math.isfinite(value) or value < 0:
-        _LOGGER.warning("Rejecting non-finite/negative AGL value: %r", raw)
+        if rejections is not None:
+            rejections.count += 1
+        else:
+            _LOGGER.warning("Rejecting non-finite/negative AGL value: %.60r", raw)
+        return 0.0
+    if value > MAX_AGL_NUMERIC:
+        if rejections is not None:
+            rejections.count += 1
+        else:
+            _LOGGER.warning("Rejecting implausibly large AGL value: %.60r", raw)
         return 0.0
     return value
 
@@ -159,8 +204,92 @@ def parse_overview(data: dict[str, Any]) -> list[Contract]:
     return contracts
 
 
+# Australian state/territory (as it appears before the postcode in an AGL
+# service address, e.g. "1 Sample Street SUBURB QLD 4000") → IANA timezone.
+# ACT shares Sydney's rules.
+_STATE_TZ: dict[str, str] = {
+    "NSW": "Australia/Sydney",
+    "ACT": "Australia/Sydney",
+    "VIC": "Australia/Melbourne",
+    "QLD": "Australia/Brisbane",
+    "SA": "Australia/Adelaide",
+    "TAS": "Australia/Hobart",
+    "NT": "Australia/Darwin",
+    "WA": "Australia/Perth",
+}
+# State token immediately followed by a 4-digit postcode — anchoring on the
+# pair avoids false-positives on street/suburb words.
+_ADDRESS_STATE_RE = re.compile(r"\b(NSW|ACT|VIC|QLD|SA|TAS|NT|WA)\s+(\d{4})\b")
+
+# Sub-state timezone exceptions, postcode-keyed. Broken Hill (+9:30/+10:30)
+# runs 30 min behind Sydney time, so the state-level zone would re-open a
+# 30-minute leading window on the baseline cutoff there (Codex pass 5,
+# PR #266). Remaining micro-exceptions (Lord Howe Island, Eucla) are
+# recorded as an accepted residual on the follow-up issue — populations
+# AGL is unlikely to serve, and the counted-drop WARNING is the tripwire.
+_POSTCODE_TZ: dict[tuple[str, str], str] = {
+    ("NSW", "2880"): "Australia/Broken_Hill",
+}
+
+
+def tz_for_address(address: str) -> tzinfo | None:
+    """Best-effort timezone of an AGL service address, or None.
+
+    The interval-timestamp window must be the CONTRACT's local day, not the
+    HA instance's (Codex pass-3 P1, PR #266): a Sydney contract managed from
+    a Brisbane HA host is off by 1 h during DST, and the window's strict
+    lower bound would then drop the day's first slots on every fetch —
+    permanent undercount. The state token before the postcode is the best
+    contract-locality signal the API exposes. None on no match (or missing
+    tzdata) — callers keep their existing fallback. Totality is inherited:
+    parse_overview coerces address via _as_str, so input is always str.
+    """
+    match = _ADDRESS_STATE_RE.search(address)
+    if match is None:
+        return None
+    state, postcode = match.group(1), match.group(2)
+    key = _POSTCODE_TZ.get((state, postcode)) or _STATE_TZ.get(state)
+    if key is None:
+        return None
+    try:
+        return ZoneInfo(key)
+    except KeyError, OSError:
+        return None
+
+
+def _out_of_window_predicate(
+    expected_day: date | None, tz: tzinfo | None
+) -> Callable[[datetime], bool]:
+    """Build the reject-predicate for the requested-day window (#242).
+
+    Window semantics are documented on parse_interval_readings; this exists
+    so the parse loop stays under the complexity gate (decompose, not noqa).
+    """
+    if expected_day is None:
+        return lambda _dt: False
+    if tz is not None:
+        day_start = datetime(
+            expected_day.year, expected_day.month, expected_day.day, tzinfo=tz
+        )
+        next_day = expected_day + timedelta(days=1)
+        day_end = datetime(next_day.year, next_day.month, next_day.day, tzinfo=tz)
+        # Trailing slack ONLY: the baseline cutoff is min(hour_cons), so a
+        # leading slack of any width re-admits the cutoff attack at that
+        # width (Codex pass-2 P1, PR #266); a late row cannot lower the min.
+        slack = timedelta(hours=INTERVAL_WINDOW_TRAILING_SLACK_HOURS)
+        lo, hi = day_start, day_end + slack
+        return lambda dt: not (lo <= dt < hi)
+    lo_date = expected_day - timedelta(days=INTERVAL_DAY_TOLERANCE)
+    hi_date = expected_day + timedelta(days=INTERVAL_DAY_TOLERANCE)
+    return lambda dt: not (lo_date <= dt.date() <= hi_date)
+
+
 def parse_interval_readings(
-    data: dict[str, Any], *, source_field: str = "consumption"
+    data: dict[str, Any],
+    *,
+    source_field: str = "consumption",
+    expected_day: date | None = None,
+    tz: tzinfo | None = None,
 ) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
@@ -179,9 +308,27 @@ def parse_interval_readings(
     real (no sun at night), but dropping them is still correct: a zero delta
     never moves the cumulative sum, and the trailing rewindow re-visits the
     hour anyway.
+
+    ``expected_day`` is the day actually requested via ``period=``; readings
+    outside its window are dropped (#242) so a crafted timestamp can't pin
+    the baseline cutoff before real recorder history (threat-model T-4, the
+    #114 sum-step class). With ``tz`` — the contract's local timezone, which
+    the caller asserts is the HA instance's configured one (the same
+    assumption every local-midnight computation in the coordinator makes) —
+    the window is exact: [local midnight of the day, next local midnight +
+    trailing slack) in UTC, DST handled by the tzinfo. AGL reads
+    ``period=`` in LOCAL time and returns UTC, so this is the true shape of
+    one requested day. Without ``tz`` the fallback is the coarser
+    ``expected_day ± INTERVAL_DAY_TOLERANCE`` DATE window — Codex P1 on PR
+    #266 showed that window alone still admits an injected D-1T00:00Z
+    reading that drags the baseline cutoff ~14 h early, excluding stored
+    rows from the baseline without re-emitting them: a #114 downward step.
     """
     _skip_types = {"none", "pending"}
+    out_of_window = _out_of_window_predicate(expected_day, tz)
     readings: list[IntervalReading] = []
+    dropped_out_of_window = 0
+    rejections = NumericRejections()
     for section_raw in _as_list(_as_dict(data).get("sections")):
         for item_raw in _as_list(_as_dict(section_raw).get("items")):
             item = _as_dict(item_raw)
@@ -198,8 +345,14 @@ def parse_interval_readings(
                     dt = dt.replace(tzinfo=UTC)
             except ValueError, AttributeError:
                 continue
-            kwh = _safe_float(block.get("quantity"))
-            cost_aud = _safe_float(block.get("amount"))
+            # Counted, not logged per-item: a hostile response could carry
+            # thousands of these, and a synchronous WARNING per reading
+            # would stall the event loop and flood the log (review finding).
+            if out_of_window(dt):
+                dropped_out_of_window += 1
+                continue
+            kwh = safe_float(block.get("quantity"), rejections=rejections)
+            cost_aud = safe_float(block.get("amount"), rejections=rejections)
             if kwh == 0.0 and cost_aud == 0.0:
                 continue
             readings.append(
@@ -210,6 +363,19 @@ def parse_interval_readings(
                     rate_type=rate_type,
                 )
             )
+    if dropped_out_of_window:
+        _LOGGER.warning(
+            "Dropped %d interval(s) outside the window for requested day %s",
+            dropped_out_of_window,
+            expected_day,
+        )
+    if rejections.count:
+        _LOGGER.warning(
+            "Rejected %d non-finite/negative/over-bound numeric value(s) "
+            "in interval response for %s",
+            rejections.count,
+            expected_day,
+        )
     return readings
 
 
@@ -236,8 +402,8 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
                 day: date = dt.date()
             except ValueError, AttributeError:
                 continue
-            kwh = _safe_float(consumption.get("quantity"))
-            cost_aud = _safe_float(consumption.get("amount"))
+            kwh = safe_float(consumption.get("quantity"))
+            cost_aud = safe_float(consumption.get("amount"))
             if kwh == 0.0 and cost_aud == 0.0:
                 continue
             readings.append(DailyReading(day=day, kwh=kwh, cost_aud=cost_aud))
@@ -276,10 +442,10 @@ def parse_bill_period(data: dict[str, Any]) -> BillPeriod:
     # (whitespace previously hit .split()[0] -> IndexError; fuzz-enforced).
     quantity_raw = usage.get("quantity")
     if isinstance(quantity_raw, int | float) and not isinstance(quantity_raw, bool):
-        consumption_kwh = _safe_float(quantity_raw)
+        consumption_kwh = safe_float(quantity_raw)
     else:
         parts = _as_str(quantity_raw, "0").replace(",", "").split()
-        consumption_kwh = _safe_float(parts[0] if parts else 0.0)
+        consumption_kwh = safe_float(parts[0] if parts else 0.0)
 
     return BillPeriod(
         start=start,
@@ -301,6 +467,10 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
     # most recent header so a ToU band ("Peak"/"Off Peak"/"Shoulder") can be
     # inferred even when the per-rate title is generic ("First N kWh").
     current_header = ""
+    # The rates list is unbounded response content — counted rejections with
+    # ONE summary, same flood rationale as parse_interval_readings (Codex
+    # pass 6, PR #266).
+    rejections = NumericRejections()
 
     for rate_raw in _as_list(payload.get("gstInclusiveRates")):
         rate = _as_dict(rate_raw)
@@ -311,7 +481,7 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
         if kind != "detail":
             continue
         rate_type = _as_str(rate.get("type"))
-        price = _safe_float(rate.get("price"))
+        price = safe_float(rate.get("price"), rejections=rejections)
         title = _as_str(rate.get("title"))
         if rate_type == "c/day" and "supply" in title.lower():
             supply_charge = price
@@ -344,9 +514,14 @@ def parse_plan(data: dict[str, Any]) -> PlanRates:
             continue
         title = _as_str(rate.get("title"))
         if "feed-in" in title.lower() or "feed in" in title.lower():
-            feed_in_rate = _safe_float(rate.get("price"))
+            feed_in_rate = safe_float(rate.get("price"), rejections=rejections)
             break
 
+    if rejections.count:
+        _LOGGER.warning(
+            "Rejected %d non-finite/negative/over-bound plan rate value(s)",
+            rejections.count,
+        )
     return PlanRates(
         product_name=product_name,
         unit_rates=unit_rates,

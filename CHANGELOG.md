@@ -69,6 +69,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   attribute is also present, making the existing quarterly-bill
   under-coverage limitation self-describing instead of silent.
 
+### Security
+
+- **`safe_float` now bounds magnitude, not just finiteness** (#241;
+  renamed from `_safe_float` — it is a cross-module API, review finding).
+  `1e308` is finite, so it passed the guard unchanged — and
+  `1e308 + 1e308` evaluates to `inf` with no exception raised. Two such
+  readings in one hourly bucket, or a cumulative sum crossing the ceiling,
+  therefore produced exactly the non-finite `sum` the finite check existed
+  to prevent, corrupting a `haggle:*` series permanently. Values above
+  `MAX_AGL_NUMERIC` (1e6 — roughly 2 GW of continuous draw in a 30-minute
+  slot) are now rejected to `0.0`, never clamped to the bound, since a zero
+  delta leaves the sum untouched while a clamped 1e6 would write a
+  permanent false spike. The bound is part of the fuzz invariant.
+  - The two near-duplicate `safe_float` copies are collapsed into one:
+    `coordinator.py` imports the parser's. They had already drifted (one
+    returned `-0.0` where the other normalised to `0.0`), and an upper
+    bound added to one copy but not the other would be worse than none.
+  - `docs/threat-model.md` **T-1** claimed this was mitigated while naming
+    the exact value that defeated it. Corrected.
+- **Interval timestamps are validated against the requested day** (#242).
+  `parse_interval_readings` took no period argument and the client
+  discarded the `period=` it had just built, while
+  `coordinator._import_intervals` derives its cumulative-sum baseline
+  cutoff from `min(hour_cons)` — straight from response content. A single
+  injected interval with an old `dateTime` pinned that cutoff before all
+  real recorder history, so the baseline resolved to `0.0` instead of the
+  true multi-year total and the same import wrote today's genuine hours on
+  top of it: a large downward step in the `sum` column. That is the #114
+  failure class, reachable from one crafted timestamp rather than only a
+  resume-gap edge case. Readings outside the requested day's window are now
+  dropped, at all three fetch sites including solar. The window is derived
+  from the configured local timezone — local midnight to next local
+  midnight plus 2 h of trailing-only slack, computed in UTC (AGL reads
+  `period=` in the contract's local timezone and returns UTC, so a one-day
+  query legitimately spans two UTC dates; DST is handled by the timezone
+  data). A coarser ±1-date window applies only when no timezone is
+  available. Recorded as threat-model **T-4**.
+
+- **Malformed-but-200 token responses no longer escape structured handling**
+  (#243). Two OAuth call sites shielded their transport layer but left the
+  schema-trusting code that follows it unguarded, so a 200 whose body was
+  valid JSON of the wrong shape raised a raw
+  `AttributeError`/`KeyError`/`TypeError`/`ValueError`/`OverflowError`.
+  Verified against the pre-fix code: `null`, `[]`, a missing
+  `access_token`, `expires_in: "<hostile>"` and `expires_in: 10**20` all
+  escaped as raw exceptions.
+  - **Availability.** Every coordinator catch site is built around the
+    `AGLError` family, so a raw escape crashed the update cycle before the
+    #155 failure-retry cadence could run.
+  - **Information disclosure.** `int("<hostile>")` puts its input into the
+    `ValueError` message, and `diagnostics.py` republishes
+    `str(last_exception)` verbatim into a file users attach to public
+    GitHub issues. A structured `error` field was separately echoed whole
+    into an `AGLAuthError` — a 500-character payload reached HA Persistent
+    Notifications intact. Both now degrade to a type name / a
+    length-capped, type-checked slug.
+  - Malformed bodies now raise **retryable** `AGLTransportError`, never
+    `AGLAuthError`: a bad response is not an auth failure and must not burn
+    a working grant on a reauth prompt.
+  - In the config flow, the same class previously aborted onboarding with
+    an untranslated "Unknown error"; it now surfaces the intended
+    `cannot_connect`. `_exchange_code` had no direct test coverage at all —
+    every existing config-flow test mocks it out.
+
+### Changed
+
+- **Dev-dependency bump** (`pytest-homeassistant-custom-component` floor
+  0.13.361, `uv lock` resolved 0.13.364 → `homeassistant` 2026.9.1;
+  `ruff` 0.16.6, `mypy` 2.3.1, `pre-commit` 4.6.2, `zizmor` 1.30.0):
+  Dependabot raised the `pyproject.toml` floors but left `uv.lock` stale,
+  so the `uv lock --check` CI gate (#185) failed — regenerated here, which
+  is the whole point of that gate. `ruff` 0.16.6 enabled no new rules
+  against this tree (check, format, and mypy all clean, no source edits).
+  The `hacs.json` runtime floor stays at 2026.7.0 deliberately: nothing in
+  this bump is a runtime requirement (`manifest.json` ships no
+  `requirements`, so users get HA from core), and lifting it would strand
+  HACS users on 2026.7/2026.8 — including the #253 reporter — for no
+  behavioural gain.
+- **`pip` 26.1.2 → 26.2** in the `uv` group, closing
+  `GHSA-qwm4-qh6w-59xr` (doubly-encoded package URLs from indexes).
+  Dev-lockfile only.
+
 ### Fixed
 
 - **Bill projection sensor no longer reads `unknown`** (#253): the sensor has

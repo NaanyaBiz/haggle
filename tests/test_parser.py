@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 import pathlib
-from datetime import UTC, date
+from datetime import UTC, date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -39,26 +40,78 @@ class TestSafeFloat:
     """Adversarial / corrupt API values must clamp to 0.0 instead of poisoning stats."""
 
     def test_finite_positive_passes_through(self) -> None:
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
-        assert _safe_float(0.5) == 0.5
-        assert _safe_float("12.34") == pytest.approx(12.34)
+        assert safe_float(0.5) == 0.5
+        assert safe_float("12.34") == pytest.approx(12.34)
 
     def test_inf_nan_negative_clamp_to_zero(self) -> None:
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
-        assert _safe_float(float("inf")) == 0.0
-        assert _safe_float(float("nan")) == 0.0
-        assert _safe_float(-1.0) == 0.0
-        assert _safe_float("1e308") == pytest.approx(1e308)  # finite, allowed
-        assert _safe_float(1e400) == 0.0  # overflow → inf → clamped
+        assert safe_float(float("inf")) == 0.0
+        assert safe_float(float("nan")) == 0.0
+        assert safe_float(-1.0) == 0.0
+        assert safe_float(1e400) == 0.0  # overflow → inf → clamped
+
+    def test_large_but_finite_is_rejected(self) -> None:
+        """#241 — "finite" was never a sufficient bound.
+
+        This assertion previously read
+        `assert safe_float("1e308") == 1e308  # finite, allowed`, encoding the
+        gap as intended behaviour. It is not: 1e308 is finite, so it passed the
+        isfinite() check unchanged, and `1e308 + 1e308` evaluates to `inf` with
+        no exception raised. Two such readings in one hourly bucket — or a
+        cumulative sum crossing the ceiling — silently produced the very
+        non-finite `sum` the finite check exists to prevent.
+        """
+        from custom_components.haggle.agl.parser import safe_float
+
+        assert float("inf") == 1e308 + 1e308  # the mechanism, made explicit
+        assert safe_float("1e308") == 0.0
+        assert safe_float(1e308) == 0.0
+
+    def test_bound_admits_plausible_values_and_rejects_just_above(self) -> None:
+        """The bound sits far above any real reading, so it never clips data."""
+        from custom_components.haggle.agl.parser import safe_float
+        from custom_components.haggle.const import MAX_AGL_NUMERIC
+
+        assert safe_float(50.0) == 50.0  # a big 30-min household slot
+        assert safe_float(9_999.0) == 9_999.0  # a quarterly bill total
+        assert safe_float(MAX_AGL_NUMERIC) == MAX_AGL_NUMERIC  # inclusive
+        assert safe_float(MAX_AGL_NUMERIC * 1.000001) == 0.0
+
+    def test_rejected_value_becomes_zero_not_the_bound(self) -> None:
+        """Rejects to 0.0, never clamps to the ceiling.
+
+        A zero delta leaves the cumulative sum untouched; writing MAX_AGL_NUMERIC
+        instead would burn a permanent, enormous false spike into the series.
+        """
+        from custom_components.haggle.agl.parser import safe_float
+        from custom_components.haggle.const import MAX_AGL_NUMERIC
+
+        assert safe_float(1e300) != MAX_AGL_NUMERIC
+        assert safe_float(1e300) == 0.0
+
+    def test_negative_zero_normalises(self) -> None:
+        """coordinator.py's removed copy returned -0.0 here; this one does not.
+
+        Mechanism note: -0.0 is falsy, so it normalises via the `raw or 0.0`
+        short-circuit BEFORE the `< 0` guard is ever reached — not via the
+        negative-value rejection path (review finding). Pinned here so a
+        refactor dropping the `or 0.0` shorthand re-fails this test.
+        """
+        from custom_components.haggle.agl.parser import safe_float
+
+        assert repr(safe_float(-0.0)) == "0.0"
+        # The guard path proper, for contrast:
+        assert safe_float(-0.5) == 0.0
 
     def test_unparseable_clamps_to_zero(self) -> None:
-        from custom_components.haggle.agl.parser import _safe_float
+        from custom_components.haggle.agl.parser import safe_float
 
-        assert _safe_float(None) == 0.0
-        assert _safe_float("not a number") == 0.0
-        assert _safe_float({}) == 0.0
+        assert safe_float(None) == 0.0
+        assert safe_float("not a number") == 0.0
+        assert safe_float({}) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +144,27 @@ class TestParsePlanAllowlist:
         assert set(rate.keys()) == {"kind", "type", "title", "price"}
         assert "evil_callback" not in rate
         assert "validTo" not in rate
+
+    def test_many_overbound_prices_emit_one_summary_warning(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Codex pass 6 (PR #266): per-row WARNINGs over an unbounded rates
+        list are the same MITM log-flood vector fixed for intervals."""
+        import logging
+
+        data = {
+            "productName": "Hostile",
+            "gstInclusiveRates": [
+                {"kind": "detail", "type": "c/kWh", "title": f"r{i}", "price": 1e300}
+                for i in range(500)
+            ],
+        }
+        with caplog.at_level(logging.WARNING):
+            plan = parse_plan(data)
+        assert all(r["price"] == 0.0 for r in plan.unit_rates)
+        warnings = [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert len(warnings) == 1
+        assert "500" in warnings[0].getMessage()
 
     def test_extreme_price_clamped_to_zero(self) -> None:
         data = {
@@ -259,6 +333,282 @@ class TestParseIntervalReadings:
 # ---------------------------------------------------------------------------
 # parse_overview
 # ---------------------------------------------------------------------------
+
+
+class TestIntervalWindowValidation:
+    """#242 — returned timestamps must be checked against the requested day.
+
+    Not merely a "row on the wrong day" concern: coordinator._import_intervals
+    derives its cumulative-sum baseline cutoff as min(hour_cons), straight from
+    response content. One interval with an old timestamp pins that cutoff
+    before all real recorder history, so the baseline resolves to 0.0 instead
+    of the true multi-year total and the same import writes today's genuine
+    hours on top of it — a large downward step in the sum column (#114 class,
+    but triggerable by a single crafted timestamp).
+    """
+
+    @staticmethod
+    def _payload(dt_iso: str) -> dict:
+        return {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": dt_iso,
+                            "consumption": {
+                                "type": "normal",
+                                "quantity": 1.5,
+                                "amount": 0.45,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+
+    def test_far_past_timestamp_is_dropped(self) -> None:
+        """The attack: a 1970-era slot would pin the baseline cutoff at zero."""
+        readings = parse_interval_readings(
+            self._payload("1970-01-02T00:00:00Z"), expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
+
+    def test_far_future_timestamp_is_dropped(self) -> None:
+        readings = parse_interval_readings(
+            self._payload("2099-01-01T00:00:00Z"), expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
+
+    def test_requested_day_is_kept(self) -> None:
+        readings = parse_interval_readings(
+            self._payload("2026-07-01T03:00:00Z"), expected_day=date(2026, 7, 1)
+        )
+        assert len(readings) == 1
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            "2026-06-30T14:00:00Z",  # AEST local midnight of the 1st
+            "2026-07-01T23:30:00Z",  # UTC-12: mid local day
+            "2026-07-02T11:30:00Z",  # UTC-12 tail (last slot of the local day)
+            "2026-06-30T10:00:00Z",  # UTC+14 head (local midnight of the 1st)
+        ],
+    )
+    def test_adjacent_utc_dates_are_kept(self, dt_iso: str) -> None:
+        """AGL reads period= in LOCAL time and returns UTC, so a one-day query
+        legitimately spans two UTC dates. The window must not clip those."""
+        readings = parse_interval_readings(
+            self._payload(dt_iso), expected_day=date(2026, 7, 1)
+        )
+        assert len(readings) == 1
+
+    def test_window_is_opt_in(self) -> None:
+        """Without expected_day the parser is unchanged (fuzz harness path)."""
+        readings = parse_interval_readings(self._payload("1970-01-02T00:00:00Z"))
+        assert len(readings) == 1
+
+    def test_only_out_of_window_items_are_dropped(self) -> None:
+        """A poisoned item is removed without discarding the legitimate ones."""
+        payload = self._payload("2026-07-01T03:00:00Z")
+        payload["sections"][0]["items"].append(
+            {
+                "dateTime": "1970-01-02T00:00:00Z",
+                "consumption": {"type": "normal", "quantity": 2.0, "amount": 0.6},
+            }
+        )
+        readings = parse_interval_readings(payload, expected_day=date(2026, 7, 1))
+
+        assert len(readings) == 1
+        assert readings[0].dt.date() == date(2026, 7, 1)
+        # The cutoff coordinator._import_intervals would derive is now safe.
+        assert min(r.dt for r in readings).year == 2026
+
+    def test_solar_path_also_validates(self) -> None:
+        payload = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "1970-01-02T00:00:00Z",
+                            "feedIn": {
+                                "type": "normal",
+                                "quantity": 3.0,
+                                "amount": 0.5,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        readings = parse_interval_readings(
+            payload, source_field="feedIn", expected_day=date(2026, 7, 1)
+        )
+        assert readings == []
+
+
+class TestIntervalWindowTzDerived:
+    """Codex P1 (PR #266): the ±1-DATE window alone is too loose.
+
+    For an AEST contract, day D's true UTC shape is [D-1T14:00Z, D T14:00Z).
+    The date window accepted EVERY instant of D-1, so an injected D-1T00:00Z
+    reading survived, became min(hour_cons), and pulled the baseline cutoff
+    ~14 h early — stored rows in that gap were excluded from the baseline but
+    not re-emitted, so the first genuine row stepped the cumulative sum down
+    (#114 class). With tz the window is the local day plus a TRAILING-only
+    2 h slack — pass 2 showed leading slack re-admits the attack at its own
+    width, while a late row cannot lower min(hour_cons).
+    """
+
+    _payload = staticmethod(TestIntervalWindowValidation._payload)
+    _BRISBANE = ZoneInfo("Australia/Brisbane")  # +10, no DST
+    _SYDNEY = ZoneInfo("Australia/Sydney")  # +10/+11, DST
+
+    def test_adjacent_date_injection_is_dropped(self) -> None:
+        """The exact Codex attack: D-1T00:00Z passes the date window, not tz."""
+        readings = parse_interval_readings(
+            self._payload("2026-06-30T00:00:00Z"),
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert readings == []
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            "2026-06-30T14:00:00Z",  # local midnight — first slot of the day
+            "2026-07-01T13:30:00Z",  # 23:30 local — last slot of the day
+            "2026-07-01T15:59:00Z",  # inside the 2 h TRAILING slack (kept)
+        ],
+    )
+    def test_legitimate_boundary_slots_are_kept(self, dt_iso: str) -> None:
+        readings = parse_interval_readings(
+            self._payload(dt_iso),
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert len(readings) == 1
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            # Codex pass-2 P1: leading slack of ANY width re-admits the
+            # baseline-cutoff attack at that width — the lower bound is the
+            # local midnight itself, so even one second before it is out.
+            "2026-06-30T13:59:59Z",
+            "2026-06-30T12:00:00Z",  # the old leading-slack edge — now out
+            "2026-07-01T16:00:00Z",  # at the trailing-slack edge (exclusive)
+        ],
+    )
+    def test_outside_the_asymmetric_window_is_dropped(self, dt_iso: str) -> None:
+        readings = parse_interval_readings(
+            self._payload(dt_iso),
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert readings == []
+
+    @pytest.mark.parametrize(
+        "dt_iso",
+        [
+            "2026-10-03T14:00:00Z",  # local midnight (AEST, +10)
+            "2026-10-04T12:30:00Z",  # 23:30 local (AEDT, +11) — 23 h day
+        ],
+    )
+    def test_dst_transition_day_boundaries_are_kept(self, dt_iso: str) -> None:
+        """2026-10-04 is Sydney's 23 h DST-start day; tzinfo handles the
+        asymmetric midnights that a fixed-offset window would clip."""
+        readings = parse_interval_readings(
+            self._payload(dt_iso),
+            expected_day=date(2026, 10, 4),
+            tz=self._SYDNEY,
+        )
+        assert len(readings) == 1
+
+    def test_injection_cannot_move_the_baseline_cutoff(self) -> None:
+        """min(r.dt) — the coordinator's baseline cutoff — stays the genuine
+        local-midnight slot even with the adjacent-date poison present."""
+        payload = self._payload("2026-06-30T14:00:00Z")
+        payload["sections"][0]["items"].append(
+            {
+                "dateTime": "2026-06-30T00:00:00Z",  # the poison
+                "consumption": {"type": "normal", "quantity": 2.0, "amount": 0.6},
+            }
+        )
+        readings = parse_interval_readings(
+            payload, expected_day=date(2026, 7, 1), tz=self._BRISBANE
+        )
+        assert len(readings) == 1
+        assert min(r.dt for r in readings) == datetime(2026, 6, 30, 14, tzinfo=UTC)
+
+    def test_solar_path_uses_tz_window_too(self) -> None:
+        payload = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-06-30T00:00:00Z",
+                            "feedIn": {
+                                "type": "normal",
+                                "quantity": 3.0,
+                                "amount": 0.5,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        readings = parse_interval_readings(
+            payload,
+            source_field="feedIn",
+            expected_day=date(2026, 7, 1),
+            tz=self._BRISBANE,
+        )
+        assert readings == []
+
+
+class TestTzForAddress:
+    """Contract-local timezone from the service address (Codex pass 3, #266).
+
+    The window must be the CONTRACT's local day; the state token before the
+    postcode is the best locality signal the API exposes. None (→ caller's
+    HA-tz fallback) whenever it doesn't parse.
+    """
+
+    @pytest.mark.parametrize(
+        ("address", "key"),
+        [
+            ("1 Sample Street SUBURB QLD 4000", "Australia/Brisbane"),
+            ("2 Example Rd TOWN NSW 2000", "Australia/Sydney"),
+            ("3 Test Ave PLACE ACT 2600", "Australia/Sydney"),
+            ("4 Demo St SPOT VIC 3000", "Australia/Melbourne"),
+            ("5 Trial Ct AREA SA 5000", "Australia/Adelaide"),
+            ("6 Mock Ln ZONE WA 6000", "Australia/Perth"),
+            # Sub-state exception: Broken Hill runs +9:30/+10:30, 30 min
+            # behind Sydney — the state zone would re-open a 30-minute
+            # leading window on the baseline cutoff (Codex pass 5).
+            ("7 Mine Rd BROKEN HILL NSW 2880", "Australia/Broken_Hill"),
+        ],
+    )
+    def test_state_maps_to_timezone(self, address: str, key: str) -> None:
+        from custom_components.haggle.agl.parser import tz_for_address
+
+        tz = tz_for_address(address)
+        assert tz is not None
+        assert getattr(tz, "key", None) == key
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "",
+            "1 Sample Street SUBURB 4000",  # no state token
+            "WA Street WOODVILLE",  # state token without a postcode after it
+            "totally unstructured",
+        ],
+    )
+    def test_unparseable_address_returns_none(self, address: str) -> None:
+        from custom_components.haggle.agl.parser import tz_for_address
+
+        assert tz_for_address(address) is None
 
 
 class TestParseOverview:
