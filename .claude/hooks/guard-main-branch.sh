@@ -28,44 +28,81 @@ if ! echo "$cmd" | grep -qE "$GIT_CMD"; then
     exit 0
 fi
 
-# Determine the git directory targeted by this command.
-# Handle: `git [globals] -C /some/path commit` and `cd /some/path && git commit`.
-git_dir="."
+# Determine which repository the command actually targets, then ask GIT
+# what branch that is — do NOT re-implement git's option semantics in
+# regex. Five review passes each found another form the textual parser
+# got wrong (the -C form entirely; "$PWD"; globals before the
+# subcommand; globals before -C; then repeated -C, which git resolves
+# CUMULATIVELY, and --git-dir/--work-tree, which retarget without -C at
+# all — Codex passes 1-4, PR #269). Replaying the target-selecting
+# globals to `git rev-parse` makes git the authority on its own CLI and
+# closes that whole class.
+#
+# The command string is agent-supplied and is NEVER executed: it is
+# split on whitespace with globbing disabled (no eval, no command
+# substitution), and only -C / --git-dir / --work-tree — the three
+# globals that change which repository is addressed — are replayed as
+# argv to a read-only `rev-parse`. Everything else is ignored, so no
+# attacker-chosen option (-c, --exec-path, aliases) reaches git.
 invocation="$(echo "$cmd" | grep -oE "$GIT_CMD" | head -1)"
-if echo "$invocation" | grep -qE '(^|[[:space:]])-C[[:space:]]+'; then
-    # Last -C wins: git applies repeated -C cumulatively, and the final
-    # one is the innermost target for the common absolute-path case.
-    git_dir="$(echo "$invocation" | grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $NF}')"
-elif echo "$cmd" | grep -qE '^cd[[:space:]]+'; then
-    git_dir="$(echo "$cmd" | grep -oE '^cd[[:space:]]+[^[:space:]&;|]+' | awk '{print $2}')"
-fi
-# Strip surrounding quotes: `cd "$WT" && git commit` captured `"$WT"` with
-# literal quotes; the unresolvable string then fell back to the CWD (often
-# the main worktree) and false-blocked legitimate worktree commits
-# (hook-robustness cluster with #244/#245, observed 2026-09-09).
-git_dir="${git_dir%\"}"; git_dir="${git_dir#\"}"
-git_dir="${git_dir%\'}"; git_dir="${git_dir#\'}"
 
-# $PWD trivially expands to the CWD — resolve it instead of treating it
-# as unresolvable, so `git -C "$PWD" commit` on main still blocks
-# (Codex P2 on PR #269).
-# shellcheck disable=SC2016 # matching the LITERAL unexpanded string is the point
-if [[ "$git_dir" == '$PWD' || "$git_dir" == '${PWD}' ]]; then
-    git_dir="."
+unquote() {
+    local v="$1"
+    v="${v%\"}"; v="${v#\"}"
+    v="${v%\'}"; v="${v#\'}"
+    # $PWD trivially expands to the caller's CWD; resolve it rather than
+    # treating it as unresolvable (Codex pass-1, PR #269).
+    # shellcheck disable=SC2016 # matching the LITERAL unexpanded string is the point
+    if [[ "$v" == '$PWD' || "$v" == '${PWD}' ]]; then
+        v="$PWD"
+    fi
+    printf '%s' "$v"
+}
+
+set -f
+read -ra _tokens <<< "$invocation"
+set +f
+
+targets=()
+i=0
+while [[ $i -lt ${#_tokens[@]} ]]; do
+    tok="$(unquote "${_tokens[$i]}")"
+    case "$tok" in
+        commit|push)
+            break
+            ;;
+        -C|--git-dir|--work-tree)
+            i=$((i + 1))
+            targets+=("$tok" "$(unquote "${_tokens[$i]:-}")")
+            ;;
+        --git-dir=*|--work-tree=*)
+            targets+=("$tok")
+            ;;
+    esac
+    i=$((i + 1))
+done
+
+# `cd <path> && git commit` — the other way a command retargets.
+cd_dir=""
+if [[ ${#targets[@]} -eq 0 ]] && echo "$cmd" | grep -qE '^cd[[:space:]]+'; then
+    cd_dir="$(unquote "$(echo "$cmd" | grep -oE '^cd[[:space:]]+[^[:space:]&;|]+' | awk '{print $2}')")"
 fi
 
-# Any OTHER unresolvable target (unexpanded $VAR, nonexistent path) means we
-# cannot know the branch. Defer to the server-side protect-main ruleset —
-# the enforced zero-bypass floor; this hook is the advisory convenience
-# layer — rather than guessing from the CWD, which is what false-blocked
-# legitimate worktree commits. Accepted residual: a variable that happens
-# to expand to the main worktree slips the LOCAL block; the commit is then
-# rejected at push by the ruleset and recoverable with a reset.
-if [[ "$git_dir" != "." && ! -d "$git_dir" ]]; then
-    exit 0
+# An unresolvable target (unexpanded $VAR, nonexistent path) means we cannot
+# know the branch. Defer to the server-side protect-main ruleset — the
+# enforced zero-bypass floor; this hook is the advisory convenience layer —
+# rather than guessing from the CWD, which is what false-blocked legitimate
+# worktree commits. Accepted residual: a variable that happens to expand to
+# the main worktree slips the LOCAL block; the commit is then rejected at
+# push by the ruleset and recoverable with a reset.
+if [[ ${#targets[@]} -gt 0 ]]; then
+    branch="$(git "${targets[@]}" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+elif [[ -n "$cd_dir" ]]; then
+    [[ -d "$cd_dir" ]] || exit 0
+    branch="$(git -C "$cd_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+else
+    branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 fi
-
-branch="$(git -C "$git_dir" rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 if [[ "$branch" == "main" ]]; then
     # Allow bypass via env var in the *calling shell* OR as a prefix in the
     # command string (e.g. `HAGGLE_ALLOW_MAIN_PUSH=1 git commit ...`).

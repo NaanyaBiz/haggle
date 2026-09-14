@@ -285,6 +285,91 @@ class TestGuardMainBranch:
         )
         assert blocked.returncode == 2
 
+    @staticmethod
+    def _feature_repo(parent: pathlib.Path, name: str = "feature") -> pathlib.Path:
+        repo = parent / name
+        repo.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "fix/x"], cwd=repo, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+            cwd=repo,
+            check=True,
+        )
+        return repo
+
+    def test_repeated_dash_c_resolves_cumulatively(self, tmp_path) -> None:
+        """Codex pass-4 (PR #269): git applies repeated -C CUMULATIVELY
+        (each relative to the previous), so taking the last operand and
+        resolving it against the hook's CWD judged the wrong repo. Git
+        itself now resolves the target."""
+        main_repo = _git_repo(tmp_path, branch="main")  # tmp_path/repo
+        feature = self._feature_repo(tmp_path)
+        parent = str(tmp_path)
+
+        # From the feature worktree, cumulative -C lands on main: BLOCK.
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(f"git -C {parent} -C {main_repo.name} commit -m x"),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
+        # From main, cumulative -C lands on the feature repo: ALLOW.
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(f"git -C {parent} -C {feature.name} commit -m x"),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
+    def test_git_dir_and_work_tree_retarget(self, tmp_path) -> None:
+        """Codex pass-4 (PR #269): --git-dir/--work-tree retarget without
+        any -C, and were ignored entirely by the textual extraction."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = self._feature_repo(tmp_path)
+
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"git --git-dir={main_repo}/.git --work-tree={main_repo} commit -m x"
+            ),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"git --git-dir={feature}/.git --work-tree={feature} commit -m x"
+            ),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
+    def test_command_string_is_never_executed(self, tmp_path) -> None:
+        """The hook parses an agent-supplied string; it must never run it.
+        A command-substitution payload in a -C operand must not fire."""
+        repo = _git_repo(tmp_path, branch="main")
+        canary = tmp_path / "canary"
+        result = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(f'git -C "$(touch {canary})" commit -m x'),
+            cwd=repo,
+        )
+        assert result.returncode in (0, 2)
+        assert not canary.exists(), "hook executed the command string"
+
     def test_override_prefix_is_honoured(self, tmp_path) -> None:
         repo = _git_repo(tmp_path, branch="main")
         result = _run(
