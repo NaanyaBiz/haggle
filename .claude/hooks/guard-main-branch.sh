@@ -11,23 +11,31 @@ if [[ -z "$cmd" ]]; then
     exit 0
 fi
 
-# Only inspect git commit / git push — including the `git -C <path>` form,
-# which the old pattern (commit/push required IMMEDIATELY after `git`)
-# never matched at all: every -C-form commit bypassed the guard and the
-# -C extraction below was dead code (found chasing Codex P2 on PR #269).
-# Global options may sit between `git` and the subcommand (git -h: [-C <path>] [-c <name>=<value>] ... <command>) — tolerate
-# runs of -C/-c (arg-taking), --long[=val], and single-letter flags
-# (Codex pass-2, PR #269). Exotic forms a regex cannot parse defer to
-# the server-side ruleset like every other unparseable command.
-if ! echo "$cmd" | grep -qE '(^|[[:space:]])git([[:space:]]+((-C|-c)[[:space:]]+[^[:space:]]+|--[^[:space:]]+|-[A-Za-z]))*[[:space:]]+(commit|push)([[:space:]]|$)'; then
+# Only inspect git commit / git push. Global options may sit between
+# `git` and the subcommand (git -h: `git [-C <path>] [-c <name>=<value>]
+# ... <command>`), so ONE pattern describes that run and BOTH the matcher
+# and the -C extraction below use it — they were written separately and
+# drifted twice: the original required the subcommand immediately after
+# `git` (so every `-C`-form commit bypassed the guard and the extraction
+# was dead code), and the pass-2 widening fixed only the matcher, leaving
+# extraction blind to `git --no-pager -C <path> commit` (Codex passes 1-3,
+# PR #269). Forms too exotic for a regex defer to the server-side
+# zero-bypass ruleset, like every other unparseable command.
+GIT_OPT='((-C|-c)[[:space:]]+[^[:space:]]+|--[^[:space:]]+|-[A-Za-z])'
+GIT_CMD="(^|[[:space:]])git([[:space:]]+${GIT_OPT})*[[:space:]]+(commit|push)([[:space:]]|\$)"
+
+if ! echo "$cmd" | grep -qE "$GIT_CMD"; then
     exit 0
 fi
 
 # Determine the git directory targeted by this command.
-# Handle: `git -C /some/path commit` and `cd /some/path && git commit`.
+# Handle: `git [globals] -C /some/path commit` and `cd /some/path && git commit`.
 git_dir="."
-if echo "$cmd" | grep -qE 'git[[:space:]]+-C[[:space:]]+'; then
-    git_dir="$(echo "$cmd" | grep -oE 'git[[:space:]]+-C[[:space:]]+[^[:space:]]+' | head -1 | awk '{print $NF}')"
+invocation="$(echo "$cmd" | grep -oE "$GIT_CMD" | head -1)"
+if echo "$invocation" | grep -qE '(^|[[:space:]])-C[[:space:]]+'; then
+    # Last -C wins: git applies repeated -C cumulatively, and the final
+    # one is the innermost target for the common absolute-path case.
+    git_dir="$(echo "$invocation" | grep -oE '(^|[[:space:]])-C[[:space:]]+[^[:space:]]+' | tail -1 | awk '{print $NF}')"
 elif echo "$cmd" | grep -qE '^cd[[:space:]]+'; then
     git_dir="$(echo "$cmd" | grep -oE '^cd[[:space:]]+[^[:space:]&;|]+' | awk '{print $2}')"
 fi

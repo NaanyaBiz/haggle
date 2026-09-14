@@ -241,6 +241,50 @@ class TestGuardMainBranch:
             )
             assert result.returncode == 2, cmd
 
+    def test_global_option_before_dash_c_resolves_the_target(self, tmp_path) -> None:
+        """Codex pass-3 (PR #269): the matcher tolerated global options
+        before `-C` but the target extraction still required `-C`
+        immediately after `git`, so the hook judged the CALLER's branch.
+        Both directions were reproducible: a feature-worktree commit
+        false-blocked from main, and a main-targeting commit allowed from
+        a feature worktree."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = tmp_path / "feature"
+        feature.mkdir()
+        subprocess.run(["git", "init", "-q", "-b", "fix/x"], cwd=feature, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "user.name=t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "init",
+            ],
+            cwd=feature,
+            check=True,
+        )
+
+        # From main, targeting the feature worktree: must NOT block.
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(f"git --no-pager -C {feature} commit -m x"),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
+        # From the feature worktree, targeting main: MUST block.
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(f"git --no-pager -C {main_repo} commit -m x"),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
     def test_override_prefix_is_honoured(self, tmp_path) -> None:
         repo = _git_repo(tmp_path, branch="main")
         result = _run(
