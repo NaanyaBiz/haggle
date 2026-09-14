@@ -79,7 +79,6 @@ while [[ $i -lt ${#_tokens[@]} ]]; do
         case "$tok" in
             git)
                 in_git=1
-                env_args=("${env_args[@]:-}")
                 targets=()
                 ;;
             cd)
@@ -116,9 +115,14 @@ while [[ $i -lt ${#_tokens[@]} ]]; do
             *)
                 # A different subcommand (`git log`, `git status`): this
                 # invocation is not ours. Keep scanning — a compound like
-                # `git status && git commit` has another one later.
+                # `git status && git commit` has another one later. Clear
+                # BOTH target sources: the shell scopes `GIT_DIR=x git
+                # status` to that invocation alone, so carrying the
+                # assignment into the next one resolved the wrong repo
+                # (Codex pass-6, PR #269).
                 in_git=0
                 targets=()
+                env_args=()
                 ;;
         esac
     fi
@@ -127,11 +131,6 @@ done
 
 if [[ $found -eq 0 ]]; then
     exit 0
-fi
-
-# Drop the placeholder the bash-3.2-safe array init above can leave behind.
-if [[ ${#env_args[@]} -gt 0 && -z "${env_args[0]}" ]]; then
-    env_args=("${env_args[@]:1}")
 fi
 
 if [[ ${#targets[@]} -gt 0 || ${#env_args[@]} -gt 0 ]]; then

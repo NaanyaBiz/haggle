@@ -435,6 +435,32 @@ class TestGuardMainBranch:
         )
         assert allowed.returncode == 0
 
+    def test_env_target_does_not_leak_across_invocations(self, tmp_path) -> None:
+        """Codex pass-6 (PR #269): the shell scopes `GIT_DIR=x git status`
+        to that invocation alone. Carrying it into a following `git commit`
+        resolved the wrong repository — here, letting a main commit pass."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = self._feature_repo(tmp_path)
+
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"GIT_DIR={feature}/.git git status && git commit --allow-empty -m x"
+            ),
+            cwd=main_repo,
+        )
+        assert blocked.returncode == 2
+
+        # The mirror: a scoped assignment on the COMMIT itself still counts.
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"git status && GIT_DIR={feature}/.git GIT_WORK_TREE={feature} git commit -m x"
+            ),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
     def test_compound_second_invocation_is_checked(self, tmp_path) -> None:
         """`git status && git commit`: the first invocation is a different
         subcommand, so the scan must keep going rather than give up."""
