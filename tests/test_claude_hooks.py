@@ -370,6 +370,97 @@ class TestGuardMainBranch:
         assert result.returncode in (0, 2)
         assert not canary.exists(), "hook executed the command string"
 
+    def test_space_form_target_options(self, tmp_path) -> None:
+        """Codex pass-5 (PR #269): `--git-dir <path>` / `--work-tree <path>`
+        space forms are valid git and must resolve like the `=` forms."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = self._feature_repo(tmp_path)
+
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"git --git-dir {main_repo}/.git --work-tree {main_repo} commit -m x"
+            ),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"git --git-dir {feature}/.git --work-tree {feature} commit -m x"
+            ),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
+    def test_quoted_values_inside_equals_form(self, tmp_path) -> None:
+        """Codex pass-5 (PR #269): quotes around the VALUE, not the token —
+        `--git-dir="/path"` — survived boundary-stripping and resolved to a
+        path containing literal quote characters."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = self._feature_repo(tmp_path)
+
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f'git --git-dir="{main_repo}/.git" --work-tree="{main_repo}" commit -m x'
+            ),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
+    def test_env_assignment_retargeting(self, tmp_path) -> None:
+        """Codex pass-5 (PR #269): GIT_DIR/GIT_WORK_TREE are repository-local
+        env vars (git rev-parse --local-env-vars) and retarget with no
+        options at all."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = self._feature_repo(tmp_path)
+
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"GIT_DIR={main_repo}/.git GIT_WORK_TREE={main_repo} git commit -m x"
+            ),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"GIT_DIR={feature}/.git GIT_WORK_TREE={feature} git commit -m x"
+            ),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
+    def test_compound_second_invocation_is_checked(self, tmp_path) -> None:
+        """`git status && git commit`: the first invocation is a different
+        subcommand, so the scan must keep going rather than give up."""
+        repo = _git_repo(tmp_path, branch="main")
+        result = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload("git status && git commit -m x"),
+            cwd=repo,
+        )
+        assert result.returncode == 2
+
+    def test_non_commit_subcommands_are_ignored(self, tmp_path) -> None:
+        """Reading git is never blocked, even with commit/push in the text."""
+        repo = _git_repo(tmp_path, branch="main")
+        for cmd in (
+            "git log --grep=commit",
+            "git status",
+            "git show HEAD --stat",
+        ):
+            result = _run(
+                HOOKS_DIR / "guard-main-branch.sh",
+                stdin=_payload(cmd),
+                cwd=repo,
+            )
+            assert result.returncode == 0, cmd
+
     def test_override_prefix_is_honoured(self, tmp_path) -> None:
         repo = _git_repo(tmp_path, branch="main")
         result = _run(
