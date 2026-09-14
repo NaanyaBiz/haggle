@@ -157,10 +157,14 @@ fi
 # needs admin rights and is the maintainer's deliberate machine-policy call.
 MANAGED_OUT=".claude/managed-settings.generated.json"
 jq '{allowManagedHooksOnly: true, hooks: .hooks}' "$WIRING_TEMPLATE" > "$MANAGED_OUT"
+# Absolute path in the printed command: the caller's shell did not follow
+# this script's cd to the repo root, so a relative path would resolve
+# against wherever they invoked it from (Codex pass-2, PR #269).
+MANAGED_OUT_ABS="$(pwd)/$MANAGED_OUT"
 echo ""
 echo "Optional hardening (closes the tracked-settings wiring residual):"
 echo "  sudo mkdir -p '/Library/Application Support/ClaudeCode'"
-echo "  sudo install -m 644 $MANAGED_OUT '/Library/Application Support/ClaudeCode/managed-settings.json'"
+echo "  sudo install -m 644 '$MANAGED_OUT_ABS' '/Library/Application Support/ClaudeCode/managed-settings.json'"
 echo "NOTE: allowManagedHooksOnly disables user/project hooks in EVERY repo"
 echo "on this machine — merge by hand instead if a managed-settings.json"
 echo "already exists or other projects rely on their own hooks."

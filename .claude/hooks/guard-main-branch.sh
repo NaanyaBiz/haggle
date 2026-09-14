@@ -15,7 +15,11 @@ fi
 # which the old pattern (commit/push required IMMEDIATELY after `git`)
 # never matched at all: every -C-form commit bypassed the guard and the
 # -C extraction below was dead code (found chasing Codex P2 on PR #269).
-if ! echo "$cmd" | grep -qE '(^|[[:space:]])git([[:space:]]+-C[[:space:]]+[^[:space:]]+)?[[:space:]]+(commit|push)([[:space:]]|$)'; then
+# Global options may sit between `git` and the subcommand (git -h: [-C <path>] [-c <name>=<value>] ... <command>) — tolerate
+# runs of -C/-c (arg-taking), --long[=val], and single-letter flags
+# (Codex pass-2, PR #269). Exotic forms a regex cannot parse defer to
+# the server-side ruleset like every other unparseable command.
+if ! echo "$cmd" | grep -qE '(^|[[:space:]])git([[:space:]]+((-C|-c)[[:space:]]+[^[:space:]]+|--[^[:space:]]+|-[A-Za-z]))*[[:space:]]+(commit|push)([[:space:]]|$)'; then
     exit 0
 fi
 

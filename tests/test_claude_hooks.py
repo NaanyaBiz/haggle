@@ -224,6 +224,23 @@ class TestGuardMainBranch:
         )
         assert result.returncode == 2
 
+    def test_global_options_between_git_and_commit_still_block(self, tmp_path) -> None:
+        """Codex pass-2 (PR #269): git permits global options before the
+        subcommand — `git -C "$PWD" -c commit.gpgsign=false commit` must
+        not slip the matcher."""
+        repo = _git_repo(tmp_path, branch="main")
+        for cmd in (
+            'git -C "$PWD" -c commit.gpgsign=false commit -m x',
+            "git --no-pager commit -m x",
+            "git -c a=b push origin main",
+        ):
+            result = _run(
+                HOOKS_DIR / "guard-main-branch.sh",
+                stdin=_payload(cmd),
+                cwd=repo,
+            )
+            assert result.returncode == 2, cmd
+
     def test_override_prefix_is_honoured(self, tmp_path) -> None:
         repo = _git_repo(tmp_path, branch="main")
         result = _run(
