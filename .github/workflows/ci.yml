@@ -25,6 +25,20 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Refuse tracked local-trust files (#245)
+        # The hook-integrity TOFU anchors (.claude/hooks.sha256 and the
+        # settings.local.json that carries the hook wiring) must NEVER be
+        # tracked: git silently overwrites gitignored local files on
+        # checkout, so a branch that force-tracks them (git add -f) would
+        # substitute its own trust anchor under the maintainer reviewing
+        # it. The wiring also refuses a tracked pin store at runtime; this
+        # gate marks such a PR red before review and blocks it at merge.
+        run: |
+          if git ls-files .claude/hooks.sha256 .claude/settings.local.json | grep -q .; then
+            echo "::error::.claude/hooks.sha256 / .claude/settings.local.json are tracked — hostile-branch TOFU-defeat vector (#245)"
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

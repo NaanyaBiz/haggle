@@ -71,6 +71,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Claude Code hook execution is now TOFU-pinned** (#245) and **git ref
+  names are sanitized before entering the per-prompt context** (#244) —
+  both found by the Codex Security deep scan. Checking out an untrusted
+  branch could previously (a) replace any `.claude/hooks/*.sh` script and
+  have it execute automatically under the maintainer's identity on the
+  next ordinary action (Claude Code performs no hook content verification
+  and no cross-session approval — verified against v2.1.239), and (b) via
+  a crafted branch name, forge instruction-shaped markup into every
+  prompt. Now: the hook wiring lives only in the untracked
+  `settings.local.json`, every hook command verifies the whole scripts
+  directory against the untracked `.claude/hooks.sha256` pin store and
+  fails closed on mismatch, trust is granted only by the maintainer
+  running `scripts/pin-hooks.sh` after review, and branch/worktree names
+  are stripped to a strict character allowlist. The
+  `guard-main-branch.sh` false positive on `cd "$VAR" && git commit`
+  from a worktree is also fixed (unresolvable targets defer to the
+  server-side ruleset instead of guessing from the CWD). Adversarial
+  review of the control itself then closed three more holes: a hostile
+  branch force-tracking (`git add -f`) its own pin store — git silently
+  overwrites gitignored files on checkout — is refused at runtime (a
+  TRACKED pin store is never trusted) and blocked by a CI gate;
+  `pin-hooks.sh` refuses symlinked hook scripts (shasum follows links)
+  and shows the committed delta vs origin/main, which `git status`
+  cannot; and the hash tooling falls back from `shasum` to `sha256sum`
+  so the fail-closed design cannot self-DoS a Perl-less Linux host.
+  Cross-vendor review then found that `git -C <path> commit` had NEVER
+  matched the main-branch guard (the entry pattern required commit/push
+  immediately after `git` — the `-C` handling below it was dead code),
+  fixed along with `$PWD`-target resolution; the wiring installer now
+  writes through the worktree symlink instead of forking it; and for
+  the irreducible checkout-time wiring-substitution window (Claude Code
+  loads hook config from any working-tree settings file with no
+  approval), `pin-hooks.sh` generates an optional managed-settings
+  deployment (`allowManagedHooksOnly`) that closes it completely at
+  machine-policy level.
+
 - **`safe_float` now bounds magnitude, not just finiteness** (#241;
   renamed from `_safe_float` — it is a cross-module API, review finding).
   `1e308` is finite, so it passed the guard unchanged — and
