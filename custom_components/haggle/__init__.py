@@ -130,46 +130,54 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
 
     connector = HagglePinningConnector(on_new_connection=_check_pin)
     session = aiohttp.ClientSession(connector=connector)
-    # Everything after the session exists must close it on failure (#247).
-    # `entry.runtime_data` is the ONLY handle async_unload_entry has, and it
-    # is assigned below — but the mandatory first refresh routinely raises
-    # ConfigEntryNotReady/ConfigEntryAuthFailed on any transient AGL or
-    # network error, and HA retries setup with backoff. Without this, every
-    # retry during a flaky spell stranded another session + connector
-    # (sockets held until aiohttp's finalizer noticed, not a deterministic
-    # close) — worst on the small hosts this integration typically runs on.
-    try:
-        auth = AglAuth(refresh_token, _persist_refresh_token)
-        # HA's configured tz stands in for the contract's local tz (the
-        # property hosts the HA instance) — it bounds the interval-timestamp
-        # window to the true UTC shape of one local day (Codex P1, PR #266).
-        client = AglClient(auth, session, local_tz=dt_util.get_default_time_zone())
-        coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
+    # Bind the session's lifetime to the entry the moment it exists (#247).
+    # This integration owns its session (HagglePinningConnector cannot run
+    # under HA's shared connector), and `entry.runtime_data` — assigned
+    # below — used to be the only handle that could reach it. But the
+    # mandatory first refresh routinely raises ConfigEntryNotReady or
+    # ConfigEntryAuthFailed on any transient AGL/network error, and HA then
+    # retries setup with backoff: every attempt stranded another session +
+    # connector, open until aiohttp's finalizer eventually noticed.
+    #
+    # `async_on_unload` rather than a try/except because HA runs these
+    # callbacks from `_async_setup_entry`'s own finally block on EVERY
+    # failure path — including `asyncio.CancelledError` (a BaseException, so
+    # a bare `except Exception` would have missed a cancelled setup, e.g. on
+    # shutdown mid-retry) — and again on a successful unload. One
+    # registration, every path, no double bookkeeping.
+    entry.async_on_unload(session.close)
 
-        await coordinator.async_config_entry_first_refresh()
+    auth = AglAuth(refresh_token, _persist_refresh_token)
+    # HA's configured tz stands in for the contract's local tz (the property
+    # hosts the HA instance) — it bounds the interval-timestamp window to the
+    # true UTC shape of one local day (Codex P1, PR #266).
+    client = AglClient(auth, session, local_tz=dt_util.get_default_time_zone())
+    coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
-        entry.runtime_data = HaggleRuntimeData(
-            auth=auth,
-            client=client,
-            coordinator=coordinator,
-            session=session,
-            connector=connector,
-        )
+    await coordinator.async_config_entry_first_refresh()
 
-        # Also inside the guard: a platform-setup failure leaves setup failed,
-        # so HA never calls async_unload_entry to reach runtime_data either.
-        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    except Exception:
-        await session.close()
-        raise
+    entry.runtime_data = HaggleRuntimeData(
+        auth=auth,
+        client=client,
+        coordinator=coordinator,
+        session=session,
+        connector=connector,
+    )
+
+    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
-    """Unload a config entry — close the owned aiohttp session on the way out."""
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
-        await entry.runtime_data.session.close()
-    return unload_ok
+    """Unload a config entry.
+
+    The owned aiohttp session is closed by the `async_on_unload` callback
+    registered in `async_setup_entry` (#247) — HA runs it after a successful
+    unload, and on every failed-setup path too. Closing it here as well
+    would be redundant (`ClientSession.close()` is idempotent, but the
+    single registration is the clearer contract).
+    """
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
 async def _async_revoke_grant(hass: HomeAssistant, entry: HaggleConfigEntry) -> None:

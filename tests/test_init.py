@@ -128,7 +128,13 @@ async def test_failed_platform_setup_closes_the_session(
 ) -> None:
     """The same leak one step later: if platform setup raises, HA marks the
     entry failed and never calls async_unload_entry, so runtime_data (set by
-    then) is still unreachable for cleanup."""
+    then) is still unreachable for cleanup.
+
+    Note the injected failure is an HA-internals one: since 2025.x
+    async_forward_entry_setups swallows a platform's own setup failure and
+    returns, so this covers the rare infrastructure-raise path rather than
+    the common "platform returned False" case.
+    """
     entry = MockConfigEntry(
         domain=DOMAIN,
         data=_ENTRY_DATA,
@@ -168,6 +174,7 @@ async def test_failed_platform_setup_closes_the_session(
         assert not await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
+    assert entry.state is ConfigEntryState.SETUP_ERROR
     mock_session.close.assert_awaited_once()
 
 
