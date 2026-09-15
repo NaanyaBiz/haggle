@@ -130,24 +130,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
 
     connector = HagglePinningConnector(on_new_connection=_check_pin)
     session = aiohttp.ClientSession(connector=connector)
-    auth = AglAuth(refresh_token, _persist_refresh_token)
-    # HA's configured tz stands in for the contract's local tz (the property
-    # hosts the HA instance) — it bounds the interval-timestamp window to the
-    # true UTC shape of one local day (Codex P1, PR #266).
-    client = AglClient(auth, session, local_tz=dt_util.get_default_time_zone())
-    coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
+    # Everything after the session exists must close it on failure (#247).
+    # `entry.runtime_data` is the ONLY handle async_unload_entry has, and it
+    # is assigned below — but the mandatory first refresh routinely raises
+    # ConfigEntryNotReady/ConfigEntryAuthFailed on any transient AGL or
+    # network error, and HA retries setup with backoff. Without this, every
+    # retry during a flaky spell stranded another session + connector
+    # (sockets held until aiohttp's finalizer noticed, not a deterministic
+    # close) — worst on the small hosts this integration typically runs on.
+    try:
+        auth = AglAuth(refresh_token, _persist_refresh_token)
+        # HA's configured tz stands in for the contract's local tz (the
+        # property hosts the HA instance) — it bounds the interval-timestamp
+        # window to the true UTC shape of one local day (Codex P1, PR #266).
+        client = AglClient(auth, session, local_tz=dt_util.get_default_time_zone())
+        coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
-    await coordinator.async_config_entry_first_refresh()
+        await coordinator.async_config_entry_first_refresh()
 
-    entry.runtime_data = HaggleRuntimeData(
-        auth=auth,
-        client=client,
-        coordinator=coordinator,
-        session=session,
-        connector=connector,
-    )
+        entry.runtime_data = HaggleRuntimeData(
+            auth=auth,
+            client=client,
+            coordinator=coordinator,
+            session=session,
+            connector=connector,
+        )
 
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        # Also inside the guard: a platform-setup failure leaves setup failed,
+        # so HA never calls async_unload_entry to reach runtime_data either.
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        await session.close()
+        raise
     return True
 
 

@@ -124,6 +124,44 @@ jobs:
           fi
           echo "self-test OK: seeded token detected"
 
+      # Second self-test: prove THIS PR's custom rules still match what they
+      # were written to catch (#248). The step above only proves the binary
+      # is alive — it seeds a built-in `github-pat` pattern into a scratch
+      # dir with no config, so a PR that narrowed a regex in .gitleaks.toml
+      # or added a swallowing allowlist passed it every time. Each of the
+      # four repo-specific rules gets its own seed and its RuleID must
+      # appear in the report: asserting "some finding occurred" would not
+      # do, because a weakened custom rule lets a default rule
+      # (generic-api-key) fire on the same seed and mask the regression.
+      # Seeds are assembled at runtime so this workflow file cannot match
+      # the rules itself, and the values deliberately avoid the canonical
+      # placeholders and the fake/test/example allowlists.
+      - name: Custom-rule self-test (must detect repo-specific patterns)
+        run: |
+          d="$RUNNER_TEMP/gitleaks-customrules"
+          mkdir -p "$d"
+          num=4820571936
+          printf 'refresh_token = "%s"\n' \
+            "v1.MQ4tR9wZk2Lp7XbN3cYdF8gH5jS6vA1eKmTnPqUrWxZyB0oCiDlEuFgHjIkJ" > "$d/a.txt"
+          printf 'accountNumber = "%s"\n' "$num" > "$d/b.txt"
+          printf 'GET /mobile/bff/api/v2/usage/smart/Electricity/%s/Current/Hourly\n' "$num" > "$d/c.txt"
+          printf 'haggle:consumption_%s\n' "$num" > "$d/d.txt"
+          "$RUNNER_TEMP/gitleaks" dir --no-banner --redact \
+            --config .gitleaks.toml \
+            --report-format json --report-path "$RUNNER_TEMP/customrules.json" "$d" || true
+          missing=0
+          for rule in auth0-opaque-refresh-token agl-real-customer-identifier \
+                      agl-contract-in-usage-url agl-contract-in-statistic-id; do
+            if ! grep -q "\"RuleID\": *\"$rule\"" "$RUNNER_TEMP/customrules.json"; then
+              echo "::error::.gitleaks.toml rule '$rule' did not fire on its seeded pattern — the rule was weakened, removed, or allowlisted away"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "custom-rule self-test OK: all four repo-specific rules fired"
+
       - name: Scan full git history
         run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact .'
 
