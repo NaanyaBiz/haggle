@@ -461,6 +461,33 @@ class TestGuardMainBranch:
         )
         assert allowed.returncode == 0
 
+    def test_env_target_does_not_leak_across_a_non_git_command(self, tmp_path) -> None:
+        """Codex pass-7 (PR #269): a prefix assignment binds only to the
+        command it precedes, including a NON-git one. `GIT_DIR=<feature>
+        true && git -C <main> commit` must judge main, not the feature
+        repo (GIT_DIR would otherwise outrank the -C in the replay)."""
+        main_repo = _git_repo(tmp_path, branch="main")
+        feature = self._feature_repo(tmp_path)
+
+        blocked = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"GIT_DIR={feature}/.git true && git -C {main_repo} commit -m x"
+            ),
+            cwd=feature,
+        )
+        assert blocked.returncode == 2
+
+        # And the legitimate prefix form still retargets.
+        allowed = _run(
+            HOOKS_DIR / "guard-main-branch.sh",
+            stdin=_payload(
+                f"echo hi && GIT_DIR={feature}/.git GIT_WORK_TREE={feature} git commit -m x"
+            ),
+            cwd=main_repo,
+        )
+        assert allowed.returncode == 0
+
     def test_compound_second_invocation_is_checked(self, tmp_path) -> None:
         """`git status && git commit`: the first invocation is a different
         subcommand, so the scan must keep going rather than give up."""

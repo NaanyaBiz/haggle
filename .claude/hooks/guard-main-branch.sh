@@ -66,7 +66,8 @@ set -f
 read -ra _tokens <<< "$cmd"
 set +f
 
-env_args=()     # GIT_DIR= / GIT_WORK_TREE= assignments preceding `git`
+env_args=()     # assignments bound to the git invocation being scanned
+pending_env=()  # assignments seen since the last command boundary
 targets=()      # -C / --git-dir / --work-tree and their operands
 cd_dir=""       # `cd <path> && git commit` form
 found=0         # a git commit/push invocation was identified
@@ -80,13 +81,27 @@ while [[ $i -lt ${#_tokens[@]} ]]; do
             git)
                 in_git=1
                 targets=()
+                # A prefix assignment binds ONLY to the command it
+                # precedes, so it becomes active exactly here.
+                env_args=(${pending_env[@]+"${pending_env[@]}"})
+                pending_env=()
                 ;;
             cd)
                 i=$((i + 1))
                 cd_dir="$(unquote "${_tokens[$i]:-}")"
+                pending_env=()
                 ;;
             GIT_DIR=*|GIT_WORK_TREE=*)
-                env_args+=("$(unquote_assignment "$tok")")
+                pending_env+=("$(unquote_assignment "$tok")")
+                ;;
+            *=*)
+                : # some other assignment — irrelevant, and not a boundary
+                ;;
+            *)
+                # Any other word starts a different command, so assignments
+                # collected so far belonged to IT, not to a later git
+                # (`GIT_DIR=x true && git -C main commit` — Codex pass-7).
+                pending_env=()
                 ;;
         esac
     else
@@ -123,6 +138,7 @@ while [[ $i -lt ${#_tokens[@]} ]]; do
                 in_git=0
                 targets=()
                 env_args=()
+                pending_env=()
                 ;;
         esac
     fi
