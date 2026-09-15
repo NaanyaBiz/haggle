@@ -71,6 +71,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **The gitleaks CI self-test now regression-tests this repo's own rules**
+  (#248). It previously seeded a built-in `github-pat` pattern into a
+  scratch directory containing no `.gitleaks.toml`, so it only ever proved
+  the binary was alive: a PR narrowing one of the four repo-specific rules
+  (Auth0 refresh tokens, AGL account/contract identifiers in fields, usage
+  URLs, and statistic IDs) passed it every time. A second self-test now
+  seeds each rule's own pattern and asserts that rule's ID fires. It is
+  deliberately per-rule rather than "did anything fire" — with the
+  refresh-token rule weakened, the default `generic-api-key` rule matches
+  the same seed, so a finding-count check would still have passed.
+
+### Fixed
+
+- **A failed first poll no longer leaks the HTTP session** (#247). The
+  integration owns its `aiohttp` session (the TLS-pinning connector cannot
+  run under HA's shared one), and `entry.runtime_data` — the only handle
+  unload uses to close it — is assigned *after* the mandatory first
+  refresh. That refresh raises `ConfigEntryNotReady` on any transient AGL
+  or network error, which is a normal outcome, and Home Assistant then
+  retries setup with backoff: each attempt stranded another session and
+  connector, held open until aiohttp's finalizer eventually noticed.
+  Setup now closes the session on any failure, covering platform setup too.
+
 - **`safe_float` now bounds magnitude, not just finiteness** (#241;
   renamed from `_safe_float` — it is a cross-module API, review finding).
   `1e308` is finite, so it passed the guard unchanged — and

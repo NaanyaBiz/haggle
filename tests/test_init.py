@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.helpers.update_coordinator import UpdateFailed
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.haggle.const import (
@@ -77,6 +79,103 @@ async def test_setup_and_unload(hass: HomeAssistant) -> None:
         # The integration owns its session (HagglePinningConnector cannot run
         # under HA's shared connector), so unload must close it.
         mock_session.close.assert_called_once()
+
+
+async def test_failed_first_refresh_closes_the_session(hass: HomeAssistant) -> None:
+    """#247: a failed first refresh must not strand the session/connector.
+
+    `entry.runtime_data` is the only handle `async_unload_entry` has, and it
+    is assigned AFTER `async_config_entry_first_refresh()`. That call raises
+    ConfigEntryNotReady on any transient AGL/network error — a normal
+    outcome — and HA then retries setup with backoff, so each attempt used
+    to leak another session + connector.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=_ENTRY_DATA,
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            side_effect=UpdateFailed("AGL unreachable"),
+        ),
+    ):
+        # Setup fails (ConfigEntryNotReady), but the session must be closed.
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    mock_session.close.assert_awaited_once()
+
+
+async def test_failed_platform_setup_closes_the_session(
+    hass: HomeAssistant,
+) -> None:
+    """The same leak one step later: if platform setup raises, HA marks the
+    entry failed and never calls async_unload_entry, so runtime_data (set by
+    then) is still unreachable for cleanup.
+
+    Note the injected failure is an HA-internals one: since 2025.x
+    async_forward_entry_setups swallows a platform's own setup failure and
+    returns, so this covers the rare infrastructure-raise path rather than
+    the common "platform returned False" case.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=_ENTRY_DATA,
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=_COORDINATOR_DATA,
+        ),
+        patch.object(
+            hass.config_entries,
+            "async_forward_entry_setups",
+            new_callable=AsyncMock,
+            side_effect=RuntimeError("platform boom"),
+        ),
+    ):
+        assert not await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    mock_session.close.assert_awaited_once()
 
 
 async def test_persist_failure_triggers_reauth(hass: HomeAssistant) -> None:

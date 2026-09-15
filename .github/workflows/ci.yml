@@ -124,6 +124,97 @@ jobs:
           fi
           echo "self-test OK: seeded token detected"
 
+      # Second self-test: prove THIS PR's custom rules still match
+      # everything they were written to catch (#248). The step above only
+      # proves the binary is alive — it seeds a built-in pattern into a
+      # scratch dir with no config, so a PR that narrowed a regex in
+      # .gitleaks.toml passed it every time.
+      #
+      # Each seed is its own file and each (rule, file) pair is asserted,
+      # because coarser checks miss real regressions (both verified):
+      #   - "did anything fire" — a weakened custom rule lets a DEFAULT
+      #     rule match the same seed, keeping the finding count identical.
+      #   - one seed per rule — a single 10-digit Electricity seed stayed
+      #     green while narrowing \d{6,12} to \d{10}, dropping the
+      #     ElectricitySolar branch, or reducing the statistic-ID rule to
+      #     two of its families. Seeds now cover the LOWER length bound and
+      #     every protected alternative of every rule.
+      # Note the asymmetry: these patterns are unanchored, so raising a
+      # lower bound blinds the rule (caught here) while lowering an upper
+      # bound does not — a longer value still matches its opening run. The
+      # long seeds (tok-min's counterpart id-12) therefore guard a
+      # different class: a future rewrite that adds anchors or word
+      # boundaries would break long values, and they would catch it.
+      # Seeds are built at runtime so this workflow cannot match the rules.
+      - name: Custom-rule self-test (must detect repo-specific patterns)
+        run: |
+          d="$RUNNER_TEMP/gitleaks-customrules"
+          report="$RUNNER_TEMP/customrules.json"
+          mkdir -p "$d"
+          printf 'refresh_token = "%s"\n' \
+            "v1.u8jzPde0IgxLd6GncfBAepfJBd0Kh8oOOL8dKLzdocJ2isAjIhKtJ0Rlg" > "$d/tok-min.txt"
+          printf 'accountNumber = "%s"\n' "482057" > "$d/id-6.txt"
+          printf 'contract_number = "%s"\n' "482057193641" > "$d/id-12.txt"
+          printf 'GET /mobile/bff/api/v2/usage/smart/Electricity/%s/Current/Hourly\n' \
+            "4820571936" > "$d/url-elec.txt"
+          printf 'GET /mobile/bff/api/v2/usage/smart/ElectricitySolar/%s/Current/Hourly\n' \
+            "482057" > "$d/url-solar.txt"
+          printf 'GET /mobile/bff/api/v2/plan/energy/%s\n' "482057193641" > "$d/url-plan.txt"
+          printf 'haggle:consumption_%s\n' "482057" > "$d/stat-cons.txt"
+          printf 'haggle:cost_%s\n' "4820571936" > "$d/stat-cost.txt"
+          printf 'haggle:generation_%s\n' "482057193641" > "$d/stat-gen.txt"
+          printf 'haggle:generation_credit_%s\n' "4820571936" > "$d/stat-credit.txt"
+          printf 'haggle:consumption_peak_%s\n' "4820571936" > "$d/stat-peak.txt"
+          printf 'haggle:cost_offpeak_%s\n' "4820571936" > "$d/stat-offpeak.txt"
+          printf 'haggle:consumption_shoulder_%s\n' "4820571936" > "$d/stat-shoulder.txt"
+          printf 'haggle:cost_normal_%s\n' "4820571936" > "$d/stat-normal.txt"
+
+          # gitleaks exits 1 both when it finds leaks (expected here) and on
+          # a fatal config error, so the exit code cannot tell them apart —
+          # but a fatal error writes NO report. Discriminate on that, or a
+          # .gitleaks.toml syntax error in the PR reports as a pile of
+          # misleading "rule did not fire" lines and sends triage hunting
+          # regexes.
+          set +e
+          "$RUNNER_TEMP/gitleaks" dir --no-banner --redact \
+            --config .gitleaks.toml \
+            --report-format json --report-path "$report" "$d"
+          status=$?
+          set -e
+          if [ ! -s "$report" ] || ! jq -e 'type == "array"' "$report" > /dev/null 2>&1; then
+            echo "::error::gitleaks wrote no usable report (exit $status) — .gitleaks.toml parse error or broken binary, NOT a rule regression"
+            exit 1
+          fi
+
+          missing=0
+          for pair in \
+            auth0-opaque-refresh-token:tok-min.txt \
+            agl-real-customer-identifier:id-6.txt \
+            agl-real-customer-identifier:id-12.txt \
+            agl-contract-in-usage-url:url-elec.txt \
+            agl-contract-in-usage-url:url-solar.txt \
+            agl-contract-in-usage-url:url-plan.txt \
+            agl-contract-in-statistic-id:stat-cons.txt \
+            agl-contract-in-statistic-id:stat-cost.txt \
+            agl-contract-in-statistic-id:stat-gen.txt \
+            agl-contract-in-statistic-id:stat-credit.txt \
+            agl-contract-in-statistic-id:stat-peak.txt \
+            agl-contract-in-statistic-id:stat-offpeak.txt \
+            agl-contract-in-statistic-id:stat-shoulder.txt \
+            agl-contract-in-statistic-id:stat-normal.txt; do
+            rule="${pair%%:*}"
+            seed="${pair##*:}"
+            if ! jq -e --arg r "$rule" --arg f "$seed" \
+                 'any(.[]; .RuleID == $r and (.File | endswith($f)))' "$report" > /dev/null; then
+              echo "::error::.gitleaks.toml rule '$rule' did not fire on seed '$seed' — the rule was weakened, removed, or allowlisted away"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+          echo "custom-rule self-test OK: every rule fired on every seeded variant"
+
       - name: Scan full git history
         run: '"$RUNNER_TEMP/gitleaks" git --no-banner --redact .'
 
