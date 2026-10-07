@@ -150,6 +150,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`pip` 26.1.2 → 26.2** in the `uv` group, closing
   `GHSA-qwm4-qh6w-59xr` (doubly-encoded package URLs from indexes).
   Dev-lockfile only.
+- **Dev-dependency bump, 2026-10-07 rollup** (`pytest-homeassistant-custom-component`
+  floor 0.13.365, `uv lock` resolved 0.13.367 → `homeassistant` 2026.9.4;
+  `ruff` 0.16.10, `zizmor` 1.30.1; `anyio` 4.14.1 → 4.15.1 in the `uv`
+  group): rolls Dependabot #271 and #273. #271 again raised the
+  `pyproject.toml` floors without regenerating `uv.lock`, failing the
+  `uv lock --check` gate — regenerated here. No new lint findings and no
+  source edits. `hacs.json` stays at 2026.7.0 for the same reason as the
+  previous bump: none of this is a runtime requirement.
 
 ### Fixed
 
