@@ -723,11 +723,15 @@ async def _run_repair(
     contracts: list[Contract] | None = None,
     auth_spki: str = _NEW_AUTH_SPKI,
     bff_spki: str = _NEW_BFF_SPKI,
+    setup_mock: AsyncMock | None = None,
 ) -> Any:
     """Initiate and complete a reauth or reconfigure flow against `entry`.
 
-    Returns the final flow result (ABORT or FORM on error).
+    Returns the final flow result (ABORT or FORM on error). Pass `setup_mock`
+    to observe whether the entry was reloaded.
     """
+    if setup_mock is None:
+        setup_mock = AsyncMock(return_value=True)
     if contracts is None:
         contracts = [_matching_contract()]
     if source == config_entries.SOURCE_REAUTH:
@@ -746,11 +750,7 @@ async def _run_repair(
             new_callable=AsyncMock,
             return_value=(contracts, bff_spki),
         ),
-        patch(
-            "custom_components.haggle.async_setup_entry",
-            new_callable=AsyncMock,
-            return_value=True,
-        ),
+        patch("custom_components.haggle.async_setup_entry", setup_mock),
     ):
         result = await hass.config_entries.flow.async_configure(
             form["flow_id"], user_input={CALLBACK_URL_FIELD: callback}
@@ -1169,3 +1169,301 @@ async def test_m9_contract_not_found_no_leak_no_placeholders(
 
     for secret in ("9999999999", "1234567890", "v1.old_token", "v1.new_token"):
         assert secret not in caplog.text, f"Sensitive value leaked: {secret!r}"
+
+
+# --- verification follow-ups (#275 M7 mutation table) -------------------
+
+
+@pytest.mark.parametrize(
+    ("exc", "error"),
+    [(AGLAuthError("x"), "invalid_auth"), (AGLError("x"), "cannot_connect")],
+)
+async def test_reconfigure_exchange_error_keeps_reconfigure_step(
+    hass: HomeAssistant, exc: Exception, error: str
+) -> None:
+    """M7(d): an exchange error re-shows the RECONFIGURE form, not 'user'.
+
+    HA routes the next submit to async_step_<step_id>; re-showing 'user'
+    would drop the re-pin warning and the retry would run as a plain login.
+    A second submit (same state) with a working exchange then completes.
+    """
+    entry = _repair_entry(hass)
+    form = await entry.start_reconfigure_flow(hass)
+    callback = _make_callback_url(form["description_placeholders"]["authorize_url"])
+    with patch(
+        "custom_components.haggle.config_flow._exchange_code",
+        new_callable=AsyncMock,
+        side_effect=exc,
+    ):
+        retry = await hass.config_entries.flow.async_configure(
+            form["flow_id"], user_input={CALLBACK_URL_FIELD: callback}
+        )
+    assert retry["type"] is FlowResultType.FORM
+    assert retry["step_id"] == "reconfigure"
+    assert retry["errors"] == {"base": error}
+
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("acc_tok", "v1.new_token", _NEW_AUTH_SPKI),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=([_matching_contract()], _NEW_BFF_SPKI),
+        ),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            retry["flow_id"],
+            user_input={
+                CALLBACK_URL_FIELD: _make_callback_url(
+                    retry["description_placeholders"]["authorize_url"]
+                )
+            },
+        )
+        await hass.async_block_till_done()
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_PINNED_SPKI_AUTH] == _NEW_AUTH_SPKI
+
+
+@pytest.mark.parametrize(
+    "source", [config_entries.SOURCE_REAUTH, config_entries.SOURCE_RECONFIGURE]
+)
+async def test_repair_reloads_the_entry(hass: HomeAssistant, source: str) -> None:
+    """M7(h): the repaired entry is RELOADED so the new grant/pins take effect.
+
+    async_update_and_abort (no reload) would leave the running instance on
+    the dead token and the old in-memory pin-check closure.
+    """
+    entry = _repair_entry(hass)
+    if source == config_entries.SOURCE_REAUTH:
+        form = await entry.start_reauth_flow(hass)
+    else:
+        form = await entry.start_reconfigure_flow(hass)
+    setup = AsyncMock(return_value=True)
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("acc_tok", "v1.new_token", _NEW_AUTH_SPKI),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=([_matching_contract()], _NEW_BFF_SPKI),
+        ),
+        patch("custom_components.haggle.async_setup_entry", setup),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            user_input={
+                CALLBACK_URL_FIELD: _make_callback_url(
+                    form["description_placeholders"]["authorize_url"]
+                )
+            },
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    setup.assert_awaited_once()
+
+
+async def test_reconfigure_cancels_pending_reauth_flow(hass: HomeAssistant) -> None:
+    """M7(h): Reconfigure also clears a pending reauth prompt (via the reload).
+
+    Backs the user guidance that Reconfigure fixes a dead grant AND a pin
+    mismatch in one go.
+    """
+    entry = _repair_entry(hass)
+    reauth = await entry.start_reauth_flow(hass)
+    assert reauth["type"] is FlowResultType.FORM
+
+    def _pending_reauth() -> list[Any]:
+        return hass.config_entries.flow.async_progress_by_handler(
+            DOMAIN,
+            match_context={
+                "entry_id": entry.entry_id,
+                "source": config_entries.SOURCE_REAUTH,
+            },
+        )
+
+    assert _pending_reauth()
+    result = await _run_repair(hass, entry, source=config_entries.SOURCE_RECONFIGURE)
+    assert result["reason"] == "reconfigure_successful"
+    assert not _pending_reauth()
+
+
+@pytest.mark.parametrize(
+    "source", [config_entries.SOURCE_REAUTH, config_entries.SOURCE_RECONFIGURE]
+)
+@pytest.mark.parametrize(
+    "contracts",
+    [
+        pytest.param([_matching_contract(account="5555555555")], id="moved_account"),
+        pytest.param([_gas("1111111111")], id="gas_other"),
+    ],
+)
+async def test_existing_entry_contract_absent_aborts_without_writing(
+    hass: HomeAssistant, source: str, contracts: list[Contract]
+) -> None:
+    """M7(f): the entry's contract under a DIFFERENT account is not a match.
+
+    Nothing is written, nothing reloads and the seeded notices stay up.
+    """
+    entry = _repair_entry(hass)
+    data_before = dict(entry.data)
+    _seed_pin_notices(hass)
+    setup = AsyncMock(return_value=True)
+    result = await _run_repair(
+        hass, entry, source=source, contracts=contracts, setup_mock=setup
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "contract_not_found"
+    assert dict(entry.data) == data_before
+    setup.assert_not_awaited()
+    notices = _notification_ids(hass)
+    for host in (AGL_AUTH_HOST_NAME, AGL_BFF_HOST_NAME):
+        assert PIN_MISMATCH_NOTIFICATION_ID.format(host=host) in notices
+
+
+@pytest.mark.parametrize(
+    "source", [config_entries.SOURCE_REAUTH, config_entries.SOURCE_RECONFIGURE]
+)
+async def test_existing_entry_flow_never_shows_contract_picker(
+    hass: HomeAssistant, source: str
+) -> None:
+    """Two serviceable contracts: a repair flow matches its own, no picker."""
+    entry = _repair_entry(hass)
+    result = await _run_repair(
+        hass,
+        entry,
+        source=source,
+        contracts=[_matching_contract(contract="1111111111"), _matching_contract()],
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"].endswith("_successful")
+    assert entry.data[CONF_CONTRACT_NUMBER] == "9999999999"
+
+
+async def test_hash_unique_id_entry_matches_by_contract_number(
+    hass: HomeAssistant,
+) -> None:
+    """A hash-unique_id entry with no stored account repairs by contract only.
+
+    Its unique_id (sha256 of the ORIGINAL token) can never be recomputed, so
+    the match must key on entry.data; nothing is back-filled.
+    """
+    entry = _repair_entry(hass, account="", uid="0123456789abcdef")
+    result = await _run_repair(hass, entry, source=config_entries.SOURCE_REAUTH)
+    assert result["reason"] == "reauth_successful"
+    assert entry.unique_id == "0123456789abcdef"
+    assert entry.data[CONF_ACCOUNT_NUMBER] == ""
+    assert entry.data[CONF_REFRESH_TOKEN] == "v1.new_token"
+
+
+async def test_reauth_contract_fetch_failure_then_retry_succeeds(
+    hass: HomeAssistant,
+) -> None:
+    """A discovery error mid-reauth is retryable and still updates the entry."""
+    entry = _repair_entry(hass)
+    form = await entry.start_reauth_flow(hass)
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("acc_tok", "v1.new_token", _NEW_AUTH_SPKI),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            side_effect=[AGLError("x"), ([_matching_contract()], _NEW_BFF_SPKI)],
+        ),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        failed = await hass.config_entries.flow.async_configure(
+            form["flow_id"],
+            user_input={
+                CALLBACK_URL_FIELD: _make_callback_url(
+                    form["description_placeholders"]["authorize_url"]
+                )
+            },
+        )
+        assert failed["type"] is FlowResultType.FORM
+        assert failed["step_id"] == "select_contract"
+        assert failed["errors"] == {"base": "cannot_connect"}
+        result = await hass.config_entries.flow.async_configure(failed["flow_id"], {})
+        await hass.async_block_till_done()
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_REFRESH_TOKEN] == "v1.new_token"
+
+
+_A, _B, _C = "a" * 64, "b" * 64, "c" * 64
+
+
+@pytest.mark.parametrize(
+    ("source", "stored", "capture", "expected_updates", "expected_repinned"),
+    [
+        # Reconfigure: every non-empty capture is written and counted.
+        (config_entries.SOURCE_RECONFIGURE, _A, _C, {"k": _C}, True),
+        (config_entries.SOURCE_RECONFIGURE, _A, _A, {"k": _A}, True),
+        (config_entries.SOURCE_RECONFIGURE, "", _C, {"k": _C}, True),
+        (config_entries.SOURCE_RECONFIGURE, _A, "", {}, False),
+        (config_entries.SOURCE_RECONFIGURE, "", "", {}, False),
+        # Reauth: fills a missing pin only; never overwrites; never re-pins.
+        (config_entries.SOURCE_REAUTH, _A, _C, {}, False),
+        (config_entries.SOURCE_REAUTH, _A, _A, {}, False),
+        (config_entries.SOURCE_REAUTH, "", _C, {"k": _C}, False),
+        (config_entries.SOURCE_REAUTH, _A, "", {}, False),
+        (config_entries.SOURCE_REAUTH, "", "", {}, False),
+    ],
+)
+def test_pin_updates_policy(
+    source: str,
+    stored: str,
+    capture: str,
+    expected_updates: dict[str, str],
+    expected_repinned: bool,
+) -> None:
+    """The pure pin policy (M12): the same row applied to BOTH hosts."""
+    from custom_components.haggle.config_flow import _pin_updates
+
+    stored_data = {CONF_PINNED_SPKI_AUTH: stored, CONF_PINNED_SPKI_BFF: stored}
+    updates, repinned = _pin_updates(source, stored_data, capture, capture)
+    want = {
+        key: value
+        for key in (CONF_PINNED_SPKI_AUTH, CONF_PINNED_SPKI_BFF)
+        for value in expected_updates.values()
+    }
+    assert updates == want
+    assert repinned == (
+        [AGL_AUTH_HOST_NAME, AGL_BFF_HOST_NAME] if expected_repinned else []
+    )
+
+
+def test_flow_strings_mirror_and_cover_new_reasons() -> None:
+    """strings.json == translations/en.json, and every new #275 key exists."""
+    from pathlib import Path
+
+    base = Path(__file__).parent.parent / "custom_components" / "haggle"
+    strings = json.loads((base / "strings.json").read_text())
+    english = json.loads((base / "translations" / "en.json").read_text())
+    assert strings == english
+    config = strings["config"]
+    assert "{authorize_url}" in config["step"]["reconfigure"]["description"]
+    for reason in (
+        "reauth_successful",
+        "reconfigure_successful",
+        "reconfigure_pin_incomplete",
+        "contract_not_found",
+        "entry_not_repairable",
+    ):
+        assert config["abort"][reason]
