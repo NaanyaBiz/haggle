@@ -32,16 +32,21 @@ no fields and exposes neither the protocol nor the transport.
 ## Why warn-only
 
 Hard-coding a SPKI in `const.py` would brick every install whenever AGL
-rotates. TOFU lets each install pin what it observes at install time — when
-the user has already verified the AGL hostname in their browser (PKCE happens
-browser-side, with system trust + lock indicator). The HA-side pin then locks
-down post-install requests. Re-pin via the standard HA Reconfigure flow.
+rotates. TOFU lets each install pin what it observes at install time, and the
+HA-side pin then locks down post-install requests. Re-pin via the standard HA
+Reconfigure flow, which deliberately repeats the trust-on-first-use capture
+and warns the user not to re-pin on a network that inspects TLS.
 
-## First-install caveat
+## Pin-capture trust boundary
 
-A LAN MITM during the initial PKCE flow could pin the attacker's certificate.
-PKCE happens in the user's browser (system trust + visible lock indicator),
-so this requires compromising both the browser and the HA host simultaneously.
+Both hashes are captured from the **HA host's** own TLS connections — the
+authorization-code exchange (`secure.agl.com.au`) and the contract-discovery
+fetch (`api.platform.agl.com.au`) — not from the browser, which carries only
+the AGL login. An interceptor on the HA host's network path whose certificate
+the HA host's CA store trusts is therefore pinned on its own; the browser does
+not also have to be compromised. Every Reconfigure repeats that same
+trust-on-first-use moment, and the mismatch notification and the Reconfigure
+form both tell the user not to re-pin where TLS is intercepted.
 """
 
 from __future__ import annotations
