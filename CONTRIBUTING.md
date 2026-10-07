@@ -15,6 +15,9 @@ scope, and a clear "why".
    code alone.
 3. **Run the dev loop locally** before pushing. CI runs the same checks
    and rejects PRs that fail any of them.
+4. **Sign your commits.** `main` requires a verified signature on every
+   commit, and GitHub will not merge a PR that contains an unsigned one.
+   See [Sign your commits](#sign-your-commits-required) below.
 
 ## Dev loop
 
@@ -61,6 +64,29 @@ git commit -m "feat: implement token rotation persistence
 
 Co-Authored-By: Claude <noreply@anthropic.com>"
 ```
+
+## Sign your commits (required)
+
+`main` is protected by a ruleset that requires a verified signature on
+every commit, and GitHub refuses the merge button on a pull request that
+contains any unsigned commit, even for a squash merge (the only merge
+method this repo allows). Set up signing before your first commit. SSH
+signing is the simplest and reuses the key you already push with:
+
+```bash
+git config --global gpg.format ssh
+git config --global user.signingkey ~/.ssh/id_ed25519.pub   # your public key
+git config --global commit.gpgsign true
+```
+
+Then add the same public key to GitHub as a **signing key** (Settings →
+SSH and GPG keys → New SSH key → key type *Signing Key*). An
+authentication key alone does not count. Your commits should show
+**Verified** on GitHub; GPG signing works too.
+
+If a PR arrives with unsigned commits, the maintainer may re-apply it as
+a signed commit with you preserved as the author rather than wait for a
+key setup; you will be told on the PR when that happens.
 
 ## PR checklist
 

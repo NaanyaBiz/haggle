@@ -990,7 +990,11 @@ The HA Energy dashboard requires:
   compatible with this flow because squash merges to `main` are
   GitHub-signed and release tags are signed locally (security@naanya.biz
   ed25519 key), but it means remote agent sessions (which can't hold the
-  key) cannot land anything on `main` except via squash-merged PRs. If the
+  key) cannot land anything on `main` except via squash-merged PRs. The
+  same rule binds third-party PRs: an unsigned contributor commit blocks
+  the merge button even for a squash, so `CONTRIBUTING.md` makes signing
+  mandatory (#286); the fallback is re-applying the change as a signed
+  commit with the contributor preserved as author (first used on #281). If the
   requirement blocks a legitimate flow (the first Dependabot cycle is the
   watch item), roll it back PR-first via `.github/settings/`, never as a
   silent toggle.

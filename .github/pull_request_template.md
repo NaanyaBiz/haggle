@@ -12,6 +12,8 @@
 - [ ] `uv run mypy custom_components/haggle` clean
 - [ ] Hassfest passes locally (or CI hassfest check is green)
 - [ ] Manual test on a real HA instance (if touching config flow or sensors)
+- [ ] All commits are signed and show **Verified** on GitHub
+      (`CONTRIBUTING.md → Sign your commits`)
 
 ## AI generation disclosure
 
