@@ -286,8 +286,13 @@ keys, and usage-endpoint URL paths for identifiers) are layered on the
 gitleaks defaults and run in two places: the pre-commit hook on every dev
 machine, and the CI `Gitleaks (full history)` job on every PR, which
 scans every commit in the repository with a checksum-pinned gitleaks
-binary. That job fails closed: a scanner self-test must first detect a
-seeded token, so a silently broken scanner cannot return a green verdict.
+binary. That job fails closed on two self-tests. A scanner self-test must first
+detect a seeded token, so a silently broken scanner cannot return a green
+verdict. A custom-rule self-test then seeds each of the four
+repo-specific `.gitleaks.toml` patterns and asserts that rule's own ID
+fires (#248), so a PR that narrows a regex or adds a swallowing
+allowlist goes red — the first test proves the binary detects, this one
+proves the policy in the diff still catches what it was written for.
 
 **Dev-machine hooks.** `.pre-commit-config.yaml` pins every remote hook
 to a **frozen commit SHA** (refresh with `pre-commit autoupdate
