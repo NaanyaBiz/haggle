@@ -233,8 +233,9 @@ endpoint, new storage location, telemetry) reopens the row.
 
 ## 6. AI development agents and Anthropic as a supplier
 
-All product code is AI-authored (Claude Code) and human-reviewed/merged by
-the maintainer. Two agentic systems operate **on the repo**; the shipped
+Product code is AI-authored (Claude Code) by the maintainer, or contributed
+by third parties who declare their AI tooling (or none) per commit and PR;
+all of it is human-reviewed and merged by the maintainer. Two agentic systems operate **on the repo**; the shipped
 product contains no AI component. Each is assessed on the **union of its
 tool grants**, not by the (non-agentic) product's nominal consequence
 class; widening any agent's grants re-opens this section.

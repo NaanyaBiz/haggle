@@ -55,7 +55,7 @@ repos:
     hooks:
       - id: gitleaks
 
-  # Shell scripts — scripts/check_claude_coauthor.sh, scripts/wt (shebang-
+  # Shell scripts — scripts/check_provenance_trailer.sh, scripts/wt (shebang-
   # detected), .claude/hooks/*.sh. Several implement repo controls (the
   # provenance trailer, the branch guard), so they get linted like code.
   - repo: https://github.com/shellcheck-py/shellcheck-py
@@ -95,10 +95,10 @@ repos:
   # The repo is purely AI-generated; provenance is mandatory.
   - repo: local
     hooks:
-      - id: require-claude-coauthor
-        name: Require Co-Authored-By Claude trailer
+      - id: require-provenance-trailer
+        name: Require provenance trailer (Co-Authored-By <AI tool> or AI-Assisted none)
         language: script
-        entry: scripts/check_claude_coauthor.sh
+        entry: scripts/check_provenance_trailer.sh
         stages: [commit-msg]
 
   # Codex Security (@openai/codex-security) — LLM-based vulnerability scan,
