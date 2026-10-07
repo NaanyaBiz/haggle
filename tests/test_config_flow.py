@@ -788,17 +788,19 @@ async def test_reconfigure_step_is_registered(hass: HomeAssistant) -> None:
     assert "authorize_url" in form["description_placeholders"]
 
 
-async def test_reconfigure_step_id_is_reconfigure_not_user(
+async def test_repair_flows_use_their_own_step_ids(
     hass: HomeAssistant,
 ) -> None:
-    """The Reconfigure form must show step_id='reconfigure' for its own strings."""
+    """Reconfigure and reauth each show their OWN step so strings.json can
+    explain them: the TOFU warning on 'reconfigure', the why-am-I-seeing-this
+    text on 'reauth_confirm' (#284). Both still carry the PKCE URL."""
     entry = _repair_entry(hass)
     form = await entry.start_reconfigure_flow(hass)
-    # Reconfigure has its own step_id so strings.json can carry the TOFU warning.
     assert form["step_id"] == "reconfigure"
-    # Reauth still uses the 'user' step (HA adds the {name} placeholder there).
+    assert "authorize_url" in form["description_placeholders"]
     form2 = await entry.start_reauth_flow(hass)
-    assert form2["step_id"] == "user"
+    assert form2["step_id"] == "reauth_confirm"
+    assert "authorize_url" in form2["description_placeholders"]
 
 
 # --- reauth flow --------------------------------------------------------
@@ -1549,6 +1551,12 @@ def test_flow_strings_mirror_and_cover_new_reasons() -> None:
     assert strings == english
     config = strings["config"]
     assert "{authorize_url}" in config["step"]["reconfigure"]["description"]
+    # #284: reauth has its own step; it must carry the login URL and say
+    # that it keeps the existing pins (re-pinning is Reconfigure's job).
+    reauth = config["step"]["reauth_confirm"]
+    assert reauth["title"]
+    assert "{authorize_url}" in reauth["description"]
+    assert "Reconfigure" in reauth["description"]
     for reason in (
         "reauth_successful",
         "reconfigure_successful",
@@ -1557,3 +1565,65 @@ def test_flow_strings_mirror_and_cover_new_reasons() -> None:
         "entry_not_repairable",
     ):
         assert config["abort"][reason]
+
+
+@pytest.mark.parametrize(
+    ("exc", "error"),
+    [(AGLAuthError("x"), "invalid_auth"), (AGLError("x"), "cannot_connect")],
+)
+async def test_reauth_exchange_error_keeps_reauth_confirm_step(
+    hass: HomeAssistant, exc: Exception, error: str
+) -> None:
+    """#284: an exchange error re-shows the REAUTH form, not 'user'.
+
+    HA routes the next submit to async_step_<step_id>; re-showing 'user'
+    would drop the explanation and run the retry as a fresh-install login.
+    A second submit (same state) with a working exchange then completes
+    as a reauth, with the token replaced and the stored pins kept.
+    """
+    entry = _repair_entry(hass)
+    form = await entry.start_reauth_flow(hass)
+    assert form["step_id"] == "reauth_confirm"
+    callback = _make_callback_url(form["description_placeholders"]["authorize_url"])
+    with patch(
+        "custom_components.haggle.config_flow._exchange_code",
+        new_callable=AsyncMock,
+        side_effect=exc,
+    ):
+        retry = await hass.config_entries.flow.async_configure(
+            form["flow_id"], user_input={CALLBACK_URL_FIELD: callback}
+        )
+    assert retry["type"] is FlowResultType.FORM
+    assert retry["step_id"] == "reauth_confirm"
+    assert retry["errors"] == {"base": error}
+
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("acc_tok", "v1.new_token", _NEW_AUTH_SPKI),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=([_matching_contract()], _NEW_BFF_SPKI),
+        ),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            retry["flow_id"],
+            user_input={
+                CALLBACK_URL_FIELD: _make_callback_url(
+                    retry["description_placeholders"]["authorize_url"]
+                )
+            },
+        )
+        await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_REFRESH_TOKEN] == "v1.new_token"
+    assert entry.data[CONF_PINNED_SPKI_AUTH] == _OLD_AUTH_SPKI

@@ -8,6 +8,13 @@
           "callback_url": "Callback URL (from address bar after login)"
         }
       },
+      "reauth_confirm": {
+        "title": "Repair AGL sign-in",
+        "description": "Home Assistant could not refresh this entry's AGL sign-in: AGL rejected the stored token (it expired, was revoked, or a rotation failed to save). Logging in again repairs the entry; your energy history is kept.\n\nThis keeps the certificate fingerprints already pinned for this entry. If Haggle reported that an AGL certificate changed, use **Reconfigure** from the entry's menu instead -- that is the step that re-pins.\n\nOpen the URL below in your browser and log in with the AGL login that owns this entry's contract. After login you will see a 'Not Found' page -- copy the full URL from the address bar and paste it in the field below.\n\n`{authorize_url}`",
+        "data": {
+          "callback_url": "Callback URL (from address bar after login)"
+        }
+      },
       "reconfigure": {
         "title": "Re-pin AGL certificates",
         "description": "Use this after Haggle reports that an AGL certificate changed. Logging in again refreshes this entry's AGL sign-in and re-captures the certificate fingerprints your Home Assistant host sees for secure.agl.com.au and api.platform.agl.com.au.\n\n**Only continue on a network you trust.** Re-pinning trusts whatever certificate reaches your Home Assistant host right now. If anything between Home Assistant and AGL is intercepting TLS (a corporate proxy, a security appliance or an attacker), its certificate becomes the trusted one and the warning stops.\n\nOpen the URL below in your browser and log in with the AGL login that owns this entry's contract. After login you will see a 'Not Found' page -- copy the full URL from the address bar and paste it in the field below.\n\n`{authorize_url}`",

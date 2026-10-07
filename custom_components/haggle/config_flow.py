@@ -16,8 +16,9 @@ Onboarding strategy:
             and validated on every subsequent request from coordinator polling.
 
 Reauth (Auth0 rejected the stored refresh token) and Reconfigure (user-started
-re-pin after an AGL certificate rotation) both re-enter at Step 1 with fresh
-PKCE params, skip the contract picker, require the entry's own contract in
+re-pin after an AGL certificate rotation) both run the Step 1 login on their
+own step ids (`reauth_confirm` / `reconfigure`) with fresh PKCE params, skip
+the contract picker, require the entry's own contract in
 fresh discovery, and update the existing entry with
 async_update_reload_and_abort(data_updates=...). Reauth replaces the refresh
 token only; it fills a pin that was never captured but never overwrites one.
@@ -422,14 +423,19 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
     @property
     def _login_step_id(self) -> str:
-        """Step id for the login form: its own step under Reconfigure.
+        """Step id for the login form: one per flow source.
 
         Reconfigure has its own step so its form carries the re-pin warning;
-        reauth reuses "user" (HA adds the {name} placeholder itself). HA
-        routes a submit to async_step_<step_id>, so every re-show of the
-        login form — including the exchange error paths — must use this.
+        reauth has its own (HA's idiomatic `reauth_confirm`, #284) so its
+        form can say why it appeared. HA routes a submit to
+        async_step_<step_id>, so every re-show of the login form — including
+        the exchange error paths — must use this.
         """
-        return "reconfigure" if self.source == SOURCE_RECONFIGURE else "user"
+        if self.source == SOURCE_RECONFIGURE:
+            return "reconfigure"
+        if self.source == SOURCE_REAUTH:
+            return "reauth_confirm"
+        return "user"
 
     @callback
     def _show_login_form(self, errors: dict[str, str]) -> ConfigFlowResult:
@@ -560,7 +566,19 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             # flow can fix it — refuse before the user goes through MFA.
             return self.async_abort(reason="entry_not_repairable")
         self._pkce_verifier = ""
-        return await self.async_step_user()
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Reauth's own login step (HA's idiomatic `reauth_confirm`, #284).
+
+        The same PKCE login as Step 1 on its own step id, so the form can
+        say why it appeared (AGL rejected the stored sign-in), that logging
+        in again repairs the entry without losing history, and that it keeps
+        the existing certificate pins — re-pinning is Reconfigure's job.
+        """
+        return await self._async_login_step(user_input)
 
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None

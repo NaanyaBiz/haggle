@@ -336,6 +336,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The reauth prompt now explains itself** (#284, from @stevelea's review
+  of #277). When AGL rejects the stored sign-in, the repair form has its
+  own `reauth_confirm` step that says why it appeared, that logging in
+  again repairs the entry without losing history, and that it keeps the
+  existing certificate pins (Reconfigure is the step that re-pins).
+  Previously it showed the fresh-install "Log in to AGL" text with no
+  context. An exchange error during reauth now re-shows that same form.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
