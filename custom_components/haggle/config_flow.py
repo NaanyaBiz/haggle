@@ -556,10 +556,11 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     # ------------------------------------------------------------------
 
     async def async_step_reauth(self, _entry_data: dict[str, Any]) -> ConfigFlowResult:
-        """Re-enter at Step 1 with fresh PKCE params when refresh token expires.
+        """Run the Step 1 login on `reauth_confirm` with fresh PKCE params.
 
-        Refreshes the sign-in only; a stored pin is never overwritten (see
-        `_pin_updates`). Re-pinning is Reconfigure's job.
+        Entered when Auth0 rejects the refresh token (or a rotation could not
+        be saved). Refreshes the sign-in only; a stored pin is never
+        overwritten (see `_pin_updates`). Re-pinning is Reconfigure's job.
         """
         if not self._get_reauth_entry().data.get(CONF_CONTRACT_NUMBER):
             # Never worked (empty contract in every data path) and neither

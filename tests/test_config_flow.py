@@ -1555,8 +1555,12 @@ def test_flow_strings_mirror_and_cover_new_reasons() -> None:
     # that it keeps the existing pins (re-pinning is Reconfigure's job).
     reauth = config["step"]["reauth_confirm"]
     assert reauth["title"]
-    assert "{authorize_url}" in reauth["description"]
-    assert "Reconfigure" in reauth["description"]
+    desc = reauth["description"].lower()
+    assert "{authorize_url}" in desc
+    assert "energy history is kept" in desc  # repairs without losing statistics
+    # #277 policy restated on the form: reauth never re-pins; Reconfigure does.
+    assert "keeps the certificate fingerprints" in desc
+    assert "reconfigure" in desc
     for reason in (
         "reauth_successful",
         "reconfigure_successful",

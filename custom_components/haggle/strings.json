@@ -10,7 +10,7 @@
       },
       "reauth_confirm": {
         "title": "Repair AGL sign-in",
-        "description": "Home Assistant could not refresh this entry's AGL sign-in: AGL rejected the stored token (it expired, was revoked, or a rotation failed to save). Logging in again repairs the entry; your energy history is kept.\n\nThis keeps the certificate fingerprints already pinned for this entry. If Haggle reported that an AGL certificate changed, use **Reconfigure** from the entry's menu instead -- that is the step that re-pins.\n\nOpen the URL below in your browser and log in with the AGL login that owns this entry's contract. After login you will see a 'Not Found' page -- copy the full URL from the address bar and paste it in the field below.\n\n`{authorize_url}`",
+        "description": "Home Assistant can no longer use this entry's AGL sign-in: AGL rejected the stored token (it expired or was revoked), AGL rejected a freshly refreshed one, or a rotated token could not be saved. Logging in again repairs the entry; your energy history is kept.\n\nThis keeps the certificate fingerprints already pinned for this entry. If Haggle reported that an AGL certificate changed, use **Reconfigure** from the entry's menu instead -- that is the step that re-pins.\n\nOpen the URL below in your browser and log in with the AGL login that owns this entry's contract. After login you will see a 'Not Found' page -- copy the full URL from the address bar and paste it in the field below.\n\n`{authorize_url}`",
         "data": {
           "callback_url": "Callback URL (from address bar after login)"
         }
