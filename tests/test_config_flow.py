@@ -25,11 +25,14 @@ from custom_components.haggle.const import (
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
     CONF_SOLAR_HEAL,
+    CONF_SOLAR_STALL_SPANS,
     DOMAIN,
     PIN_MISMATCH_NOTIFICATION_ID,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from homeassistant.core import HomeAssistant
 
 _CONTRACT = Contract(
@@ -724,11 +727,14 @@ async def _run_repair(
     auth_spki: str = _NEW_AUTH_SPKI,
     bff_spki: str = _NEW_BFF_SPKI,
     setup_mock: AsyncMock | None = None,
+    between: Callable[[], None] | None = None,
 ) -> Any:
     """Initiate and complete a reauth or reconfigure flow against `entry`.
 
     Returns the final flow result (ABORT or FORM on error). Pass `setup_mock`
-    to observe whether the entry was reloaded.
+    to observe whether the entry was reloaded. `between` runs after the form is
+    shown and before the callback is submitted — i.e. while the flow is open,
+    which is when the coordinator keeps writing entry.data in real life.
     """
     if setup_mock is None:
         setup_mock = AsyncMock(return_value=True)
@@ -739,6 +745,8 @@ async def _run_repair(
     else:
         form = await entry.start_reconfigure_flow(hass)
     callback = _make_callback_url(form["description_placeholders"]["authorize_url"])
+    if between is not None:
+        between()
     with (
         patch(
             "custom_components.haggle.config_flow._exchange_code",
@@ -820,10 +828,17 @@ async def test_reauth_keeps_stored_pins_m12(hass: HomeAssistant) -> None:
     deliberately user-started Reconfigure may overwrite stored pins.
     """
     entry = _repair_entry(hass)
+    # The captures (c/d) differ from the stored pins (a/b): the mismatch is
+    # still true after reauth, so its warning must stay up — dismissing it
+    # would let a provoked reauth silence the only signal pinning gives.
+    _seed_pin_notices(hass)
     result = await _run_repair(hass, entry, source=config_entries.SOURCE_REAUTH)
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_PINNED_SPKI_AUTH] == _OLD_AUTH_SPKI
     assert entry.data[CONF_PINNED_SPKI_BFF] == _OLD_BFF_SPKI
+    notices = _notification_ids(hass)
+    assert PIN_MISMATCH_NOTIFICATION_ID.format(host=AGL_AUTH_HOST_NAME) in notices
+    assert PIN_MISMATCH_NOTIFICATION_ID.format(host=AGL_BFF_HOST_NAME) in notices
 
 
 async def test_reauth_fills_empty_pins(hass: HomeAssistant) -> None:
@@ -849,12 +864,12 @@ async def test_reauth_preserves_coordinator_state(hass: HomeAssistant) -> None:
     stall = [{"start": "2026-01-01", "end": "2026-01-07"}]
     entry = _repair_entry(
         hass,
-        **{CONF_SOLAR_HEAL: heal, "solar_stall_spans": stall},
+        **{CONF_SOLAR_HEAL: heal, CONF_SOLAR_STALL_SPANS: stall},
     )
     result = await _run_repair(hass, entry, source=config_entries.SOURCE_REAUTH)
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_SOLAR_HEAL] == heal
-    assert entry.data["solar_stall_spans"] == stall
+    assert entry.data[CONF_SOLAR_STALL_SPANS] == stall
 
 
 async def test_reauth_contract_not_found_wrong_contract(hass: HomeAssistant) -> None:
@@ -935,6 +950,50 @@ async def test_reconfigure_preserves_coordinator_state(hass: HomeAssistant) -> N
     result = await _run_repair(hass, entry, source=config_entries.SOURCE_RECONFIGURE)
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_SOLAR_HEAL] == heal
+
+
+@pytest.mark.parametrize(
+    "source", [config_entries.SOURCE_REAUTH, config_entries.SOURCE_RECONFIGURE]
+)
+async def test_repair_keeps_coordinator_writes_made_while_flow_open(
+    hass: HomeAssistant, source: str
+) -> None:
+    """Coordinator writes made WHILE the flow is open must survive its write.
+
+    The flow stays open across the user's browser login + MFA, and the
+    coordinator keeps running: it advances the heal record, appends stall
+    spans and rotates the refresh token. The flow must merge into entry.data
+    as it is at write time (data_updates=), never write back a snapshot taken
+    when the flow started (e.g. the entry_data HA passes to
+    async_step_reauth) — that would roll back the heal record and drop the
+    stall spans, the only durable evidence of a give-up hole (CO-16.4).
+    """
+    entry = _repair_entry(
+        hass,
+        **{CONF_SOLAR_HEAL: {"state": "pending", "floor": "2026-09-01", "attempts": 1}},
+    )
+    heal_mid = {"state": "done", "floor": "2026-09-01", "attempts": 2}
+    spans_mid = [{"start": "2026-09-02", "end": "2026-09-08"}]
+
+    def _coordinator_writes() -> None:
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_SOLAR_HEAL: heal_mid,
+                CONF_SOLAR_STALL_SPANS: spans_mid,
+                CONF_REFRESH_TOKEN: "v1.rotated",
+            },
+        )
+
+    result = await _run_repair(hass, entry, source=source, between=_coordinator_writes)
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == f"{source}_successful"
+    assert entry.data[CONF_SOLAR_HEAL] == heal_mid
+    assert entry.data[CONF_SOLAR_STALL_SPANS] == spans_mid
+    # The flow's freshly minted grant wins over the mid-flow rotation
+    # (documented accepted race, threat-model I-5 — no compare-and-swap).
+    assert entry.data[CONF_REFRESH_TOKEN] == "v1.new_token"
 
 
 async def test_reconfigure_contract_not_found_wrong_contract(
@@ -1060,6 +1119,37 @@ async def test_m1b_two_entry_notices_dismissed_when_all_repinned(
         PIN_MISMATCH_NOTIFICATION_ID.format(host=AGL_BFF_HOST_NAME)
         not in notices_after_b
     )
+
+
+async def test_m1c_empty_pin_entry_does_not_block_dismissal(
+    hass: HomeAssistant,
+) -> None:
+    """M1(c): an entry storing '' (legacy / pre-pinning) never blocks dismissal.
+
+    An empty pin means "no pin yet": that entry's _check_pin is a no-op and
+    never raised the shared per-host notice, so it must not keep it up.
+    Otherwise a user with one legacy entry could never clear the warning by
+    reconfiguring the pinned one.
+    """
+    entry_a = _repair_entry(hass, contract="9999999999")
+    entry_b = _repair_entry(
+        hass,
+        contract="8888888888",
+        uid="1234567890_8888888888",
+        **{CONF_PINNED_SPKI_AUTH: "", CONF_PINNED_SPKI_BFF: ""},
+    )
+    data_b_before = dict(entry_b.data)
+    _seed_pin_notices(hass)
+
+    result = await _run_repair(hass, entry_a, source=config_entries.SOURCE_RECONFIGURE)
+    assert result["reason"] == "reconfigure_successful"
+    assert entry_a.data[CONF_PINNED_SPKI_AUTH] == _NEW_AUTH_SPKI
+    assert entry_a.data[CONF_PINNED_SPKI_BFF] == _NEW_BFF_SPKI
+
+    notices = _notification_ids(hass)
+    assert PIN_MISMATCH_NOTIFICATION_ID.format(host=AGL_AUTH_HOST_NAME) not in notices
+    assert PIN_MISMATCH_NOTIFICATION_ID.format(host=AGL_BFF_HOST_NAME) not in notices
+    assert dict(entry_b.data) == data_b_before
 
 
 # --- M2: partial capture ------------------------------------------------
