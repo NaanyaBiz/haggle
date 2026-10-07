@@ -42,7 +42,7 @@ fall back to treating the file as opaque JSON.
 | `contract_ref` / `account_ref` | Stable anonymous install identifiers (HMAC-keyed per install). | Correlate multiple reports from the same install. |
 | `runtime_available` | Whether setup succeeded far enough to have runtime state. | `false` → the setup failure itself is the bug (auth/network); `coordinator` is `null` and `statistics` empty — don't chase data-shape theories. |
 | `timezone` | HA's configured timezone. | Midnight-spike / wrong-day class of bugs are timezone-sensitive. |
-| `entry.pin_present_auth` / `entry.pin_present_bff` | TOFU TLS pins captured? | `false` on both → entry predates pinning or Reconfigure never ran. |
+| `entry.pin_present_auth` / `entry.pin_present_bff` | TOFU TLS pins captured? | `false` → entry predates pinning and neither Reconfigure nor a reauth (which fills missing pins) has run since; a failed capture also leaves a pin unset. |
 | `coordinator.last_update_success` | Did the most recent poll succeed? | `false` → look at auth/network before data-shape theories. Also the *unavailable-vs-unknown* decoder: entities show **Unavailable** exactly when this is `false`; a sensor showing **Unknown** while this is `true` is deliberate gating (mid-backfill, heal cycle), not a failure. |
 | `coordinator.last_exception` | Message of the most recent failed update (body-scrubbed at raise time). | Distinguishes rate-limit vs auth vs transport for a `last_update_success: false`; `null` when the last poll succeeded. |
 | `coordinator.has_solar` | AGL reports solar on the contract. | `false` + a solar complaint → overview flag problem, not statistics. |

@@ -37,6 +37,7 @@ from .const import (
     CONF_PINNED_SPKI_AUTH,
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
+    PIN_MISMATCH_NOTIFICATION_ID,
 )
 from .coordinator import HaggleCoordinator
 
@@ -105,13 +106,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     # Pin-check fires synchronously when HagglePinningConnector creates a new
     # connection (after the TLS handshake completes). Mismatch surfaces as a
     # HA persistent notification + WARNING log, but does NOT raise — legitimate
-    # AGL cert rotations should not brick HACS users. Re-pin via Reconfigure.
+    # AGL cert rotations should not brick HACS users. Re-pin via Reconfigure
+    # (config_flow.async_step_reconfigure) — reauth deliberately never
+    # overwrites a stored pin (config_flow._pin_updates).
     def _check_pin(host: str, observed: str) -> None:
-        expected = pinned_auth if host == AGL_AUTH_HOST_NAME else pinned_bff
+        # Read the pin LIVE from entry.data, not from the setup-time locals:
+        # Reconfigure writes the new pins and dismisses the notice BEFORE the
+        # scheduled reload unloads this instance, and a connection opened in
+        # that window must compare against the new pin or the notice the user
+        # just cleared comes straight back (#275).
+        expected: str = entry.data.get(
+            CONF_PINNED_SPKI_AUTH
+            if host == AGL_AUTH_HOST_NAME
+            else CONF_PINNED_SPKI_BFF,
+            "",
+        )
         if not expected or observed == expected:
             return
         _LOGGER.warning(
-            "Pinned SPKI mismatch for %s (stored=%s observed=%s) — investigate or reauth",
+            "Pinned SPKI mismatch for %s (stored=%s observed=%s) — if AGL rotated "
+            "its certificate, run Reconfigure on the Haggle entry to re-pin; "
+            "otherwise suspect TLS interception",
             host,
             expected[:12],
             observed[:12],
@@ -120,12 +135,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
             hass,
             title="haggle: AGL certificate changed",
             message=(
-                f"The TLS certificate for {host} no longer matches the value "
-                "captured during initial setup. If you are on a trusted network, "
-                "click Reconfigure on the haggle integration to re-pin. If this "
-                "is unexpected, suspect a man-in-the-middle on your local network."
+                f"The TLS certificate key for {host} no longer matches the "
+                "fingerprint Haggle pinned for it. Requests keep working; this is "
+                "a warning only. AGL replaces its certificates from time to time: "
+                "if you are on a network you trust, open Settings → Devices & "
+                "services → AGL Haggle, choose Reconfigure from the entry's ⋮ menu "
+                "and log in again to re-pin (repeat for each Haggle entry). If "
+                "you did not expect this, or your network inspects TLS traffic "
+                "(corporate proxy, security appliance), do NOT re-pin: re-pinning "
+                "on an intercepted network makes the interceptor's certificate "
+                "the trusted one."
             ),
-            notification_id=f"haggle_pin_mismatch_{host}",
+            notification_id=PIN_MISMATCH_NOTIFICATION_ID.format(host=host),
         )
 
     connector = HagglePinningConnector(on_new_connection=_check_pin)

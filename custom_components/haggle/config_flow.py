@@ -15,8 +15,15 @@ Onboarding strategy:
   Step 4 -- create entry. Both pinned SPKI hashes are persisted to entry.data
             and validated on every subsequent request from coordinator polling.
 
-Reauth re-enters at Step 1 with fresh PKCE params, which naturally re-pins
-both endpoints — the recommended remediation for legitimate AGL cert rotation.
+Reauth (Auth0 rejected the stored refresh token) and Reconfigure (user-started
+re-pin after an AGL certificate rotation) both re-enter at Step 1 with fresh
+PKCE params, skip the contract picker, require the entry's own contract in
+fresh discovery, and update the existing entry with
+async_update_reload_and_abort(data_updates=...). Reauth replaces the refresh
+token only; it fills a pin that was never captured but never overwrites one.
+Reconfigure also re-pins each host whose capture succeeded and dismisses that
+host's pin-mismatch notification once no Haggle entry still holds a different
+pin for it (#275).
 """
 
 from __future__ import annotations
@@ -30,18 +37,24 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
 import voluptuous as vol
+from homeassistant.components import persistent_notification
 from homeassistant.config_entries import (
+    SOURCE_REAUTH,
+    SOURCE_RECONFIGURE,
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 
 from .agl.client import AGLAuthError, AGLError, _plausible_token
 from .agl.parser import parse_overview
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from .agl.models import Contract
 from .agl.pinning import (
     AGL_AUTH_HOST_NAME,
@@ -69,11 +82,21 @@ from .const import (
     MIN_POLL_INTERVAL_HOURS,
     OPT_POLL_INTERVAL_HOURS,
     OPT_SOLAR_STATISTICS_ENABLED,
+    PIN_MISMATCH_NOTIFICATION_ID,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 CALLBACK_URL_FIELD = "callback_url"
+
+# The PKCE login form shared by the user, reauth and reconfigure steps.
+_LOGIN_SCHEMA = vol.Schema({vol.Required(CALLBACK_URL_FIELD): str})
+
+# (entry.data key, host) for each TOFU-pinned endpoint.
+_PIN_HOSTS: tuple[tuple[str, str], ...] = (
+    (CONF_PINNED_SPKI_AUTH, AGL_AUTH_HOST_NAME),
+    (CONF_PINNED_SPKI_BFF, AGL_BFF_HOST_NAME),
+)
 
 # Fuels positively identified as unservable by the Electricity-only client.
 # Fixture-known vocabulary: "electricityContract" | "gasContract".
@@ -104,6 +127,79 @@ def _serviceable_contracts(contracts: list[Contract]) -> list[Contract]:
             continue
         keep.append(contract)
     return keep
+
+
+def _match_existing_contract(
+    data: Mapping[str, Any], contracts: list[Contract]
+) -> Contract | None:
+    """Return the discovered contract that IS this entry's contract, or None.
+
+    Reauth and Reconfigure repair an existing entry, so the fresh login must
+    still own the entry's own contract (#275). Identity is matched against
+    entry.data rather than the entry's unique_id: a structured unique_id is
+    built from these same two stored values, so this is exactly as strict,
+    and a hash unique_id (sha256 of the ORIGINAL refresh token, rotated away
+    since) can never be recomputed — `_abort_if_unique_id_mismatch` would
+    refuse every such entry.
+
+    Searches ALL discovered contracts, deliberately NOT `_serviceable_contracts`:
+    that #260 filter guards NEW selections and fails open, and an existing
+    working entry whose own contract AGL relabels must stay repairable.
+
+    The account check fails CLOSED on the discovered side: a stored account
+    must equal the discovered one, so a response that omits `accountNumber`
+    cannot bypass it. Only an EMPTY stored account (hash / legacy entries,
+    which never recorded one) skips the comparison. An empty stored contract
+    number never matches — such an entry is refused up front as
+    `entry_not_repairable`.
+    """
+    want_contract = data.get(CONF_CONTRACT_NUMBER, "")
+    if not want_contract:
+        return None
+    want_account = data.get(CONF_ACCOUNT_NUMBER, "")
+    for contract in contracts:
+        if contract.contract_number != want_contract:
+            continue
+        if not want_account or contract.account_number == want_account:
+            return contract
+    return None
+
+
+def _pin_updates(
+    source: str | None,
+    stored: Mapping[str, Any],
+    auth_spki: str,
+    bff_spki: str,
+) -> tuple[dict[str, str], list[str]]:
+    """Return (entry.data pin updates, re-pinned hosts) for an existing entry.
+
+    The ONE place the reauth/reconfigure pin policy lives (#275): flipping
+    how reauth treats a stored pin is a change to this function only — the
+    caller writes `updates` and dismisses notices for the returned hosts.
+
+    - An empty capture is never written. `_check_pin` treats "" as "no pin"
+      and returns early, so writing it would switch pinning off silently.
+    - RECONFIGURE (a deliberate, user-started re-pin, behind a warning)
+      writes every non-empty capture and reports the host as re-pinned, even
+      when the value is unchanged.
+    - Any other source (reauth) only fills a pin that was never captured.
+      Reauth is SYSTEM-started — an on-path attacker holding a certificate
+      the HA host trusts can provoke it by failing the token refresh — so a
+      reauth that re-pinned would launder the interception and silence the
+      only signal pinning gives. A stored pin is left alone, and its
+      mismatch warning (still true) stays up.
+    """
+    updates: dict[str, str] = {}
+    repinned: list[str] = []
+    for (key, host), captured in zip(_PIN_HOSTS, (auth_spki, bff_spki), strict=True):
+        if not captured:
+            continue
+        if source == SOURCE_RECONFIGURE:
+            updates[key] = captured
+            repinned.append(host)
+        elif not stored.get(key):
+            updates[key] = captured
+    return updates, repinned
 
 
 def _gen_pkce() -> tuple[str, str]:
@@ -294,7 +390,13 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show the /authorize URL and accept the pasted callback URL.
+        """Show the /authorize URL and accept the pasted callback URL."""
+        return await self._async_login_step(user_input)
+
+    async def _async_login_step(
+        self, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """Shared PKCE login body for the user, reauth and reconfigure steps.
 
         On first call: generate PKCE verifier+challenge and random state.
         On submit: validate state, extract code, hand off to async_step_exchange.
@@ -306,8 +408,6 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             self._pkce_verifier, self._pkce_challenge = _gen_pkce()
             self._oauth_state = secrets.token_urlsafe(16)
 
-        authorize_url = _build_authorize_url(self._pkce_challenge, self._oauth_state)
-
         if user_input is not None:
             callback_url: str = user_input.get(CALLBACK_URL_FIELD, "").strip()
             code, state_error = _extract_code(callback_url, self._oauth_state)
@@ -318,10 +418,30 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             else:
                 errors["base"] = "invalid_auth"
 
+        return self._show_login_form(errors)
+
+    @property
+    def _login_step_id(self) -> str:
+        """Step id for the login form: its own step under Reconfigure.
+
+        Reconfigure has its own step so its form carries the re-pin warning;
+        reauth reuses "user" (HA adds the {name} placeholder itself). HA
+        routes a submit to async_step_<step_id>, so every re-show of the
+        login form — including the exchange error paths — must use this.
+        """
+        return "reconfigure" if self.source == SOURCE_RECONFIGURE else "user"
+
+    @callback
+    def _show_login_form(self, errors: dict[str, str]) -> ConfigFlowResult:
+        """Show (or re-show) the login form for the current flow source."""
         return self.async_show_form(
-            step_id="user",
-            data_schema=vol.Schema({vol.Required(CALLBACK_URL_FIELD): str}),
-            description_placeholders={"authorize_url": authorize_url},
+            step_id=self._login_step_id,
+            data_schema=_LOGIN_SCHEMA,
+            description_placeholders={
+                "authorize_url": _build_authorize_url(
+                    self._pkce_challenge, self._oauth_state
+                )
+            },
             errors=errors,
         )
 
@@ -331,27 +451,14 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
 
     async def async_step_exchange(self, code: str) -> ConfigFlowResult:
         """Exchange the authorization code for tokens (PKCE grant)."""
-        authorize_url = _build_authorize_url(self._pkce_challenge, self._oauth_state)
-        schema = vol.Schema({vol.Required(CALLBACK_URL_FIELD): str})
-
         try:
             access_token, refresh_token, auth_spki = await _exchange_code(
                 code, self._pkce_verifier
             )
         except AGLAuthError:
-            return self.async_show_form(
-                step_id="user",
-                data_schema=schema,
-                description_placeholders={"authorize_url": authorize_url},
-                errors={"base": "invalid_auth"},
-            )
+            return self._show_login_form({"base": "invalid_auth"})
         except AGLError, aiohttp.ClientError, TimeoutError:
-            return self.async_show_form(
-                step_id="user",
-                data_schema=schema,
-                description_placeholders={"authorize_url": authorize_url},
-                errors={"base": "cannot_connect"},
-            )
+            return self._show_login_form({"base": "cannot_connect"})
 
         # Clear PKCE material now that the one-shot exchange has consumed it.
         # The flow object can persist in memory across multi-step retries; a
@@ -387,15 +494,25 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                     errors=errors,
                 )
 
+        # Reauth / Reconfigure repair an EXISTING entry: never show the picker
+        # and never reach _async_create_entry (whose duplicate guard aborted
+        # every reauth as already_configured — #275). Must stay BEFORE the
+        # empty-discovery branch below, or empty discovery would still route
+        # to entry creation.
+        if self.source in (SOURCE_REAUTH, SOURCE_RECONFIGURE):
+            return self._async_update_existing_entry()
+        return await self._async_select_new_contract(user_input)
+
+    async def _async_select_new_contract(
+        self, user_input: dict[str, Any] | None
+    ) -> ConfigFlowResult:
+        """SOURCE_USER tail of Step 3: create an entry or show the picker."""
         if not self._contracts:
             return await self._async_create_entry(contract_number="", account_number="")
 
         # Filter to serviceable contracts before BOTH paths below (#260).
         serviceable = _serviceable_contracts(self._contracts)
         if not serviceable:
-            # Note: during reauth this discards a just-completed PKCE exchange
-            # (the token is never persisted) — correct, but the user must
-            # restart reauth after fixing the account (review note).
             return self.async_abort(reason="no_electricity_contract")
 
         if len(serviceable) == 1:
@@ -429,13 +546,122 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
     # ------------------------------------------------------------------
-    # Reauth
+    # Reauth / Reconfigure -- repair an existing entry
     # ------------------------------------------------------------------
 
     async def async_step_reauth(self, _entry_data: dict[str, Any]) -> ConfigFlowResult:
-        """Re-enter at Step 1 with fresh PKCE params when refresh token expires."""
+        """Re-enter at Step 1 with fresh PKCE params when refresh token expires.
+
+        Refreshes the sign-in only; a stored pin is never overwritten (see
+        `_pin_updates`). Re-pinning is Reconfigure's job.
+        """
+        if not self._get_reauth_entry().data.get(CONF_CONTRACT_NUMBER):
+            # Never worked (empty contract in every data path) and neither
+            # flow can fix it — refuse before the user goes through MFA.
+            return self.async_abort(reason="entry_not_repairable")
         self._pkce_verifier = ""
         return await self.async_step_user()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Deliberate, user-started re-pin after an AGL certificate rotation.
+
+        Same PKCE login as Step 1, on its own "reconfigure" step so the form
+        carries the TOFU warning: re-pinning trusts whatever certificate
+        reaches the HA host right now, so on an intercepted network the
+        interceptor's certificate becomes the trusted one. Also stores the
+        fresh refresh token, so it repairs a dead grant too (and the reload
+        it schedules aborts any pending reauth flow).
+        """
+        if not self._get_reconfigure_entry().data.get(CONF_CONTRACT_NUMBER):
+            return self.async_abort(reason="entry_not_repairable")
+        return await self._async_login_step(user_input)
+
+    @callback
+    def _async_update_existing_entry(self) -> ConfigFlowResult:
+        """Write the fresh grant (and any re-pins) into the existing entry.
+
+        Synchronous on purpose: entry.data is read and merged in one step, and
+        NOTHING after async_update_reload_and_abort may await or touch
+        entry.runtime_data — the reload starts eagerly and the unload is
+        already underway when it returns.
+
+        Accepted race, no compare-and-swap: unload closes the old session
+        before cancelling its refresh tasks, so a rotation already in flight
+        on the OLD grant (or a setup still running under setup_lock) can
+        persist OLD' after this write and before the new instance reads the
+        token. It is harmless while nothing is revoked — `_persist_refresh_token`
+        merges into live entry.data (the new pins survive) and either chain
+        is a valid grant — but the grant minted here may be the orphaned one.
+        That is why the superseded grant is NOT revoked here; adding
+        revocation requires a CAS in `_persist_refresh_token` first.
+        """
+        entry = (
+            self._get_reauth_entry()
+            if self.source == SOURCE_REAUTH
+            else self._get_reconfigure_entry()
+        )
+        if _match_existing_contract(entry.data, self._contracts) is None:
+            # Nothing written, no reload, no notification dismissed. No
+            # placeholders: the abort text names no contract or account.
+            return self.async_abort(reason="contract_not_found")
+
+        pin_updates, repinned = _pin_updates(
+            self.source, entry.data, self._auth_spki, self._bff_spki
+        )
+        contract_number: str = entry.data[CONF_CONTRACT_NUMBER]
+        _LOGGER.info(
+            "haggle %s: contract=%s pin_auth=%s pin_bff=%s",
+            self.source,
+            # Class B identifier (docs/threat-model.md §2): log last-4 only.
+            f"…{contract_number[-4:]}",
+            "updated" if CONF_PINNED_SPKI_AUTH in pin_updates else "kept",
+            "updated" if CONF_PINNED_SPKI_BFF in pin_updates else "kept",
+        )
+
+        # A Reconfigure whose capture came back empty for either host kept
+        # that host's old pin (and its warning) — say so instead of claiming
+        # the fingerprints were re-pinned.
+        reason: str | UndefinedType = UNDEFINED
+        if self.source == SOURCE_RECONFIGURE and len(repinned) < len(_PIN_HOSTS):
+            reason = "reconfigure_pin_incomplete"
+
+        # data_updates, never data=: the merge reads LIVE entry.data at this
+        # call, so coordinator writes made while the flow was open (solar
+        # heal record, stall spans, rotated token) survive. Only the refresh
+        # token is a credential on disk; the access token never is.
+        result = self.async_update_reload_and_abort(
+            entry,
+            data_updates={CONF_REFRESH_TOKEN: self._refresh_token, **pin_updates},
+            reason=reason,
+        )
+        self._dismiss_resolved_pin_notices(pin_updates, repinned)
+        return result
+
+    @callback
+    def _dismiss_resolved_pin_notices(
+        self, pin_updates: Mapping[str, str], repinned: list[str]
+    ) -> None:
+        """Dismiss each re-pinned host's mismatch notice once it is resolved.
+
+        The notification id is per HOST and shared by every Haggle entry, so
+        it is only dismissed when EVERY entry (live data, including the one
+        just updated) stores an empty pin or the new capture for that host —
+        otherwise another entry's warning is still true and must stay up.
+        Runs after the write, so `_check_pin` (which reads pins live) cannot
+        bring a dismissed notice straight back. A host whose capture was
+        empty is never in `repinned`, so its (still true) notice stays.
+        """
+        entries = self._async_current_entries(include_ignore=False)
+        for key, host in _PIN_HOSTS:
+            new_pin = pin_updates.get(key)
+            if host not in repinned or not new_pin:
+                continue
+            if all(e.data.get(key, "") in ("", new_pin) for e in entries):
+                persistent_notification.async_dismiss(
+                    self.hass, PIN_MISMATCH_NOTIFICATION_ID.format(host=host)
+                )
 
     # ------------------------------------------------------------------
     # Entry creation
@@ -447,6 +673,11 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         account_number: str,
         title: str | None = None,
     ) -> ConfigFlowResult:
+        """Create a NEW entry — SOURCE_USER only.
+
+        Reauth and Reconfigure finish in `_async_update_existing_entry`;
+        async_create_entry raises HomeAssistantError in those sources.
+        """
         # Fall back to a SHA-256 hash of the refresh token (one-way) so the
         # entity registry — written as plaintext JSON — never sees raw token
         # material. NOTE: entry.data (.storage/core.config_entries) is ALSO

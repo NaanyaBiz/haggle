@@ -56,10 +56,10 @@ updates the affected conformance rows in the same PR.
 
 ```
 custom_components/haggle/
-├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData
+├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData; _check_pin reads pins live from entry.data
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); options flow (solar statistics-writes toggle, poll-interval throttle)
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth (token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
@@ -86,7 +86,7 @@ tests/
 │   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
 │   └── bill_period_response.json    # usage summary
 ├── test_init.py                     # setup/unload smoke tests
-├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract)
+├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract) + reauth/reconfigure update-in-place
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
 ├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float
@@ -606,14 +606,38 @@ and reads `connector.observed[host]` after the call) and validated at runtime
 by the long-lived session in `__init__.py::async_setup_entry`.
 
 **Mismatch is warn-only** — log a WARNING + emit an HA persistent notification
-(`haggle_pin_mismatch_<host>`) — but the request still succeeds. This keeps a
-legitimate AGL cert rotation from bricking HACS users; the documented
-remediation is to re-run Reconfigure on the integration card, which re-captures
-both hashes.
+(`haggle_pin_mismatch_<host>`, `const.PIN_MISMATCH_NOTIFICATION_ID`) — but the
+request still succeeds. This keeps a legitimate AGL cert rotation from
+bricking HACS users. `_check_pin` reads the stored pins LIVE from
+`entry.data` on every call (not from setup-time locals), so once a flow has
+re-pinned, the still-running old instance cannot raise a stale notice before
+the reload unloads it.
+
+**Re-pin and reauth (#275)** — until #275 the notice's "Reconfigure" did not
+exist and reauth always aborted `already_configured`, so the only real
+remediation was delete + re-add. Now:
+
+- **Reconfigure** (`config_flow.async_step_reconfigure`, its own step +
+  warning text) is the ONLY deliberate re-pin. It re-pins each host whose
+  capture is non-empty — never writes `""` over a stored pin — and stores the
+  new refresh token. A host's notice is dismissed only if every Haggle entry
+  now stores an empty pin or the new capture for it (the id is per host,
+  shared by all entries); if either capture came back empty it ends
+  `reconfigure_pin_incomplete` and the warning stays.
+- **Reauth** refreshes the token and fills only EMPTY pins; it never
+  overwrites a stored one and never dismisses a notice. Reauth is
+  system-triggered — an on-path attacker can provoke it with a 4xx on the
+  token refresh — so a re-pinning reauth would launder the interception.
+  Making reauth re-pin is a one-function change (`config_flow._pin_updates`)
+  if the maintainer ever reverses this.
+- While a Reconfigure flow is open, HA suppresses reauth for that entry
+  (`async_start_reauth` returns early). If Reconfigure aborts or is
+  abandoned while the token is dead, reload the entry or restart HA to get
+  the reauth prompt back.
 
 Empty stored values (`""`) mean "no pin yet" — the validator is a no-op.
-Older entries created before this feature land in this state and silently
-upgrade on next Reconfigure.
+Older entries created before this feature land in this state and upgrade on
+the next Reconfigure or reauth.
 
 **Why a connector subclass and not `resp.connection`?** aiohttp releases the
 `Connection` back to its pool the moment a response is constructed, so
@@ -694,6 +718,37 @@ The HA Energy dashboard requires:
   Passing an `access_token` silently fails: `async_force_refresh` posts it as a refresh_token,
   Auth0 rejects it, and the contract number is never set → HTTP 404 on every data call.
   For one-shot calls with a bare bearer token (e.g. config flow), use a direct `aiohttp` GET.
+- **Don't finish a reauth or reconfigure flow through `_async_create_entry` /
+  `_abort_if_unique_id_configured()`.** With no updates that aborts
+  `already_configured` and drops the new refresh token — reauth could never
+  succeed in any release before #275 — and `async_create_entry` raises
+  `HomeAssistantError` for those sources anyway. Update the existing entry
+  with `async_update_reload_and_abort(entry, data_updates=…)`, and never
+  build the written data from `entry.data` captured before the final
+  synchronous step (e.g. in `async_step_reauth`/`async_step_reconfigure` or
+  across an await): the coordinator writes heal/stall records and rotated
+  tokens while the flow is open, and `data_updates=` merges onto the LIVE
+  data. Match the entry's own contract by number in `entry.data`
+  (`_match_existing_contract`, over ALL discovered contracts, failing closed
+  when the stored account is set and the discovered one differs or is
+  missing), not with `_abort_if_unique_id_mismatch` — legacy hash unique_ids
+  are sha256 of a token that has since rotated. Never show the picker, never
+  write unique_id/title/contract/account, never write an empty SPKI capture
+  over a stored pin, and never let reauth overwrite an existing pin:
+  Reconfigure is the only deliberate re-pin. Nothing after
+  `async_update_reload_and_abort` may await or touch `entry.runtime_data` —
+  the reload starts eagerly inside that call.
+- **Don't revoke the superseded grant after reauth or Reconfigure (or add
+  any revocation there) without first making `_persist_refresh_token`
+  compare-and-swap.** The reload starts eagerly and unload closes the
+  session before cancelling refresh tasks, so a rotation already in flight
+  on the old grant (or a setup still running under `setup_lock`) can
+  persist OLD' after the flow's write and before the new instance reads the
+  token — the grant the flow just minted is then the orphaned one. That is
+  harmless only while every chain stays valid; with revocation it stores a
+  revoked token and locks the entry out. Auth0's revocation may also cover
+  every token for the same user, client and audience, including the one
+  just stored. Recorded as accepted risk I-5 in `docs/threat-model.md`.
 - **Don't omit `Accept-Features` / `Client-Device` / `scaling`** — omitting any of these
   from Hourly or Daily usage requests returns HTTP 500 with no useful error body.
 - **Don't set `unit_class=None` on the consumption statistic** — HA's Energy dashboard

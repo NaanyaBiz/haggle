@@ -66,13 +66,17 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
 
 ### TB-1: AGL HTTPS API → HA coordinator
 - **Controls**: TLS + TOFU SPKI pinning on both hosts (warn-only mismatch +
-  persistent notification; documented remediation = Reconfigure re-pin);
+  persistent notification; remediation = Reconfigure re-pin, implemented
+  #275 — reauth refreshes the token but never overwrites a stored pin);
   allowlist parsing (no open-schema dict passthrough); `safe_float`
   clamping (finite, non-negative); parser totality fuzz-enforced weekly and
   on every PR (`fuzz.yml` — unconditional PR smoke run with cached corpus,
   a required check since PR #186).
 - **Assumption to question**: warn-only pinning means a LAN MITM with a
   trusted CA still gets one poisoned session — hence the parser hardening.
+- **Assumption to question**: every Reconfigure is a new TOFU capture taken
+  from the HA host's own network path; the browser login does not vouch
+  for it.
 
 ### TB-2: HA user browser → config flow
 - **Controls**: PKCE S256 (`secrets.token_bytes(32)`), 128-bit state nonce
@@ -191,7 +195,7 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 
 | ID | Threat (short) | Disposition | Evidence / rationale |
 |---|---|---|---|
-| S-1 | AGL endpoints MITM'd on the HA host's LAN (originally: "no certificate pinning") | **Mitigated; residual accepted** | TOFU SPKI pinning on both hosts (PRs #45/#48). Residual: warn-only mismatch + first-install pin capture — deliberate, documented in SECURITY.md; compensated by parser totality + fuzzing (#177, PR-gated since #186). |
+| S-1 | AGL endpoints MITM'd on the HA host's LAN (originally: "no certificate pinning") | **Mitigated; residual accepted** | TOFU SPKI pinning on both hosts (PRs #45/#48). Residual: warn-only mismatch + first-install pin capture, repeated on each Reconfigure re-pin (warned in the notification and the reconfigure form, #275) — deliberate, documented in SECURITY.md; compensated by parser totality + fuzzing (#177, PR-gated since #186). |
 | S-2 | Shared AGL iOS `client_id` detectable/revocable by AGL | **Accepted** | Fleet-wide availability dependency (see §8). Hot-update of client identity declined — it would require phone-home infrastructure worse than the risk. Recovery = coordinated re-release via HACS. |
 | S-3 | Pasted callback URL not host/scheme-validated | **Accepted** (defence-in-depth gap) | Exploitation requires the state nonce (not externally exposed) and PKCE; impact is error-message quality (`config_flow.py::_extract_code` checks state only). May be closed opportunistically (reject URLs not starting `https://secure.agl.com.au/`). |
 | T-1 | Crafted numerics (1e308 / negative / NaN) poison recorder statistics | **Mitigated** | `safe_float` (renamed from `_safe_float` — it is now a cross-module API) clamps to finite, non-negative **and `<= MAX_AGL_NUMERIC` (1e6)**; parser total over arbitrary JSON, fuzz-enforced on every PR + weekly deep run (`fuzz.yml`, PRs #177/#186), with the upper bound now part of the fuzz invariant. Until #241 this row overstated the control while naming the exact value that defeated it: 1e308 is finite, so it passed through unchanged, and `1e308 + 1e308` evaluates to `inf` with no exception — two such readings in one hourly bucket produced the non-finite `sum` the clamp existed to prevent. Values above the bound are rejected to 0.0, never clamped to it (a clamped 1e6 would write a permanent false spike). |
@@ -204,8 +208,9 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | I-2 | Token material in logged error bodies | **Mitigated** | Bodies stripped before exceptions propagate (AGENTS.md rule; regression tests, e.g. `test_force_refresh_redacts_body_from_exception`). |
 | I-3 | Service address as entry title; contract number in statistic IDs — visible to all HA users of the instance | **Accepted** | Visible only to users the owner has admitted to their own HA instance; the entry title is user-renamable in HA; diagnostics exports anonymise both. Optional future: offer a display-name field in the config flow. |
 | I-4 | `beautifulsoup4` dead dependency | **Resolved** | Removed; `manifest.json` ships `"requirements": []`. |
+| I-5 | Superseded refresh-token chain after reauth/Reconfigure, and grants minted by flows that abort after the code exchange, are not revoked; a pre-Reconfigure HA backup holds a still-valid token until Auth0 expiry | **Accepted** (register entry pending, #275) | Revocation may invalidate every token for the same user, client and audience, including the one just stored (#275). Benign persist race: the reload starts eagerly and unload closes the session before cancelling refresh tasks, so a rotation already in flight on the old grant (or a setup still running under `setup_lock`) can persist the old chain after the flow's write — the orphaned grant is then the one the flow just minted, not the superseded one. Harmless only because nothing is revoked; compare-and-swap in `_persist_refresh_token` is a prerequisite for adding revocation (AGENTS.md). An abandoned chain is never re-persisted by the integration. Revisit if AGL's revocation scope is confirmed per-token. |
 | D-1 | `client_id` revocation stops all installs; no backoff | **Accepted (with S-2)** / retry storms **mitigated** | Auth failures route to HA's reauth flow (no retry storm); failed polls retry at 30 min, restored to 24 h on success; 429s halt chunks without data loss. Availability residual accepted per §8. |
-| D-2 | Rotated-token persist failure → lock-out on next restart | **Mitigated; residual accepted** | Persist failure now triggers **immediate reauth** (`__init__.py::_persist_refresh_token` → `entry.async_start_reauth`) instead of a silent time bomb. Residual: no two-phase persist — declined as disproportionate given the immediate-surface behaviour. |
+| D-2 | Rotated-token persist failure → lock-out on next restart | **Mitigated; residual accepted** | Persist failure now triggers **immediate reauth** (`__init__.py::_persist_refresh_token` → `entry.async_start_reauth`) instead of a silent time bomb — though until #275 that reauth was non-functional (it always aborted `already_configured` and kept the rejected token), so the surfaced lock-out could only be cleared by delete + re-add. Residual: no two-phase persist — declined as disproportionate given the immediate-surface behaviour. |
 | D-3 | First-install backfill burst triggers BFF rate-limiting | **Mitigated** | 0.5 s inter-request pacing, 7-day chunks, 429 halts the chunk and resumes next cycle (#34/#155); on the normal path a 429 never becomes a permanent hole. Within the bounded solar heal/stall give-up paths (§8), persistent rate-limiting counts toward the attempt caps and can end in a rare accepted hole. |
 | E-1 | Compromised release executes in every installer's HA process | **Mitigated in depth; residual accepted** | Eight required checks under a zero-bypass ruleset (incl. CodeQL, full-history secret scan, dependency review, fuzz); required signed commits on `main`; Actions allowlist + SHA pinning; zero standing secrets; Sigstore-attested releases; signed release tags (`security@naanya.biz`) with a tag ruleset blocking mutation of published `v*` tags. Residuals (no independent reviewer; no HACS-side verification of what it installs) are RA-02/RA-08 in SECURITY.md. In force since 2026-07: HACS installs the attested zip itself (`zip_release`), per-release attested SBOMs, and fail-closed ancestry + tag-signature release gates. |
 | E-2 | Open-schema `dict(rate)` passthrough into runtime state | **Mitigated** | Allowlist parsing; "don't forward raw AGL response dicts" is a standing AGENTS.md rule. |
@@ -219,7 +224,10 @@ S-3, R-1, I-3, D-2-residual and E-3 are consolidated as RA-14 in
 SECURITY.md's risk-acceptance register; I-1 (plaintext refresh token at
 rest) is RA-05 and S-2/D-1 (shared `client_id`) is RA-06 (each accepted
 by @naanyabiz, 2026-07-13), re-reviewed annually or when a second
-maintainer joins.
+maintainer joins. I-5 (#275, unrevoked superseded or abandoned grants) is
+not yet in the register: whether it joins RA-14 or gets its own dated RA
+row is an open maintainer question on the #275 PR, and until then it is
+the one Accepted row without a register entry.
 Anything that changes an accepted threat's pre-conditions (new scope, new
 endpoint, new storage location, telemetry) reopens the row.
 
