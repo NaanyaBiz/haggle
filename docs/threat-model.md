@@ -235,10 +235,11 @@ endpoint, new storage location, telemetry) reopens the row.
 
 Product code is AI-authored (Claude Code) by the maintainer, or contributed
 by third parties who declare their AI tooling (or none) per commit and PR;
-all of it is human-reviewed and merged by the maintainer. Two agentic systems operate **on the repo**; the shipped
-product contains no AI component. Each is assessed on the **union of its
-tool grants**, not by the (non-agentic) product's nominal consequence
-class; widening any agent's grants re-opens this section.
+all of it is human-reviewed and merged by the maintainer. Two agentic
+systems operate **on the repo**; the shipped product contains no AI
+component. Each is assessed on the **union of its tool grants**, not by
+the (non-agentic) product's nominal consequence class; widening any
+agent's grants re-opens this section.
 
 **Interactive dev agent (Claude Code).** Operates under the maintainer's
 identity with the committed policy in `.claude/settings.json` (narrow
@@ -272,10 +273,12 @@ squash-only, signed commits); merge and tag are human-gated
 actions — the committed permission policy grants no `gh pr merge` verb
 (narrowed 2026-07-14 after cross-review; previously `gh pr:*` was a
 standing merge route on any fresh checkout), and the per-machine `ask`
-rules add a live prompt on this machine. Every commit carries the
-AI-provenance trailer (enforced by a local commit-msg hook — a
-convention rather than a server-side control, backstopped by the PR
-history and session links in every commit message).
+rules add a live prompt on this machine. Every commit carries a
+provenance trailer (`Co-Authored-By: <AI tool> <email>` or
+`AI-Assisted: none`, checked by a local commit-msg hook — a convention
+rather than a server-side control, backstopped by the PR history, the
+PR-template AI-generation disclosure that the maintainer reviews before
+merge, and the session links Claude Code adds to maintainer commits).
 
 **Hook execution integrity (TOFU-pinned, #245).** The `.claude/hooks/*`
 scripts execute automatically inside every Claude Code session (on edits,

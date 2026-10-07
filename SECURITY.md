@@ -419,11 +419,12 @@ surface.
 The maintainer's code is AI-authored (Claude Code) and human-reviewed;
 third-party contributions declare their own AI tooling, or none, per
 commit and per PR (CONTRIBUTING.md) and pass the same review and gate.
-Two agents operate **on** the repository and none ship in the product. Each is assessed on the union of its tool grants, not the
-(non-agentic) product's nominal consequence class, and widening any
-agent's grants re-opens the analysis. The full treatment — inputs,
-injection scenarios, containment, and Anthropic as a hosted model
-supplier — lives in the threat model
+Two agents operate **on** the repository and none ship in the product.
+Each is assessed on the union of its tool grants, not the (non-agentic)
+product's nominal consequence class, and widening any agent's grants
+re-opens the analysis. The full treatment — inputs, injection
+scenarios, containment, and Anthropic as a hosted model supplier —
+lives in the threat model
 ([docs/threat-model.md](docs/threat-model.md), §AI development agents).
 The enforced backstop for both agents is structural, not prompt-based:
 the zero-bypass `protect-main` ruleset plus a human executing every

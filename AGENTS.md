@@ -15,6 +15,10 @@ This file is the canonical documentation for both human contributors and AI agen
 # Install deps (once, or after pyproject.toml changes)
 uv sync
 
+# Wire the git hooks (once) — pre-commit + commit-msg stages
+# (provenance trailer, Conventional Commits); pre-push stays opt-in
+uv run pre-commit install
+
 # Run tests
 uv run pytest
 
@@ -1141,7 +1145,7 @@ Every AI tool that touches this repository, and the human boundary around it:
 | **Claude Code subagents** | Domain + review agents invoked in-session (see Subagent Triggers above) | Model-pinned in `.claude/agents/*.md`: 7× `claude-sonnet-4-6`, 1× `claude-haiku-4-5-20251001` (`release-manager`). |
 | **Codex (`chatgpt-codex-connector`)** | Cross-vendor PR reviewer | Invoked on substantive PRs. Reviews are advisory comments only — never a merge or approval authority, and not a required check. |
 | **Codex Security CLI (`@openai/codex-security`)** | LLM-based vulnerability scanner — distinct product from the `chatgpt-codex-connector` PR reviewer above, despite the shared "Codex" name | Dev-workstation tool, not a repo dependency (not in `pyproject.toml`/`uv.lock`; personal global npm install). Two modes: (1) periodic full-repo `scan --mode deep` audit, run manually by the maintainer, output kept outside the repo (`--output-dir`), findings triaged into labelled GitHub issues; (2) an **opt-in, pre-push-only** local hook (`.pre-commit-config.yaml`, id `codex-security`) that scans the diff against `origin/main` before a push. Not wired into a bare `pre-commit install` — a contributor without OpenAI/ChatGPT access is never blocked. **Never** added to CI: would require a stored `OPENAI_API_KEY`/`CODEX_API_KEY` secret, violating the zero-standing-secrets invariant (SECURITY.md § Access Review). Read-only — reads the working tree/diff and calls OpenAI's API; no write access to the repo. |
-| **Third-party contributor tooling** (any vendor) | Outside PRs may be AI-assisted with any tool — the first merged one (#281) was DeepSeek-drafted | Declared per commit (`Co-Authored-By: <tool>` or `AI-Assisted: none`, enforced by the commit-msg hook on the contributor's machine) and per PR (template disclosure). No repo access beyond the PR itself; reviewed and merged by the maintainer under the same zero-bypass gate as everything else; unsigned commits are re-applied signed with the contributor preserved as author (CONTRIBUTING.md § Sign your commits). |
+| **Third-party contributor tooling** (any vendor) | Outside PRs may be AI-assisted with any tool — the first merged one (#281) was DeepSeek-drafted | Declared per commit (`Co-Authored-By: <tool>` or `AI-Assisted: none`, checked by the local commit-msg hook once the contributor has run `pre-commit install` — CONTRIBUTING.md § Dev loop; the PR-template disclosure and maintainer review are the control for contributors who have not) and per PR (template disclosure). No repo access beyond the PR itself; reviewed and merged by the maintainer under the same zero-bypass gate as everything else; unsigned commits are re-applied signed with the contributor preserved as author (CONTRIBUTING.md § Sign your commits). |
 | **`haggle-triage` routine** | Scheduled daily triage of untrusted issues/PRs/attachments: comments, labels, Dependabot rollups, draft-fix PRs | Cron-only by design; fresh session per run; tool + Bash-prefix allowlist. Committed spec and prompt: [`docs/agents/triage-routine.md`](docs/agents/triage-routine.md). **Never** merges, pushes to `main`, tags, releases, or edits `release.yml`/`CODEOWNERS`/`LICENSE`/`NOTICE`/`SECURITY.md`. |
 
 **Human-approved boundary.** Merging a PR and creating/pushing a release

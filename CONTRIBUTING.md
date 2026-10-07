@@ -23,6 +23,7 @@ scope, and a clear "why".
 
 ```bash
 uv sync                                                   # one-time setup
+uv run pre-commit install                                 # one-time: wires the commit-msg hooks (provenance, Conventional Commits)
 uv run pytest                                             # tests
 uv run ruff check --fix custom_components/ tests/         # lint
 uv run ruff format custom_components/ tests/              # format
@@ -56,7 +57,8 @@ ci: add hacs workflow
 
 Every commit MUST also carry a provenance trailer saying which AI tool,
 if any, produced or co-authored it. The `require-provenance-trailer`
-hook enforces this. Any vendor is fine; name the tool you actually used,
+commit-msg hook checks this once you have run `uv run pre-commit install`
+(Dev loop above). Any vendor is fine; name the tool you actually used,
 because a trailer that is not true is worse than none:
 
 ```bash

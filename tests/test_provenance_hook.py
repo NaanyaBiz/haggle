@@ -25,11 +25,14 @@ def _run(
 ) -> subprocess.CompletedProcess[str]:
     msg_file = tmp_path / "COMMIT_EDITMSG"
     msg_file.write_text(message)
+    # The hook skips merges via GIT_REFLOG_ACTION; never inherit it from the
+    # pytest process or every rejection case greens against a broken script.
+    base = {k: v for k, v in os.environ.items() if k != "GIT_REFLOG_ACTION"}
     return subprocess.run(
         [str(SCRIPT), str(msg_file)],
         capture_output=True,
         text=True,
-        env={**os.environ, **(env or {})},
+        env={**base, **(env or {})},
         check=False,
     )
 
@@ -64,6 +67,7 @@ def test_missing_trailer_is_rejected(tmp_path: pathlib.Path) -> None:
         "AI-Assisted: Claude",  # a tool belongs in Co-Authored-By, not here
         "AI-Assisted: yes",
         "Body mentions Co-Authored-By: Claude mid-line",  # not a trailer line
+        "Merge the two parsers into one.",  # 'Merge ' on a body line is not a merge
     ],
 )
 def test_malformed_declarations_are_rejected(tmp_path: pathlib.Path, bad: str) -> None:
@@ -81,6 +85,19 @@ def test_merge_reflog_action_is_skipped(tmp_path: pathlib.Path) -> None:
         tmp_path, "resolved conflicts\n", env={"GIT_REFLOG_ACTION": "merge origin/main"}
     )
     assert result.returncode == 0
+
+
+@pytest.mark.parametrize("action", ["rebase", "rebase (reword)", "cherry-pick"])
+def test_non_merge_reflog_action_is_still_checked(
+    tmp_path: pathlib.Path, action: str
+) -> None:
+    # Only `merge*` is exempt; a loosened pattern would silently exempt every
+    # rebased or cherry-picked commit.
+    result = _run(
+        tmp_path, "fix: something\n\nno trailer\n", env={"GIT_REFLOG_ACTION": action}
+    )
+    assert result.returncode == 1, result.stderr
+    assert "no provenance trailer" in result.stderr
 
 
 def test_script_is_executable() -> None:
