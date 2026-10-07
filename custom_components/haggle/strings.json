@@ -16,8 +16,8 @@
         }
       },
       "select_contract": {
-        "title": "Select contract",
-        "description": "Multiple electricity contracts were found. Select the one to monitor.",
+        "title": "Choose AGL contract",
+        "description": "Select the electricity contract to monitor. If an error is shown, submit to try again.",
         "data": {
           "contract_number": "Contract"
         }

@@ -177,7 +177,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   then shows "AGL certificate changed" on every new connection with no way
   to clear it — the notice pointed at a Reconfigure option that was never
   implemented. That dead end has existed in every release since pinning
-  shipped (v0.2.0-beta.1). Settings → Devices & services → Haggle → ⋮ →
+  shipped (v0.2.0-beta.1). Settings → Devices & services → AGL Haggle → ⋮ →
   **Reconfigure** now logs in again, refreshes the sign-in, re-pins each
   host whose certificate was captured, and dismisses the notice. Deleting
   and re-adding the integration to clear the warning is no longer needed.
@@ -191,9 +191,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     prompt.
   - Both flows reuse the entry's own contract (no picker) and keep all
     solar heal and stall state. A login that does not own the entry's
-    contract is refused with nothing changed; an entry created without a
-    contract number is told to remove and re-add it before any login is
-    asked for.
+    contract is refused with nothing changed. An entry created without a
+    contract number cannot be repaired in place: Reconfigure tells you to
+    remove and re-add it before any login is asked for, and a reauth for
+    such an entry ends without a prompt (remove and re-add it instead).
   - If a certificate could not be captured, the old fingerprint is kept,
     the warning stays, and Reconfigure says so. The warning is shared by
     every Haggle entry, so with several contracts it clears once every

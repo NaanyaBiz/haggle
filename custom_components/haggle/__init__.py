@@ -139,7 +139,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
                 "fingerprint Haggle pinned for it. Requests keep working; this is "
                 "a warning only. AGL replaces its certificates from time to time: "
                 "if you are on a network you trust, open Settings → Devices & "
-                "services → Haggle, choose Reconfigure from the entry's ⋮ menu "
+                "services → AGL Haggle, choose Reconfigure from the entry's ⋮ menu "
                 "and log in again to re-pin (repeat for each Haggle entry). If "
                 "you did not expect this, or your network inspects TLS traffic "
                 "(corporate proxy, security appliance), do NOT re-pin: re-pinning "
