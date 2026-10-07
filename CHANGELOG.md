@@ -52,7 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   proceeds on green CI, with real-world validation happening at the
   beta-soak stage.
 
-## [Unreleased]
+## [0.5.0-beta.2] - 2026-10-07
+
+**Escaped defects closed this release:** 8 (5 sev:high) — #275, #253, #247, #246, #243, #242, #241, #126.
 
 ### Added
 
@@ -180,6 +182,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `cannot_connect`. `_exchange_code` had no direct test coverage at all —
     every existing config-flow test mocks it out.
 
+- **Release artifact now fails closed on symlinks** (#246). `release.yml`
+  built `haggle.zip` with `zip -r` and no `-y`, which **dereferences**
+  symlinks — the link is stored as a regular file containing the target's
+  live bytes. Verified empirically: a link to a file outside the tree
+  produced a zip entry holding that file's content verbatim. Since HACS
+  extracts this artifact straight into
+  `<config>/custom_components/haggle/`, a symlink committed under the
+  integration directory would have inlined arbitrary repo or runner
+  content into the published release — the project's highest-consequence
+  supply-chain surface. The build now refuses outright if any symlink
+  exists under `custom_components/haggle/`, and also passes `-y`. The
+  guard is the control: `-y` alone merely converts content-inlining into
+  a traversal path extracted on the user's machine, so neither measure is
+  sufficient by itself. No user-facing change; no shipped release was
+  affected (the integration directory has never contained a symlink).
+- **Licence gate narrowed to network copyleft (AGPL/SSPL); plain GPL no
+  longer denied** (RA-17). The released artifact ships zero third-party
+  code — `haggle.zip` is `custom_components/haggle/` alone
+  (`manifest.json` `requirements: []`), which the release SBOMs attest —
+  so no dependency is ever redistributed and plain-copyleft obligations
+  cannot attach. Meanwhile the Home Assistant transitive tree carries
+  three GPL-3.0 packages this project can neither drop nor redistribute
+  (`hass-nabucasa`, its own dependency `snitun`, and `pyric`).
+  The previous denylist blocked exactly **one** of those three — not by
+  policy but by metadata accident: `hass-nabucasa` declares a modern SPDX
+  `license_expression`, while the other two declare only a legacy trove
+  classifier the action does not normalise. It blocked a parent while
+  admitting its own child, and fired on declaration format rather than
+  licence. AGPL/SSPL stay denied: genuinely surprising obligations,
+  absent from the tree today, and a real signal if they ever appear.
+  No user-facing change.
+- **Licence-gate limitations now recorded rather than assumed away**
+  (#262): the check matches SPDX identifiers only (trove classifiers slip
+  through) and is diff-scoped, so a dependency already in the tree is
+  never re-examined — which is why `hass-nabucasa` went unexamined from
+  #52 until #258. `SECURITY.md § Supply chain` and the CO-5.1 / CO-5.2 /
+  CO-7.1 / CO-9.2 / CO-12.3 conformance rows previously described the
+  gate without either qualification, overstating its assurance.
+
 ### Changed
 
 - **Dev-dependency bump** (`pytest-homeassistant-custom-component` floor
@@ -293,46 +334,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selectable, since locking out a working install would be worse than the
   bug being fixed.
 
-### Security
-
-- **Release artifact now fails closed on symlinks** (#246). `release.yml`
-  built `haggle.zip` with `zip -r` and no `-y`, which **dereferences**
-  symlinks — the link is stored as a regular file containing the target's
-  live bytes. Verified empirically: a link to a file outside the tree
-  produced a zip entry holding that file's content verbatim. Since HACS
-  extracts this artifact straight into
-  `<config>/custom_components/haggle/`, a symlink committed under the
-  integration directory would have inlined arbitrary repo or runner
-  content into the published release — the project's highest-consequence
-  supply-chain surface. The build now refuses outright if any symlink
-  exists under `custom_components/haggle/`, and also passes `-y`. The
-  guard is the control: `-y` alone merely converts content-inlining into
-  a traversal path extracted on the user's machine, so neither measure is
-  sufficient by itself. No user-facing change; no shipped release was
-  affected (the integration directory has never contained a symlink).
-- **Licence gate narrowed to network copyleft (AGPL/SSPL); plain GPL no
-  longer denied** (RA-17). The released artifact ships zero third-party
-  code — `haggle.zip` is `custom_components/haggle/` alone
-  (`manifest.json` `requirements: []`), which the release SBOMs attest —
-  so no dependency is ever redistributed and plain-copyleft obligations
-  cannot attach. Meanwhile the Home Assistant transitive tree carries
-  three GPL-3.0 packages this project can neither drop nor redistribute
-  (`hass-nabucasa`, its own dependency `snitun`, and `pyric`).
-  The previous denylist blocked exactly **one** of those three — not by
-  policy but by metadata accident: `hass-nabucasa` declares a modern SPDX
-  `license_expression`, while the other two declare only a legacy trove
-  classifier the action does not normalise. It blocked a parent while
-  admitting its own child, and fired on declaration format rather than
-  licence. AGPL/SSPL stay denied: genuinely surprising obligations,
-  absent from the tree today, and a real signal if they ever appear.
-  No user-facing change.
-- **Licence-gate limitations now recorded rather than assumed away**
-  (#262): the check matches SPDX identifiers only (trove classifiers slip
-  through) and is diff-scoped, so a dependency already in the tree is
-  never re-examined — which is why `hass-nabucasa` went unexamined from
-  #52 until #258. `SECURITY.md § Supply chain` and the CO-5.1 / CO-5.2 /
-  CO-7.1 / CO-9.2 / CO-12.3 conformance rows previously described the
-  gate without either qualification, overstating its assurance.
+## [Unreleased]
 
 ### Targets for next sprint
 
