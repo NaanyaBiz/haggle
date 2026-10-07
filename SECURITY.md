@@ -132,14 +132,26 @@ request observes the live SPKI and compares it to the stored value.
 **Mismatch is warn-only**: a HA persistent notification fires
 (`haggle_pin_mismatch_<host>`) and a WARNING is logged, but the request
 still completes. This is deliberate — a strict-reject mode would brick
-HACS users on legitimate AGL cert rotations. The documented remediation
-is the standard HA Reconfigure flow on the integration card, which
-re-pins both endpoints on success.
+HACS users on legitimate AGL cert rotations. The remediation is the
+standard HA Reconfigure flow on the integration card (implemented in
+#275; before that the flow did not exist), which re-pins each host whose
+certificate was captured and dismisses the notice. Reauthentication
+refreshes the sign-in but never overwrites an existing pin (it only
+fills an empty one), so a reauth prompt an on-path attacker provokes
+cannot quietly accept an interception.
 
-**First-install caveat**: a LAN MITM during the initial PKCE flow could
-pin the attacker's certificate. PKCE happens in the user's browser
-(system trust + visible lock indicator), so this requires compromising
-both the browser and the HA host simultaneously.
+**First-install caveat**: the pins are captured from the HA host's own
+TLS connections — the authorization-code exchange and the contract
+discovery fetch — not from the browser. The browser carries only the
+AGL login. An interceptor whose certificate the HA host's CA store
+trusts, sitting on the HA host's network path alone, gets pinned; the
+browser does not also have to be compromised.
+
+**Re-pin caveat**: every Reconfigure repeats that trust-on-first-use
+moment. The mismatch notification and the Reconfigure form both tell
+users not to re-pin on a network that inspects TLS (corporate proxy,
+security appliance), since re-pinning there makes the interceptor's
+certificate the trusted one.
 
 ### Storage
 
@@ -513,9 +525,12 @@ weekly deep run with a persisted corpus).
 If a secret (a refresh token, a real API capture) ever lands in a commit:
 
 1. Treat it as compromised immediately — do not wait for evidence of use.
-2. Revoke: re-run the integration's Reconfigure/PKCE flow (Auth0's
-   rotation invalidates the leaked refresh token); anything else, revoke
-   at its issuer.
+2. Revoke: remove the integration (`async_remove_entry` makes a
+   best-effort `/oauth/revoke` of the stored grant) and re-add it, or
+   revoke the session through AGL. Reconfigure does NOT invalidate a
+   leaked refresh token: it mints a new grant and deliberately leaves the
+   old chain unrevoked (threat-model I-5). Anything else, revoke at its
+   issuer.
 3. Rewrite the affected history before pushing; if it already reached the
    public repo, rewrite anyway and treat the value as public forever.
 4. Re-scan full history (`gitleaks git .`) and require zero findings.

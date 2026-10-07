@@ -171,6 +171,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Reconfigure now exists and re-pins AGL's TLS certificate fingerprints**
+  (#275): AGL replaced the keys on `secure.agl.com.au` and
+  `api.platform.agl.com.au` on 2026-09-08, and every install pinned before
+  then shows "AGL certificate changed" on every new connection with no way
+  to clear it — the notice pointed at a Reconfigure option that was never
+  implemented. That dead end has existed in every release since pinning
+  shipped (v0.2.0-beta.1). Settings → Devices & services → Haggle → ⋮ →
+  **Reconfigure** now logs in again, refreshes the sign-in, re-pins each
+  host whose certificate was captured, and dismisses the notice. Deleting
+  and re-adding the integration to clear the warning is no longer needed.
+  - **Reauthentication can now succeed.** In every earlier release it ended
+    "already configured" and kept the rejected token, so a dead sign-in
+    also meant deleting and re-adding the integration. Reauth refreshes the
+    sign-in only and keeps existing pins (it fills a pin only where none
+    was stored), so a reauth prompt that someone else caused cannot quietly
+    accept an intercepted certificate. Reconfigure is the deliberate
+    re-pin; it also repairs a dead sign-in and clears a pending reauth
+    prompt.
+  - Both flows reuse the entry's own contract (no picker) and keep all
+    solar heal and stall state. A login that does not own the entry's
+    contract is refused with nothing changed; an entry created without a
+    contract number is told to remove and re-add it before any login is
+    asked for.
+  - If a certificate could not be captured, the old fingerprint is kept,
+    the warning stays, and Reconfigure says so. The warning is shared by
+    every Haggle entry, so with several contracts it clears once every
+    entry has been reconfigured.
+  - **Only re-pin on a network you trust**: re-pinning behind a
+    TLS-intercepting proxy or security appliance trusts that device's
+    certificate.
 - **Bill projection sensor no longer reads `unknown`** (#253): the sensor has
   never worked in any released version. `parse_bill_period` read the
   projection from `additionalLabelValue` at the root of the *usage-summary*

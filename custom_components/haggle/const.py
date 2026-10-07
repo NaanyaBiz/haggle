@@ -172,6 +172,12 @@ CONF_ACCOUNT_NUMBER: Final = "account_number"
 # = no pin yet (older entries pre-PR4 / capture failed at install time).
 CONF_PINNED_SPKI_AUTH: Final = "pinned_spki_auth"  # secure.agl.com.au
 CONF_PINNED_SPKI_BFF: Final = "pinned_spki_bff"  # api.platform.agl.com.au
+# Persistent-notification id for a pin mismatch, formatted with
+# host=AGL_AUTH_HOST_NAME / AGL_BFF_HOST_NAME. Shared by __init__._check_pin
+# (create) and config_flow's Reconfigure (dismiss) so the two cannot drift.
+# One id per HOST, shared by every Haggle entry. The resulting ids are
+# documented in SECURITY.md and AGENTS.md — do not change the format.
+PIN_MISMATCH_NOTIFICATION_ID: Final = "haggle_pin_mismatch_{host}"
 # One-time solar generation leading-hole heal (#128). Stored as a record:
 #   {"state": "pending"|"done", "floor": "YYYY-MM-DD", "attempts": int}
 # A "done" record reached by GIVE-UP (rather than clean completion) additionally

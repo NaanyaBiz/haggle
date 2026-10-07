@@ -391,3 +391,73 @@ async def test_remove_entry_no_token_no_call(
     entry.add_to_hass(hass)
     await async_remove_entry(hass, entry)
     assert aioclient_mock.call_count == 0
+
+
+async def test_pin_check_log_says_reconfigure_not_reauth(
+    hass: HomeAssistant, caplog
+) -> None:
+    """#275 M7(i): the WARNING on SPKI mismatch must say 'Reconfigure', not 'reauth'.
+
+    Pre-fix the message was '— investigate or reauth'. Reauth was never a
+    working remediation for a pin mismatch (the token is still valid; reauth
+    only fires when it expires), so the corrected text says 'Reconfigure'.
+    """
+    import logging
+
+    from custom_components.haggle.agl.pinning import AGL_AUTH_HOST_NAME
+    from custom_components.haggle.const import (
+        CONF_PINNED_SPKI_AUTH,
+        CONF_PINNED_SPKI_BFF,
+    )
+
+    pinned_data = {
+        **_ENTRY_DATA,
+        CONF_PINNED_SPKI_AUTH: "a" * 64,
+        CONF_PINNED_SPKI_BFF: "b" * 64,
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data=pinned_data,
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=_COORDINATOR_DATA,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        pin_check = entry.runtime_data.connector.on_new_connection
+        assert pin_check is not None
+
+        caplog.set_level(logging.WARNING, logger="custom_components.haggle")
+        pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+
+    warning_lines = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert warning_lines, "Expected at least one WARNING from _check_pin"
+    warning_text = " ".join(r.getMessage() for r in warning_lines)
+    assert "Reconfigure" in warning_text
+    # 'reauth' must not appear — pre-fix it was '— investigate or reauth', which
+    # sent users down a broken path (reauth is not a valid fix for a pin mismatch).
+    assert "reauth" not in warning_text
