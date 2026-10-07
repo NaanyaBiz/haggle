@@ -52,7 +52,7 @@ Attacker-relevant properties:
 
 | Class | Data | Where it may live | Requirements triggered |
 |---|---|---|---|
-| **A — secret** | AGL/Auth0 refresh token (rotating); access token (15-min JWT) | refresh token: `entry.data` only; access token: memory only | Never committed, logged, or serialized. Diagnostics redact it; leak tests assert it can never appear; secret scanning guards commits at three layers — pre-commit gitleaks, GitHub push protection, and a required full-history gitleaks CI gate with repo-specific rules (`.gitleaks.toml`: Auth0 refresh-token and real-AGL-identifier patterns, plus a scanner self-test canary — PR #184). Error bodies are stripped before exceptions propagate. |
+| **A — secret** | AGL/Auth0 refresh token (rotating); access token (15-min JWT) | refresh token: `entry.data` only; access token: memory only | Never committed, logged, or serialized. Diagnostics redact it; leak tests assert it can never appear; secret scanning guards commits at three layers — pre-commit gitleaks, GitHub push protection, and a required full-history gitleaks CI gate with repo-specific rules (`.gitleaks.toml`: Auth0 refresh-token and real-AGL-identifier patterns, plus two fail-closed self-tests — a scanner canary proving the binary detects at all, and a custom-rule canary seeding each repo-specific pattern and asserting its RuleID fires, so a PR that narrows a regex or adds a swallowing allowlist goes red — PRs #184, #248). Error bodies are stripped before exceptions propagate. |
 | **B — personal** | account number, contract number, service address, residence-fingerprinting meter timeseries | the user's own HA instance (incl. entry title = address, threat I-3) | Never in the repo — fixtures use the canonical placeholders (`1234567890` / `9999999999` / `1 Sample Street SUBURB QLD 4000`), with one documented exception: `tests/fixtures/solar_hourly_response.json` is a real, identifier-free full-day capture of the maintainer's own meter, retained because its reconciliation against the AGL app's reference figures IS the regression evidence (a formal consent/provenance note is tracked as an open issue), and the CI gitleaks rules treat the real identifiers as secrets in the shapes they actually leak: keyed fields, usage-endpoint URL paths, and `haggle:*` statistic IDs. A bare 10-digit number outside those shapes is not detectable — the placeholder discipline remains the primary control. HMAC-anonymised in diagnostics (account/contract, including inside composite strings). Never in exception text (BFF URLs carry the contract number — strip before raising). |
 | **C — operational** | usage figures, rates, tariff bands, timestamps, SPKI-presence booleans | diagnostics, statistics, logs | Permitted — this is the diagnostic payload and is not personally identifying on its own. |
 | **D — public** | code, docs, CI config | repo | Normal review. |
@@ -243,7 +243,12 @@ class; widening any agent's grants re-opens this section.
 identity with the committed policy in `.claude/settings.json` (narrow
 allowlist, deny list, guard-main-branch hook) plus per-machine local
 settings. Untrusted inputs it processes (its prompt-injection surface):
-AGL API responses, GitHub issue/PR content, fetched web pages.
+AGL API responses, GitHub issue/PR content, fetched web pages, and git
+ref/worktree names interpolated into the per-prompt context block —
+git accepts `<`, `>`, `"`, `'` in ref names, so an attacker-named branch
+(acquired e.g. via `gh pr checkout`) could forge instruction-shaped
+markup; `inject-branch-context.sh` strips to a strict allowlist before
+emission (#244).
 *Grant union (post-hardening, 2026-07-13)*: read/write to the working
 tree; routine local git and feature-branch pushes; the build/test/lint
 toolchain; read-only HA MCP tools. The per-machine allowlist was pruned
@@ -270,6 +275,61 @@ rules add a live prompt on this machine. Every commit carries the
 AI-provenance trailer (enforced by a local commit-msg hook — a
 convention rather than a server-side control, backstopped by the PR
 history and session links in every commit message).
+
+**Hook execution integrity (TOFU-pinned, #245).** The `.claude/hooks/*`
+scripts execute automatically inside every Claude Code session (on edits,
+Bash calls, and prompt submission), and Claude Code loads hook
+configuration from settings files with **no content verification, no
+cross-session approval, and live file-watching** (verified against
+v2.1.239, 2026-09-11). Checking out an untrusted branch — no agent action
+required — could therefore have replaced either the scripts or a
+committed hooks block and executed under the maintainer's identity on the
+next ordinary action. Mitigation mirrors the TLS TOFU design: the hook
+*wiring* lives only in the untracked `.claude/settings.local.json`
+(symlink-shared across worktrees), each command verifies ALL hook scripts
+against the untracked SHA-256 pin store `.claude/hooks.sha256` before
+executing, and mismatch or a missing store **fails closed** (exit 2)
+with a re-pin instruction — on PreToolUse/UserPromptSubmit that blocks
+the triggering Bash call or prompt outright; on PostToolUse the edit has
+already happened and the guarantee is that the tampered hook itself
+never runs. "Untracked" alone is NOT out of reach of a checkout: git
+silently overwrites gitignored files when a branch force-tracks them
+(`git add -f`), so a hostile branch could substitute both scripts and a
+matching pin store (adversarial-review P1 on PR #269). Two layers close
+that: every wiring command REFUSES a pin store that is tracked in git
+(the substituted anchor betrays itself), and a ci.yml gate fails any PR
+tracking either local-trust file, so such a PR is red before review and
+unmergeable. Cross-vendor review (Codex on PR #269) then
+sharpened the residual into its true shape: Claude Code loads hook
+config from ANY working-tree settings file with no approval and a live
+watcher, so a hostile branch can (a) force-track its own
+`settings.local.json`, displacing the wiring before any runtime check
+can execute, or (b) simply re-add a `hooks` block to the tracked
+`settings.json` — both wire attacker commands at checkout time, before
+the CI gate can flag anything for a live session. In the default
+(local-wiring) posture these remain RECORDED RESIDUALS mitigated by the
+CI gate (the PR is red and unmergeable), the file's visibility in the
+PR listing, and worktree symlinks isolating a hostile checkout's blast
+radius to that worktree. The COMPLETE closure is the managed-settings
+posture: `allowManagedHooksOnly: true` plus the wiring deployed at
+`/Library/Application Support/ClaudeCode/managed-settings.json`, which
+sits above every project file in Claude Code's precedence and cannot be
+overridden by anything a checkout contains (verified against v2.1.239);
+the wiring commands no-op outside a checkout carrying the tracked
+policy-record marker, so machine-global deployment is safe.
+`scripts/pin-hooks.sh` generates the deployment artifact and prints the
+install commands — deploying it is an admin-rights machine-policy
+decision recorded as the recommended posture, made deliberately by the
+maintainer rather than by this repo. Trust is granted only by the maintainer running
+`scripts/pin-hooks.sh` after reviewing the diffs; the committed
+`.claude/hooks-wiring.json` is the policy record the installer copies
+from, shown as a diff at install time. The committed `settings.json`
+carries permissions only — never re-add a hooks block to it. *Residuals,
+accepted*: `scripts/*.sh` run manually by the maintainer (or via the
+agent's `Bash(./scripts/*)` allow) are NOT pinned — a hostile branch can
+modify them, and the control is reading before running; and the pins
+protect hook execution inside Claude Code sessions only, which is the
+entire surface hooks execute on.
 
 **Automated triage routine.** A daily-cron-only hosted Claude agent
 (deliberately *not* event-triggered — issue events would let attackers

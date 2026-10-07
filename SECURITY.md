@@ -298,8 +298,13 @@ keys, and usage-endpoint URL paths for identifiers) are layered on the
 gitleaks defaults and run in two places: the pre-commit hook on every dev
 machine, and the CI `Gitleaks (full history)` job on every PR, which
 scans every commit in the repository with a checksum-pinned gitleaks
-binary. That job fails closed: a scanner self-test must first detect a
-seeded token, so a silently broken scanner cannot return a green verdict.
+binary. That job fails closed on two self-tests. A scanner self-test must first
+detect a seeded token, so a silently broken scanner cannot return a green
+verdict. A custom-rule self-test then seeds each of the four
+repo-specific `.gitleaks.toml` patterns and asserts that rule's own ID
+fires (#248), so a PR that narrows a regex or adds a swallowing
+allowlist goes red — the first test proves the binary detects, this one
+proves the policy in the diff still catches what it was written for.
 
 **Dev-machine hooks.** `.pre-commit-config.yaml` pins every remote hook
 to a **frozen commit SHA** (refresh with `pre-commit autoupdate
@@ -425,8 +430,32 @@ merge, tag, and release.
 
 | Agent | Untrusted inputs | Grant union | Blast radius if hijacked |
 |---|---|---|---|
-| Interactive dev agent (Claude Code, under the maintainer's identity) | AGL API responses; GitHub issue/PR content it reads; fetched web pages | Working-tree read/write; routine local git + feature-branch push; the build/test/lint toolchain. No standing grant to merge PRs, push to `main`, push tags, release, or reach remote hosts — each forces a live human prompt; reading the `gh` auth token is denied outright. | The local checkout plus feature branches. It cannot self-merge, self-release, or reach infrastructure beyond the repo without a human approving; direct `main` pushes are server-rejected by the ruleset. |
+| Interactive dev agent (Claude Code, under the maintainer's identity) | AGL API responses; GitHub issue/PR content it reads; fetched web pages; git ref/worktree names interpolated into per-prompt context (sanitized to a strict allowlist — #244) | Working-tree read/write; routine local git + feature-branch push; the build/test/lint toolchain. No standing grant to merge PRs, push to `main`, push tags, release, or reach remote hosts — each forces a live human prompt; reading the `gh` auth token is denied outright. | The local checkout plus feature branches. It cannot self-merge, self-release, or reach infrastructure beyond the repo without a human approving; direct `main` pushes are server-rejected by the ruleset. |
 | Automated triage routine (`haggle-triage`, daily-cron hosted agent — spec and prompt committed at [docs/agents/triage-routine.md](docs/agents/triage-routine.md)) | All issue/PR/comment/diff/attachment content | Cron-only (deliberately not event-triggered — issue events would let attackers summon it); fresh session per run; comments, labels, and PR branches only. It never merges, never pushes to `main`, never tags or releases, and never modifies `release.yml`, CODEOWNERS, LICENSE, NOTICE, or this file. | Spam/noise on this repo's issues and PRs; a hijacked run is bounded by the zero-bypass ruleset and the human-gated merge/tag/release boundary. |
+
+**Hook execution integrity (#245).** The `.claude/hooks/*` scripts fire
+automatically inside every Claude Code session, and Claude Code performs
+no content verification of them (and no cross-session approval of hook
+config — verified 2026-09-11). The hook wiring therefore lives only in
+the untracked `.claude/settings.local.json`, every hook command verifies
+the whole scripts directory against the untracked TOFU pin store
+`.claude/hooks.sha256` before executing, and a mismatch or missing store
+fails closed with a re-pin instruction (blocking the triggering action
+on PreToolUse/UserPromptSubmit; on PostToolUse the guarantee is that the
+tampered hook never runs). Because git silently overwrites gitignored
+files when a branch force-tracks them, the wiring additionally REFUSES a
+pin store that is tracked in git, and a ci.yml gate fails any PR that
+tracks either local-trust file. The remaining checkout-time
+wiring-substitution window (force-tracked settings files; a hooks block
+re-added to the tracked settings.json) is a recorded residual in the
+default posture — fully closed by the optional managed-settings
+deployment (`allowManagedHooksOnly`) that `scripts/pin-hooks.sh`
+generates and documents, which no project file can override. Trust is granted exclusively by
+the maintainer running `scripts/pin-hooks.sh` after reviewing hook
+diffs; `.claude/hooks-wiring.json` is the committed policy record. The
+committed `settings.json` carries permissions only. Accepted residual:
+`scripts/*.sh` invoked manually (or via the agent's `./scripts/*` allow)
+are not pinned — read before running. Full treatment: threat model §6.
 
 The triage routine's configuration and prompt are under repo-first
 change control: [docs/agents/triage-routine.md](docs/agents/triage-routine.md)
