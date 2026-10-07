@@ -158,6 +158,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `uv lock --check` gate — regenerated here. No new lint findings and no
   source edits. `hacs.json` stays at 2026.7.0 for the same reason as the
   previous bump: none of this is a runtime requirement.
+  The same rollup lifts two transitive dev-lockfile packages to close open
+  Dependabot alerts: `urllib3` 2.7.0 → 2.8.0 (3 alerts) and `virtualenv`
+  21.6.0 → 21.14.5 (4 alerts, via `pre-commit`); with `anyio` that closes
+  10 of the 25 open alerts. `PyJWT` (14 alerts) and `cryptography` (3)
+  cannot move: `homeassistant` 2026.9.4 pins them exactly
+  (`PyJWT==2.13.0`, `cryptography==48.0.1`), and users get both from HA
+  core, never from haggle. Haggle does not use PyJWT. It uses
+  `cryptography` only to extract the leaf-certificate public key for TLS
+  pinning, and never calls the X.509 chain verifier the open advisories
+  are about.
 
 ### Fixed
 
