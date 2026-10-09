@@ -334,7 +334,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   selectable, since locking out a working install would be worse than the
   bug being fixed.
 
-## [Unreleased]
+## [0.5.0-beta.3] - 2026-10-09
+
+**Escaped defects closed this release:** 0. (#292, sev:high, is partly fixed here and closes with the follow-up history-realign release.)
+
+### Added
+
+- **The contract's timezone is now stored on the config entry**
+  (`local_tz`, derived from the service address; closes #268). It is
+  written at setup, refreshed by reauth and Reconfigure, and persisted by
+  each overview cycle; existing entries are migrated from their title
+  (config-entry minor version 1 → 2 — a minor bump that older versions
+  load unchanged, so downgrading stays safe). The first backfill chunk and
+  the solar period-sensor boundaries now use the contract's own midnight
+  even when the account overview is unreachable or the HA instance runs in
+  a different timezone. A renamed entry title migrates to "unknown" and
+  picks the zone up on its first successful overview fetch.
+- **Diagnostics schema v3**: `coordinator.contract_timezone` (the zone the
+  parser corrects into) and `entry.data.local_tz` (the persisted key),
+  beside HA's own `timezone` — the triple needed to triage a timestamp
+  report. Both are IANA zone names (at finest `Australia/Broken_Hill`, a
+  single-postcode locality — documented as an accepted non-identifying
+  residual in `docs/diagnostics.md` and the threat model).
+
+### Changed
+
+- **One extra AGL request per series per poll for half-hour-zone contracts**
+  (SA / Broken Hill / NT): `3 + 8 + 8` on a solar contract instead of
+  `3 + 7 + 7`. Whole-hour zones are unchanged.
+- **The reauth prompt now explains itself** (#284, from @stevelea's review
+  of #277). When AGL rejects the stored sign-in, the repair form has its
+  own `reauth_confirm` step that says why it appeared, that logging in
+  again repairs the entry without losing history, and that it keeps the
+  existing certificate pins (Reconfigure is the step that re-pins).
+  Previously it showed the fresh-install "Log in to AGL" text with no
+  context. An exchange error during reauth now re-shows that same form.
+
+- **Dev-dependency bump, 2026-10-09 rollup** (`homeassistant` floor 2026.9.4,
+  `uv lock` resolved **2026.10.0**; `pytest-homeassistant-custom-component`
+  floor 0.13.368 → resolved 0.13.371; `ruff` 0.16.10; `mypy` 2.4.0; and
+  transitively `cryptography` 48.0.1 → 50.0.1, which closes the three open
+  `cryptography` Dependabot alerts, plus `aiohttp` 3.14.4): rolls Dependabot
+  #291. HA 2026.10 replaced `voluptuous` with `probatio` in the
+  data-entry-flow API, so `config_flow.py` now imports `probatio` when
+  present and falls back to `voluptuous` on HA < 2026.10 (the runtime floor
+  stays 2026.7.0; #294 tracks dropping the fallback). No behaviour change.
 
 ### Fixed
 
@@ -421,50 +465,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     is gated on this fix AND the follow-up 30-day re-alignment both being
     merged, plus the reporter's confirmation.
 
-### Added
-
-- **The contract's timezone is now stored on the config entry**
-  (`local_tz`, derived from the service address; closes #268). It is
-  written at setup, refreshed by reauth and Reconfigure, and persisted by
-  each overview cycle; existing entries are migrated from their title
-  (config-entry minor version 1 → 2 — a minor bump that older versions
-  load unchanged, so downgrading stays safe). The first backfill chunk and
-  the solar period-sensor boundaries now use the contract's own midnight
-  even when the account overview is unreachable or the HA instance runs in
-  a different timezone. A renamed entry title migrates to "unknown" and
-  picks the zone up on its first successful overview fetch.
-- **Diagnostics schema v3**: `coordinator.contract_timezone` (the zone the
-  parser corrects into) and `entry.data.local_tz` (the persisted key),
-  beside HA's own `timezone` — the triple needed to triage a timestamp
-  report. Both are IANA zone names (at finest `Australia/Broken_Hill`, a
-  single-postcode locality — documented as an accepted non-identifying
-  residual in `docs/diagnostics.md` and the threat model).
-
-### Changed
-
-- **One extra AGL request per series per poll for half-hour-zone contracts**
-  (SA / Broken Hill / NT): `3 + 8 + 8` on a solar contract instead of
-  `3 + 7 + 7`. Whole-hour zones are unchanged.
-- **The reauth prompt now explains itself** (#284, from @stevelea's review
-  of #277). When AGL rejects the stored sign-in, the repair form has its
-  own `reauth_confirm` step that says why it appeared, that logging in
-  again repairs the entry without losing history, and that it keeps the
-  existing certificate pins (Reconfigure is the step that re-pins).
-  Previously it showed the fresh-install "Log in to AGL" text with no
-  context. An exchange error during reauth now re-shows that same form.
-
-- **Dev-dependency bump, 2026-10-09 rollup** (`homeassistant` floor 2026.9.4,
-  `uv lock` resolved **2026.10.0**; `pytest-homeassistant-custom-component`
-  floor 0.13.368 → resolved 0.13.371; `ruff` 0.16.10; `mypy` 2.4.0; and
-  transitively `cryptography` 48.0.1 → 50.0.1, which closes the three open
-  `cryptography` Dependabot alerts, plus `aiohttp` 3.14.4): rolls Dependabot
-  #291. HA 2026.10 replaced `voluptuous` with `probatio` in the
-  data-entry-flow API, so `config_flow.py` now imports `probatio` when
-  present and falls back to `voluptuous` on HA < 2026.10 (the runtime floor
-  stays 2026.7.0; #294 tracks dropping the fallback). No behaviour change.
-
-### Fixed
-
 - **The "AGL certificate changed" warning no longer repeats on every
   connection** (#280). A single AGL key rotation logged the WARNING, and
   re-created the notice, each time the connector opened a TLS connection —
@@ -480,6 +480,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   monitors") now says that if Home Assistant had asked you to
   re-authenticate, reloading the entry brings that prompt back — an open
   Reconfigure flow suppresses it (#280).
+
+## [Unreleased]
 
 ### Targets for next sprint
 
