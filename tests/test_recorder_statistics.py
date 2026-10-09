@@ -952,6 +952,19 @@ def _300_day_slots(d: date, tz: ZoneInfo, conv: str) -> list[IntervalReading]:
     return out
 
 
+def _300_gen_day_slots(d: date, tz: ZoneInfo, conv: str) -> list[IntervalReading]:
+    """Solar export slots for local day d: daylight only (i=14..38)."""
+    return [
+        IntervalReading(
+            dt=_300_slot_dt(d, i, tz, conv),
+            kwh=0.2 + 0.005 * i,
+            cost_aud=0.05,
+            rate_type="normal",
+        )
+        for i in range(14, 39)
+    ]
+
+
 def _300_steps(rows: list[dict]) -> list[tuple[str, float]]:
     """(start_iso, magnitude) for every downward step in a sorted row list."""
     sorted_rows = sorted(rows, key=lambda r: r["start"])
@@ -960,6 +973,47 @@ def _300_steps(rows: list[dict]) -> list[tuple[str, float]]:
         for a, b in pairwise(sorted_rows)
         if b["sum"] < a["sum"] - 1e-9
     ]
+
+
+def _300_hour_totals(
+    readings: list[IntervalReading], *, credit: bool = False
+) -> dict[float, float]:
+    """Batch value per hourly key (epoch seconds): kWh, or AUD with credit."""
+    out: dict[float, float] = {}
+    for r in readings:
+        h = r.dt.replace(minute=0, second=0, microsecond=0).timestamp()
+        out[h] = out.get(h, 0.0) + (r.cost_aud if credit else r.kwh)
+    return out
+
+
+def _300_assert_realigned(
+    before_rows: list[dict], after_rows: list[dict], new_hours: dict[float, float]
+) -> None:
+    """Formerly-stale keys read 0 and the window totals the corrected data.
+
+    A stale key is a row stored before the corrected import, at/after its
+    cutoff, that the corrected batch has no value for. Carrying its old
+    state forward also keeps the chain monotone, so a steps-only check
+    cannot tell it from a zero fill — this one can: the carried state is
+    the old-convention value counted a second time.
+    """
+    cutoff = min(new_hours)
+    after = {r["start"]: r["state"] for r in after_rows}
+    stale = [
+        r["start"]
+        for r in before_rows
+        if r["start"] >= cutoff and r["start"] not in new_hours
+    ]
+    assert stale, "setup: the convention change must leave stale keys"
+    for ts in stale:
+        assert after[ts] == pytest.approx(0.0), (
+            f"stale key {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
+            f"still carries {after[ts]}"
+        )
+    # Skip the cutoff bucket: on a half-hour zone it straddles the overlap
+    # day and keeps the prior day's half (PR1 straddle trim).
+    window = sum(st for ts, st in after.items() if ts > cutoff)
+    assert window == pytest.approx(sum(v for h, v in new_hours.items() if h > cutoff))
 
 
 async def test_300_stale_key_fill_sa_consumption_zero_steps(
@@ -976,10 +1030,13 @@ async def test_300_stale_key_fill_sa_consumption_zero_steps(
     Step 1: import 12 days at old convention (v0.4.x baseline).
     Step 2: import last 5 days (trailing rewindow + overlap day) at new
             convention with reading_days set (beta.3 first rewindow).
-    Assert: ZERO downward steps in the consumption series.
+    Assert: ZERO downward steps in the consumption series, every formerly
+    stale key reads 0 kWh, and the window totals the corrected data.
 
     Mutation: fill disabled (tz_is_contract=False) → 5 downward steps appear
-    at the zero-block boundary hours; fill on → none.
+    at the zero-block boundary hours; fill on → none. Mutation: stale keys
+    carried forward instead of zeroed (zero_ok empty) → monotone, but each
+    stale key still holds its old kWh (double-counted) → RED.
     """
     from zoneinfo import ZoneInfo
 
@@ -992,6 +1049,7 @@ async def test_300_stale_key_fill_sa_consumption_zero_steps(
     old_intervals = [s for d in days for s in _300_day_slots(d, tz, "old")]
     await coord._import_intervals(old_intervals)
     await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
 
     # Step 2: beta.3/beta.4 first rewindow — trailing 5 days at correct convention.
     # Adelaide (half-hour zone) needs an overlap day, so rewindow = days[-5:].
@@ -1003,6 +1061,7 @@ async def test_300_stale_key_fill_sa_consumption_zero_steps(
     rows = await _read_series(hass, stat_id)
     steps = _300_steps(rows)
     assert steps == [], f"downward steps after SA rewindow: {steps}"
+    _300_assert_realigned(before_rows, rows, _300_hour_totals(new_intervals))
 
 
 async def test_300_stale_key_fill_qld_dst_consumption_zero_steps(
@@ -1028,6 +1087,7 @@ async def test_300_stale_key_fill_qld_dst_consumption_zero_steps(
     old_intervals = [s for d in days for s in _300_day_slots(d, tz, "old")]
     await coord._import_intervals(old_intervals)
     await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
 
     # Brisbane whole-hour zone: no overlap day needed.
     rewindow = days[-4:]
@@ -1038,46 +1098,46 @@ async def test_300_stale_key_fill_qld_dst_consumption_zero_steps(
     rows = await _read_series(hass, stat_id)
     steps = _300_steps(rows)
     assert steps == [], f"downward steps after QLD rewindow: {steps}"
+    _300_assert_realigned(before_rows, rows, _300_hour_totals(new_intervals))
 
 
 async def test_300_stale_key_fill_generation_nighttime_zero_steps(
     recorder_mock, hass: HomeAssistant
 ) -> None:
-    """#300 generation variant — SA solar home, nighttime zero-on-zero.
+    """#300 generation variant — QLD solar home, night-time zero-on-zero.
 
-    Night slots (i < 14, i > 38) have zero export; the convention change
-    moves daytime slots 30 min later in UTC, leaving old stale keys at the
-    pre-dawn and dusk hours.  The fill must write 0.0 at those keys so the
-    generation and credit series stay monotone.
+    Export runs local 07:00-19:30 (i=14..38); every night slot is
+    zero-on-zero and dropped by the parser. The old convention put each
+    slot 1 h early (Brisbane UTC+10 vs Sydney AEDT UTC+11), so the old
+    import wrote export at the local 06:00 key — a NIGHT hour on the
+    corrected clock. The corrected batch has no value there, so that old
+    row is a stale key on every rewindow day after the first.
+
+    Assert, for generation AND credit: no downward steps, every stale
+    night key reads 0, and the window totals the corrected data.
+
+    Mutation: fill disabled → the stale 06:00 rows keep their old export
+    (counted twice) → RED. A steps-only check would stay green here: with
+    no chain offset at midnight, a stale row's old sum lands between its
+    new neighbours, so the direct state check is what proves the fill.
     """
     from zoneinfo import ZoneInfo
 
-    tz = ZoneInfo("Australia/Adelaide")
+    tz = ZoneInfo("Australia/Brisbane")
     coord = _300_coord(hass, tz)
     stat_id_gen, stat_id_credit = coord._generation_stat_ids()
 
-    def gen_day_slots(d: date, conv: str) -> list[IntervalReading]:
-        """Export only during daylight hours (i=14..38 inclusive)."""
-        out = []
-        for i in range(48):
-            if i < 14 or i > 38:
-                continue
-            dt = _300_slot_dt(d, i, tz, conv)
-            out.append(
-                IntervalReading(
-                    dt=dt, kwh=0.2 + 0.005 * i, cost_aud=0.05, rate_type="normal"
-                )
-            )
-        return out
-
     days = [date(2026, 10, 10) + timedelta(days=n) for n in range(12)]
 
-    old_intervals = [s for d in days for s in gen_day_slots(d, "old")]
+    old_intervals = [s for d in days for s in _300_gen_day_slots(d, tz, "old")]
     await coord._import_generation(old_intervals)
     await async_wait_recording_done(hass)
+    before = {
+        sid: await _read_series(hass, sid) for sid in (stat_id_gen, stat_id_credit)
+    }
 
-    rewindow = days[-5:]
-    new_intervals = [s for d in rewindow for s in gen_day_slots(d, "new")]
+    rewindow = days[-4:]
+    new_intervals = [s for d in rewindow for s in _300_gen_day_slots(d, tz, "new")]
     await coord._import_generation(
         new_intervals,
         fetched_days=rewindow,
@@ -1085,84 +1145,74 @@ async def test_300_stale_key_fill_generation_nighttime_zero_steps(
     )
     await async_wait_recording_done(hass)
 
-    for sid in (stat_id_gen, stat_id_credit):
+    for sid, credit in ((stat_id_gen, False), (stat_id_credit, True)):
         rows = await _read_series(hass, sid)
         steps = _300_steps(rows)
         assert steps == [], (
-            f"{sid}: downward steps after SA generation rewindow: {steps}"
+            f"{sid}: downward steps after QLD generation rewindow: {steps}"
+        )
+        _300_assert_realigned(
+            before[sid], rows, _300_hour_totals(new_intervals, credit=credit)
         )
 
 
-async def test_300_per_day_gate_empty_middle_day_stored_rows_byte_identical(
+async def test_300_per_day_gate_generation_error_day_stored_rows_byte_identical(
     recorder_mock, hass: HomeAssistant
 ) -> None:
-    """Per-day gate (critic MAJOR 2): a rewindow where one middle day returns
-    NO readings must leave that day's stored rows byte-identical — not zeroed.
+    """Per-day gate on the generation path: a rewindow where one middle day
+    returns NO feedIn readings (AGL per-day error) leaves that day's stored
+    generation and credit rows byte-identical — carried forward, not zeroed
+    — and both chains re-chain monotonically.
 
     Scenario: 10 BNE days stored; rewindow days[3:] where days[7] errors
-    (no readings, not in reading_days).  The fill must carry forward
-    days[7]'s stored states so the chain re-chains monotonically without
-    erasing any energy.
+    (not fetched, not in reading_days). The consumption-side twin is
+    test_300_carry_forward_mid_rewindow_error_preserves_day.
 
-    Mutation: gate on timestamp date alone (ignoring reading_days) — a
-    neighbour's trailing-slack row dated days[7] opens the gate → days[7]'s
-    stored keys are zeroed → permanent kWh loss.
+    Mutation: a stale key on a non-authoritative day emitted as 0.0 instead
+    of its stored state (or the per-day gate removed) → days[7]'s export is
+    zeroed → RED.
     """
     from zoneinfo import ZoneInfo
 
     tz = ZoneInfo("Australia/Brisbane")
     coord = _300_coord(hass, tz)
-    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    ids = coord._generation_stat_ids()
     days = [date(2026, 10, 10) + timedelta(days=n) for n in range(10)]
 
-    def full_day(d: date) -> list[IntervalReading]:
-        return [
-            IntervalReading(
-                dt=_300_slot_dt(d, i, tz, "new"),
-                kwh=0.3,
-                cost_aud=0.09,
-                rate_type="normal",
-            )
-            for i in range(48)
-        ]
-
-    # Seed: all 10 days present.
-    await coord._import_intervals(
-        [s for d in days for s in full_day(d)],
+    await coord._import_generation(
+        [s for d in days for s in _300_gen_day_slots(d, tz, "new")],
+        fetched_days=days,
         reading_days=frozenset(days),
     )
     await async_wait_recording_done(hass)
-    before_rows = await _read_series(hass, stat_id)
-    before_states = {r["start"]: r["state"] for r in before_rows}
+    before = {sid: await _read_series(hass, sid) for sid in ids}
 
-    # Rewindow: days[3:], but days[7] returns nothing (AGL error).
     error_day = days[7]
     rewindow_ok = [d for d in days[3:] if d != error_day]
-    batch = [s for d in rewindow_ok for s in full_day(d)]
-    await coord._import_intervals(batch, reading_days=frozenset(rewindow_ok))
+    await coord._import_generation(
+        [s for d in rewindow_ok for s in _300_gen_day_slots(d, tz, "new")],
+        fetched_days=rewindow_ok,
+        reading_days=frozenset(rewindow_ok),
+    )
     await async_wait_recording_done(hass)
-    after_rows = await _read_series(hass, stat_id)
-    after_states = {r["start"]: r["state"] for r in after_rows}
 
-    # No downward steps anywhere.
-    assert _300_steps(after_rows) == []
-
-    # days[7]'s stored states are byte-identical.
     d7_lo = datetime(
         error_day.year, error_day.month, error_day.day, tzinfo=tz
-    ).astimezone(UTC)
-    d8_lo = datetime(days[8].year, days[8].month, days[8].day, tzinfo=tz).astimezone(
-        UTC
-    )
-    d7_keys = [
-        ts for ts in before_states if d7_lo.timestamp() <= ts < d8_lo.timestamp()
-    ]
-    assert d7_keys, "test setup: days[7] must have stored rows"
-    for ts in d7_keys:
-        assert after_states.get(ts) == before_states[ts], (
-            f"days[7] stored state changed at "
-            f"{datetime.fromtimestamp(ts, tz=UTC).isoformat()}"
-        )
+    ).timestamp()
+    d8_lo = d7_lo + 86400  # Brisbane has no DST
+    for sid in ids:
+        after_rows = await _read_series(hass, sid)
+        assert _300_steps(after_rows) == [], sid
+        after_states = {r["start"]: r["state"] for r in after_rows}
+        d7 = {
+            r["start"]: r["state"] for r in before[sid] if d7_lo <= r["start"] < d8_lo
+        }
+        assert d7, f"{sid}: test setup — days[7] must have stored rows"
+        for ts, state in d7.items():
+            assert after_states.get(ts) == state, (
+                f"{sid}: days[7] stored state changed at "
+                f"{datetime.fromtimestamp(ts, tz=UTC).isoformat()}"
+            )
 
 
 async def test_300_all_empty_batch_writes_nothing(
@@ -1247,12 +1297,26 @@ async def test_300_partial_day_only_authoritative_days_keys_zero_filled(
     # No downward steps.
     assert _300_steps(after_rows) == []
 
+    # days[1]'s stale old-convention keys (at/after the cutoff, inside its
+    # local day, with no new-convention value) must be zero-filled.
+    d1_hours = _300_hour_totals(d1_new)
+    d1_lo = datetime(days[1].year, days[1].month, days[1].day, tzinfo=tz).timestamp()
+    d2_lo = d1_lo + 86400  # Brisbane has no DST
+    d1_stale = [
+        ts
+        for ts in before_states
+        if max(d1_lo, min(d1_hours)) <= ts < d2_lo and ts not in d1_hours
+    ]
+    assert d1_stale, "days[1] must have stale old-convention keys"
+    for ts in d1_stale:
+        assert after_states[ts] == pytest.approx(0.0), (
+            f"days[1] stale key {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
+            f"still carries {after_states[ts]} kWh"
+        )
+
     # days[2]'s stale old-convention keys (above the cutoff) must be carried
     # forward — days[2] is NOT in reading_days.
-    d2_lo = datetime(days[2].year, days[2].month, days[2].day, tzinfo=tz).astimezone(
-        UTC
-    )
-    d2_keys = [ts for ts in before_states if ts >= d2_lo.timestamp()]
+    d2_keys = [ts for ts in before_states if ts >= d2_lo]
     assert d2_keys, "days[2] must have stored rows above the cutoff"
     for ts in d2_keys:
         assert after_states.get(ts) == before_states[ts], (
@@ -1265,9 +1329,13 @@ async def test_300_steady_state_no_extra_rows(
     recorder_mock, hass: HomeAssistant
 ) -> None:
     """Steady state: re-importing the same corrected data twice produces
-    identical rows — no extra rows, sums unchanged.
+    identical rows — no extra rows, sums unchanged — and neither import
+    writes a key the batch has no reading for (brief rule 7).
 
-    Mutation: fill creates keys not already stored → extra rows appear.
+    Mutation: fill creates keys not already stored (e.g. zero-fills every
+    hour between the batch's first and last key) → the zero-import hours
+    appear as rows → RED. Comparing the two imports alone would not catch
+    it: the same invented rows appear both times.
     Mutation: fill re-emits existing keys with wrong values → sums change.
     """
     from zoneinfo import ZoneInfo
@@ -1276,7 +1344,8 @@ async def test_300_steady_state_no_extra_rows(
     coord = _300_coord(hass, tz)
     stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
     days = [date(2026, 10, 10) + timedelta(days=n) for n in range(5)]
-    # Drop the zero-import block to produce a non-trivial profile.
+    # _300_day_slots already omits the zero-import block (local 10:00-15:00),
+    # so those hours must stay absent from storage.
     batch = [s for d in days for s in _300_day_slots(d, tz, "new")]
 
     await coord._import_intervals(batch, reading_days=frozenset(days))
@@ -1291,12 +1360,21 @@ async def test_300_steady_state_no_extra_rows(
         (r["start"], r["state"], r["sum"]) for r in rows2
     ], "re-importing the same data must not change stored rows"
 
+    batch_keys = set(_300_hour_totals(batch))
+    for rows in (rows1, rows2):
+        starts = {r["start"] for r in rows}
+        # Fill never creates a key: the zero-import hours stay absent.
+        assert starts <= batch_keys, sorted(starts - batch_keys)
+        # Only the first bucket — the half-hour zone's straddle — is trimmed.
+        assert batch_keys - starts == {min(batch_keys)}
+
 
 async def test_300_band_fill_no_new_series_created(
     recorder_mock, hass: HomeAssistant
 ) -> None:
-    """Band series fill: a ToU band with stored rows but absent from this
-    batch's readings on an authoritative day → its stale keys are zero-filled.
+    """Band series fill: a ToU band with stored rows but only PARTLY present
+    in this batch on an authoritative day → its stale keys are zero-filled.
+    (The wholly-absent case is test_300_band_wholly_absent_still_filled.)
 
     A band with NO stored rows AND no batch data is NEVER created (the
     existing 'band not seen' guard must not be bypassed for empty bands).
@@ -1359,6 +1437,57 @@ async def test_300_band_fill_no_new_series_created(
     )
 
 
+async def test_300_band_wholly_absent_still_filled(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """A ToU band with stored rows but NO readings at all in this batch, on
+    a day that has other readings, is still emitted for its fill keys
+    (brief rule 3): its stale rows read 0, its chain stays monotone, and
+    the per-tariff partition still sums to the aggregate.
+
+    Mutation: restore the old "band not seen in this batch" skip in
+    _import_intervals → peak is never emitted, keeps its 3.0 kWh, and the
+    partition double-counts it against the aggregate → RED.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    d = date(2026, 10, 10)
+    bands = frozenset({"peak", "offpeak"})
+
+    def _batch(n_peak: int) -> list[IntervalReading]:
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=0.3,
+                cost_aud=0.09,
+                rate_type="peak" if i < n_peak else "offpeak",
+            )
+            for i in range(48)
+        ]
+
+    await coord._import_intervals(_batch(10), reading_days={d}, known_bands=bands)
+    await async_wait_recording_done(hass)
+    # Same day re-imported with every slot offpeak: no peak reading at all.
+    await coord._import_intervals(_batch(0), reading_days={d}, known_bands=bands)
+    await async_wait_recording_done(hass)
+
+    peak_cons, peak_cost = coord._tariff_stat_ids("peak")
+    offpeak_cons, _ = coord._tariff_stat_ids("offpeak")
+    agg = await _read_series(hass, f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}")
+    offpeak_rows = await _read_series(hass, offpeak_cons)
+    for sid in (peak_cons, peak_cost):
+        rows = await _read_series(hass, sid)
+        assert len(rows) == 5, f"{sid}: the fill rewrites keys, never drops them"
+        assert _300_steps(rows) == [], sid
+        assert all(r["state"] == 0.0 for r in rows), f"{sid}: stale keys not zeroed"
+        assert rows[-1]["sum"] == pytest.approx(0.0), sid
+    peak_rows = await _read_series(hass, peak_cons)
+    total = max(r["sum"] for r in agg)
+    assert peak_rows[-1]["sum"] + offpeak_rows[-1]["sum"] == pytest.approx(total)
+
+
 async def test_300_downgrade_re_upgrade_zero_steps(
     recorder_mock, hass: HomeAssistant
 ) -> None:
@@ -1386,6 +1515,7 @@ async def test_300_downgrade_re_upgrade_zero_steps(
     old_win = [s for d in rewindow for s in _300_day_slots(d, tz, "old")]
     await coord._import_intervals(old_win)
     await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
 
     # Step 3 (re-upgrade): re-import the same trailing window at new convention
     # with fill active and provenance set.
@@ -1398,56 +1528,71 @@ async def test_300_downgrade_re_upgrade_zero_steps(
     assert _300_steps(rows) == [], (
         "re-upgrade rewindow must produce zero downward steps"
     )
+    _300_assert_realigned(before_rows, rows, _300_hour_totals(new_win))
 
 
 async def test_300_exactly_one_recorder_read_per_nonempty_import(
     recorder_mock, hass: HomeAssistant
 ) -> None:
-    """_stored_hourly_states is called exactly once per non-empty import when
-    fill is active, and zero times for an empty batch (early-return guard).
+    """Read budget (brief rule 1): the fill costs exactly ONE recorder read
+    per non-empty import, batched across the whole series family — the
+    aggregate plus every ToU band on _import_intervals, generation plus
+    credit on _import_generation — and none for an empty batch.
 
-    With tz_is_contract not `is True`, the real method short-circuits and
-    returns {} without any executor job.
+    Counts real ``statistics_during_period`` calls for the fill's
+    ``{"state"}`` read (baseline reads ask for ``sum``), with the real
+    _stored_hourly_states in place, so a per-series executor loop inside
+    the helper is caught, not just a second call to it.
     """
+    from unittest.mock import patch
     from zoneinfo import ZoneInfo
+
+    from homeassistant.components.recorder import statistics as rec_stats
 
     tz = ZoneInfo("Australia/Brisbane")
     coord = _300_coord(hass, tz)
     day = date(2026, 10, 10)
 
-    # Stub _stored_hourly_states; the import still runs normally (fill finds
-    # no stored rows and does nothing — correct for an empty recorder).
-    coord._stored_hourly_states = AsyncMock(return_value={})
+    real_sdp = rec_stats.statistics_during_period
+    state_reads: list[set[str]] = []
 
-    # Empty batch → early return before the read.
-    await coord._import_intervals([])
-    assert coord._stored_hourly_states.await_count == 0, (
-        "empty batch must not call _stored_hourly_states"
-    )
+    def _spy(hass_, start, end, ids, period, units, types):
+        if types == {"state"}:
+            state_reads.append(set(ids))
+        return real_sdp(hass_, start, end, ids, period, units, types)
 
-    # Non-empty batch → exactly one call.
-    batch = [
+    tou_batch = [
         IntervalReading(
             dt=_300_slot_dt(day, i, tz, "new"),
             kwh=0.3,
             cost_aud=0.09,
-            rate_type="normal",
+            rate_type=("peak", "offpeak", "normal")[i % 3],
         )
         for i in range(48)
     ]
-    await coord._import_intervals(batch, reading_days={day})
-    assert coord._stored_hourly_states.await_count == 1, (
-        "one non-empty import must call _stored_hourly_states exactly once"
-    )
+    gen_batch = _300_gen_day_slots(day, tz, "new")
 
-    # With tz_is_contract not `is True`, the real method returns {} immediately.
-    coord.client.tz_is_contract = False
-    del coord._stored_hourly_states  # restore real method
-    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
-    result = await coord._stored_hourly_states(
-        {stat_id}, datetime(2026, 1, 1, tzinfo=UTC)
-    )
-    assert result == {}, "fill-inactive path must return {} without any DB I/O"
+    with patch.object(rec_stats, "statistics_during_period", _spy):
+        # Empty batch → early return before the read.
+        await coord._import_intervals([])
+        assert state_reads == [], "empty batch must not read stored rows"
+
+        await coord._import_intervals(tou_batch, reading_days={day})
+        assert len(state_reads) == 1, "one ToU import must cost one fill read"
+        band_ids = {
+            sid for t in ("peak", "offpeak") for sid in coord._tariff_stat_ids(t)
+        }
+        assert band_ids < state_reads[0], "band series must share the one read"
+
+        state_reads.clear()
+        await coord._import_generation(gen_batch, reading_days={day})
+        assert state_reads == [set(coord._generation_stat_ids())]
+
+        # Fill inactive (HA-zone fallback) → no fill read at all.
+        state_reads.clear()
+        coord.client.tz_is_contract = False
+        await coord._import_intervals(tou_batch, reading_days={day})
+        assert state_reads == [], "fill-inactive path must not read stored rows"
 
 
 async def test_300_carry_forward_mid_rewindow_error_preserves_day(
@@ -1521,14 +1666,20 @@ async def test_300_carry_forward_mid_rewindow_error_preserves_day(
 async def test_300_provenance_gate_slack_row_does_not_open_skipped_day(
     recorder_mock, hass: HomeAssistant
 ) -> None:
-    """Critic MAJOR 2 (provenance gate): day D's response may carry a
-    trailing-slack row dated D+1.  If D+1 was SKIPPED (no fetch, not in
-    reading_days), that single slack row must NOT open the fill gate for
-    D+1 — D+1's stored rows must survive byte-identical.
+    """Critic MAJOR 2 (provenance gate): day D's response may carry
+    trailing-slack rows dated D+1. If D+1 was SKIPPED (no fetch, not in
+    reading_days), those slack rows must NOT open the fill gate for D+1.
 
-    Mutation: gate on timestamp date alone (ignoring reading_days) → the
-    slack row dated D+1 opens the gate → D+1's stored keys are zeroed →
-    permanent kWh loss.
+    Built so provenance is the ONLY protection: D+1 (days[4]) is stored as
+    1.0 kWh in its first three hours and 2.0 kWh in its tail hour, and the
+    batch carries stored-equal slack rows for the first three hours. The
+    tail hour is exempt from the conservation guard's owed kWh (it may
+    legitimately hold the next day's opening slots), so the guard sees
+    batch 6.0 >= owed 6.0 and passes D+1 — only the reading_days
+    intersection keeps the tail key from being zeroed.
+
+    Mutation: gate on timestamp date alone (ignore reading_days), with the
+    conservation guard intact → the tail key is zeroed → 2.0 kWh lost → RED.
     """
     from zoneinfo import ZoneInfo
 
@@ -1536,37 +1687,33 @@ async def test_300_provenance_gate_slack_row_does_not_open_skipped_day(
     coord = _300_coord(hass, tz)
     stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
     days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    day4 = days[4]
+
+    def slot(d: date, i: int, kwh: float) -> IntervalReading:
+        return IntervalReading(
+            dt=_300_slot_dt(d, i, tz, "new"),
+            kwh=kwh,
+            cost_aud=round(kwh * 0.3, 6),
+            rate_type="normal",
+        )
 
     def full_day(d: date) -> list[IntervalReading]:
-        return [
-            IntervalReading(
-                dt=_300_slot_dt(d, i, tz, "new"),
-                kwh=0.3,
-                cost_aud=0.09,
-                rate_type="normal",
-            )
-            for i in range(48)
-        ]
+        return [slot(d, i, 0.3) for i in range(48)]
 
-    # Seed all 6 days.
-    await coord._import_intervals(
-        [s for d in days for s in full_day(d)],
-        reading_days=frozenset(days),
-    )
+    early = [slot(day4, i, 1.0) for i in range(6)]
+    seed = [s for d in days if d != day4 for s in full_day(d)]
+    seed += [*early, slot(day4, 46, 1.0), slot(day4, 47, 1.0)]
+    await coord._import_intervals(seed, reading_days=frozenset(days))
     await async_wait_recording_done(hass)
-    before_rows = await _read_series(hass, stat_id)
-    before_states = {r["start"]: r["state"] for r in before_rows}
 
-    # Rewindow: days[1:] skipping days[4]; batch includes ONE slack row
-    # dated days[4] 00:00 local (D's response overflowed into D+1 window).
-    day4 = days[4]
+    tail_ts = _300_slot_dt(day4, 46, tz, "new").timestamp()
+    before_states = {r["start"]: r["state"] for r in await _read_series(hass, stat_id)}
+    assert before_states[tail_ts] == pytest.approx(2.0), "test setup"
+
+    # Rewindow: days[1:] skipping days[4]; days[3]'s response overflowed
+    # stored-equal slack rows into days[4]'s first three hours.
     rewindow_ok = [d for d in days[1:] if d != day4]
-    batch = [s for d in rewindow_ok for s in full_day(d)]
-    slack_ts = datetime(day4.year, day4.month, day4.day, tzinfo=tz).astimezone(UTC)
-    batch.append(
-        IntervalReading(dt=slack_ts, kwh=0.3, cost_aud=0.09, rate_type="normal")
-    )
-
+    batch = [s for d in rewindow_ok for s in full_day(d)] + early
     await coord._import_intervals(
         batch,
         reading_days=frozenset(rewindow_ok),  # D4 NOT in reading_days
@@ -1575,29 +1722,11 @@ async def test_300_provenance_gate_slack_row_does_not_open_skipped_day(
     after_rows = await _read_series(hass, stat_id)
     after_states = {r["start"]: r["state"] for r in after_rows}
 
-    # Zero downward steps.
     assert _300_steps(after_rows) == []
-
-    # days[4]'s stored rows (except the slack key itself, which the batch DID
-    # write) must be byte-identical.
-    slack_bucket_ts = slack_ts.replace(minute=0).timestamp()
-    d4_lo = slack_ts.timestamp()
-    d5_lo = (
-        datetime(days[5].year, days[5].month, days[5].day, tzinfo=tz)
-        .astimezone(UTC)
-        .timestamp()
+    assert after_states[tail_ts] == pytest.approx(2.0), (
+        f"days[4] tail hour zeroed: {after_states[tail_ts]} "
+        "despite D4 not being in reading_days"
     )
-    d4_other_keys = [
-        ts
-        for ts in before_states
-        if d4_lo <= ts < d5_lo and abs(ts - slack_bucket_ts) > 1
-    ]
-    assert d4_other_keys, "days[4] must have stored rows beyond the slack bucket"
-    for ts in d4_other_keys:
-        assert after_states.get(ts) == before_states[ts], (
-            f"days[4] state at {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
-            f"was changed despite D4 not being in reading_days"
-        )
 
 
 async def test_300_sa_straddle_key_both_days_required(
@@ -1768,9 +1897,13 @@ async def test_300_conservation_guard_preserves_partial_day(
         )
 
     # Exactly one WARNING mentioning the energy shortfall.
-    assert "less energy than is stored" in caplog.text, (
-        "conservation guard must emit a WARNING"
-    )
+    hits = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "less energy than is stored" in r.getMessage()
+    ]
+    assert len(hits) == 1, "conservation guard must emit exactly one WARNING"
 
 
 async def test_300_fill_inactive_on_ha_zone_fallback(
