@@ -356,6 +356,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   present and falls back to `voluptuous` on HA < 2026.10 (the runtime floor
   stays 2026.7.0; #294 tracks dropping the fallback). No behaviour change.
 
+### Fixed
+
+- **The "AGL certificate changed" warning no longer repeats on every
+  connection** (#280). A single AGL key rotation logged the WARNING, and
+  re-created the notice, each time the connector opened a TLS connection —
+  every poll, and more under retries — until the user re-pinned. Each
+  distinct mismatching fingerprint is now reported once per entry setup; a
+  different certificate is still reported, and a reload or restart resets
+  that memory. The notice itself stays up until re-pinned. If you
+  dismiss it without re-pinning, it is not re-raised for that same
+  certificate until the entry is reloaded or Home Assistant restarts
+  (previously it came back on the next connection); a different
+  certificate still raises a fresh warning and notice.
+- The Reconfigure refusal ("does not include the contract this entry
+  monitors") now says that if Home Assistant had asked you to
+  re-authenticate, reloading the entry brings that prompt back — an open
+  Reconfigure flow suppresses it (#280).
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from

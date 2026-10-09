@@ -40,7 +40,7 @@
       "reauth_successful": "Reauthentication successful.",
       "reconfigure_successful": "AGL sign-in refreshed and certificate fingerprints re-pinned. Haggle is reloading.",
       "reconfigure_pin_incomplete": "AGL sign-in refreshed, but the certificate could not be captured for one or both AGL hosts. The stored fingerprint for that host was kept and its warning remains. Haggle is reloading -- try Reconfigure again to finish re-pinning.",
-      "contract_not_found": "The AGL login you used does not include the contract this entry monitors (or that contract now belongs to a different AGL account). Nothing was changed. Log in with the AGL login that owns it; if the contract has closed or moved, remove this entry and add the integration again -- your existing statistics are kept.",
+      "contract_not_found": "The AGL login you used does not include the contract this entry monitors (or that contract now belongs to a different AGL account). Nothing was changed. Log in with the AGL login that owns it; if the contract has closed or moved, remove this entry and add the integration again -- your existing statistics are kept. If Home Assistant had asked you to re-authenticate, reload the entry to see that prompt again.",
       "entry_not_repairable": "This entry was created without a contract number and cannot be repaired in place. Remove it and add the integration again -- your existing statistics are kept."
     }
   },
