@@ -99,7 +99,7 @@ tests/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards, half-hour-zone overlap/trim + contract-local midnight sites (#292)
-├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST convention re-key, provenance gate, straddle both-days, conservation guard, read budget)
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST/generation convention re-key with stale keys asserted 0, per-day gate incl. generation error day, wholly-absent ToU band, provenance gate, straddle both-days, conservation guard, read budget on the real recorder read)
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 ├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
 ├── test_provenance_hook.py          # executes scripts/check_provenance_trailer.sh against sample messages (any-vendor Co-Authored-By / AI-Assisted: none / merge skip)
@@ -564,8 +564,13 @@ True` (identity check): under the HA-timezone fallback local dates are
 untrustworthy, so there is no read and no fill — imports behave exactly as
 before #300. The rule is convention-agnostic: the beta.3 trailing week,
 any future re-key, and a downgrade followed by a re-upgrade all self-heal
-on the next poll. Pinned on the real recorder by the `test_300_*` tests in
-`tests/test_recorder_statistics.py`.
+within the next poll's own window (keys at/after its cutoff). Stale rows
+OLDER than that window are out of reach of every later import's fill —
+beta.3 rows that aged out of the rewindow before the first beta.4 poll, or
+rows a downgrade left before the re-upgrade's cutoff — and keep their step
+until the one-off 30-day realign (PR2b). Acceptance criterion for PR2b:
+its realign window must cover those rows. Pinned on the real recorder by
+the `test_300_*` tests in `tests/test_recorder_statistics.py`.
 
 ### Previous Bill Period
 

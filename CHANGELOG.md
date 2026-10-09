@@ -492,7 +492,9 @@ step the cumulative sum down (#300); fixed under [Unreleased].
 any install outside the project (the release was converted back to a draft).
 The next beta (v0.5.0-beta.4) carries everything listed under
 [0.5.0-beta.3] above plus the fix below. Anyone who did install beta.3
-should upgrade: the first poll on beta.4 repairs what beta.3 wrote.
+should upgrade: each beta.4 poll repairs the beta.3 rows inside its own
+trailing week; any older ones (if beta.3 ran for more than a day before
+the upgrade) are fixed by the coming 30-day re-alignment.
 
 ### Fixed
 
@@ -510,8 +512,9 @@ should upgrade: the first poll on beta.4 repairs what beta.3 wrote.
   real recorder: 5 × 0.38 kWh on a South Australian contract and
   4 × 0.78 kWh on a Queensland contract during daylight saving; the solar
   generation series can do the same at night. Every import now also
-  rewrites the stored hourly rows inside its own window that the batch
-  has no value for:
+  rewrites every stored hourly row from the start of its window onward
+  (including any after the last hour it fetched) that the batch has no
+  value for:
   - **Zero** when the batch is authoritative for every contract-local day
     the hour belongs to. A day is authoritative when its own fetch
     returned readings and the batch holds at least the day's stored kWh
@@ -528,12 +531,15 @@ should upgrade: the first poll on beta.4 repairs what beta.3 wrote.
     service address. Under the Home Assistant-timezone fallback, imports
     behave exactly as before. It costs one extra recorder read per import
     and no extra AGL requests.
-  - On beta.3 installs, the first beta.4 poll repairs the trailing week.
-    Any later change that moves slots between hours (including a
-    downgrade followed by a re-upgrade) repairs itself the same way.
-    History older than the trailing week keeps the #292 shift until the
-    follow-up 30-day re-alignment release, as described under
-    [0.5.0-beta.3].
+  - On beta.3 installs, each beta.4 poll repairs the trailing week it
+    re-fetches. Any later change that moves slots between hours
+    (including a downgrade followed by a re-upgrade) repairs itself the
+    same way, for the hours inside the next poll's week. Rows that have
+    already aged out of that week keep their step until the follow-up
+    30-day re-alignment release: beta.3 rows when the upgrade came days
+    after beta.3's last poll, and rows a downgrade left outside the
+    re-upgrade's week. History older than the trailing week also keeps
+    the #292 shift until that release, as described under [0.5.0-beta.3].
 
 ### Targets for next sprint
 

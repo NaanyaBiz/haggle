@@ -497,9 +497,12 @@ regression test in `tests/test_coordinator_statistics.py`):
   batch did not write (both slots zero-on-zero-filtered) survived with
   their old sums (#300). Since beta.4 the stale-key fill re-chains them on
   every import (one extra recorder read per import, no extra AGL
-  requests), which also repairs a beta.3 install's trailing week on its
-  first beta.4 poll and makes any later re-key or downgrade/re-upgrade
-  self-heal. Rows older than the trailing week stay shifted (SA
+  requests). That repairs a beta.3 install's rows inside the trailing
+  week its first beta.4 poll re-fetches, and makes any later re-key or
+  downgrade/re-upgrade self-heal within the next poll's own window (keys
+  at/after the batch cutoff); stale rows that have already aged out of
+  that window keep their step until the 30-day re-alignment below, whose
+  window must cover them. Rows older than the trailing week stay shifted (SA
   30 min; QLD 1 h for October–April spans) until the follow-up one-off
   30-day in-place re-alignment lands. Deleting `haggle:*` statistics is
   never the remedy — rows older than ~30 days cannot be re-fetched.

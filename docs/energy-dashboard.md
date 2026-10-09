@@ -100,8 +100,9 @@ withdrawn: on its first poll it could leave a few old rows behind, drawn
 as a **negative bar followed by an inflated one**, typically around
 midday on a solar home or overnight on the solar export series —
 [#300](https://github.com/NaanyaBiz/haggle/issues/300). If you saw that,
-upgrade to beta.4 or later; its first poll repairs the trailing week
-automatically. Nothing to delete.)
+upgrade to beta.4 or later; its first poll repairs the trailing week it
+re-fetches automatically, and the coming 30-day re-alignment covers
+anything older. Nothing to delete.)
 What self-heals: the trailing 7 days are rewritten correctly on the first
 poll after upgrading (rows are overwritten in place, with no doubled bars
 or negative bars, and one small upward step where the new rows meet the
