@@ -346,6 +346,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Previously it showed the fresh-install "Log in to AGL" text with no
   context. An exchange error during reauth now re-shows that same form.
 
+- **Dev-dependency bump, 2026-10-09 rollup** (`homeassistant` floor 2026.9.4,
+  `uv lock` resolved **2026.10.0**; `pytest-homeassistant-custom-component`
+  floor 0.13.368 → resolved 0.13.371; `ruff` 0.16.10; `mypy` 2.4.0; and
+  transitively `cryptography` 48.0.1 → 50.0.1, which closes the three open
+  `cryptography` Dependabot alerts, plus `aiohttp` 3.14.4): rolls Dependabot
+  #291. HA 2026.10 replaced `voluptuous` with `probatio` in the
+  data-entry-flow API, so `config_flow.py` now imports `probatio` when
+  present and falls back to `voluptuous` on HA < 2026.10 (the runtime floor
+  stays 2026.7.0; #294 tracks dropping the fallback). No behaviour change.
+
 ### Fixed
 
 - **The "AGL certificate changed" warning no longer repeats on every
