@@ -469,14 +469,22 @@ regression test in `tests/test_coordinator_statistics.py`):
 - **Half-hour-zone straddle guard** (#292): for SA / Broken Hill / NT
   contracts every series range fetches one extra leading day (one extra
   request per series per cycle — `3 + 8 + 8` on a solar contract, pinned
-  by `TestComposedRequestCeiling`) and the importer trims the partial
-  first hourly bucket from every series, keyed on batch content, so the
-  sliding rewindow can no longer drop the previous day's 23:30 slot. An
-  error on the overlap day is non-fatal and never counts toward the solar
-  give-up caps; its cost is that batch's own 00:00 half-slot until the next
-  cycle's overlap restores it (bounded, inside the rewindow). A fresh
-  half-hour-zone install has no overlap day at the 30-day floor and loses
-  the very first day's 00:00 slot — accepted.
+  by `TestHalfHourZoneRequestCeiling`; the whole-hour `3 + 7 + 7` contrast
+  by `TestComposedRequestCeiling.test_worst_case_disjoint_chunks_normal_cycle`)
+  and the importer trims the partial first hourly bucket from every
+  series, keyed on batch content (only when the batch's first slot IS the
+  contract-local 00:00 slot), so the sliding rewindow can no longer drop
+  the previous day's 23:30 slot. An error on the overlap day is non-fatal
+  and never counts toward the solar give-up caps; its cost is that batch's
+  own 00:00 half-slot, which the next cycle's overlap does NOT restore (an
+  overlap day's own 00:00 is always inside the trimmed bucket): nothing is
+  lost in the steady-state rewindow, where the previous cycle wrote the
+  bucket whole, and one 30-min slot is permanently missing per such error
+  during initial backfill or a big-gap chunk resume (the stored 23:30 half
+  is intact; the chain stays monotone). A fresh half-hour-zone install has
+  no overlap day at the 30-day floor and loses the very first day's 00:00
+  consumption slot — accepted; the generation series loses nothing there
+  because its 00:00 export slot is zero-on-zero-filtered.
 - **Shifted pre-fix history** (#292): the trailing `REWINDOW_DAYS` are
   rewritten in place on the first post-upgrade poll (one upward bump at the
   junction, never a downward step); rows older than that stay shifted (SA

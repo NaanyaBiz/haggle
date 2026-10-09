@@ -1,8 +1,8 @@
 """DataUpdateCoordinator for haggle.
 
-Runs two poll cycles (per AGL-API-FINDINGS.md section 3):
+Poll cycle (per AGL-API-FINDINGS.md section 3):
   - Hourly (30-min) series: daily, for yesterday. Don't poll today -- empty.
-  - Daily series: every 6 h, to pick up newly available days.
+  - The Daily endpoint is not fetched (AglClient has no Daily method).
 
 Historical data (past intervals) is pushed to HA's recorder via
 async_add_external_statistics() rather than a live state update. This
@@ -617,9 +617,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         No overlap below the retention floor: a fresh install's first chunk
         (and a heal floor at today - BACKFILL_DAYS) loses that first day's
-        00:00 slot, accepted and stated in the acceptance plan — AGL may not
-        serve the day before, and a request that cannot succeed is wasted
-        budget. Whole-hour zones are untouched: no extra request, ever.
+        00:00 CONSUMPTION slot, accepted and stated in the acceptance plan —
+        AGL may not serve the day before, and a request that cannot succeed
+        is wasted budget. The generation series loses nothing there: its
+        00:00 export slot is zero-on-zero-filtered, so the batch's first
+        slot is a later one and _straddle_trim_before leaves its bucket
+        alone. Whole-hour zones are untouched: no extra request, ever.
         """
         if rng is None:
             return None
@@ -637,18 +640,27 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """Cutoff below which this batch's hourly buckets must be dropped (A4).
 
         Derived from batch CONTENT, never from the fetch plan: the batch does
-        not own its first hourly bucket when its earliest slot sits at :30
-        past the UTC hour in a half-hour zone (the slot before it, same
-        bucket, belongs to the previous local day and is not in the batch).
-        Keying on the plan instead would re-open the loss on every path
-        where the overlap day yields nothing — per-day AGL error, a
-        zero-on-zero placeholder day, the retention floor on a big-gap
-        resume — because the batch would then start at day S with a
-        half-full boundary bucket that overwrites the stored full row.
+        not own its first hourly bucket when its earliest slot IS the
+        contract-local 00:00 slot of a half-hour zone (:30 past the UTC
+        hour; the slot before it, same bucket, is the previous local day's
+        23:30 and is not in the batch). Keying on the plan instead would
+        re-open the loss on every path where the overlap day yields nothing
+        — per-day AGL error, a zero-on-zero placeholder day, the retention
+        floor on a big-gap resume — because the batch would then start at
+        day S with a half-full boundary bucket that overwrites the stored
+        full row.
 
         Returns None (no trim) for an empty batch, a batch whose first slot
-        is on the hour, or a whole-hour zone (where :30 slots are ordinary
-        half-hours inside the day and the bucket is wholly owned).
+        is on the hour, or a :30 first slot that is NOT local midnight. That
+        last case covers a whole-hour zone (its :30 slots are ordinary
+        half-hours inside the day) AND a half-hour zone whose day-opening
+        slots were zero-on-zero and filtered by the parser — the generation
+        series every night, a consumption meter reading exactly 0 — where
+        the first slot is some later hh:00 local (also :30Z) and its
+        bucket's other half is the same local day's, so the batch owns it
+        outright. Keying on the minute alone trimmed that wholly-owned
+        bucket too, permanently on a batch whose first day was not already
+        stored (retention floor, frozen heal floor, big-gap resume).
         """
         if not intervals:
             return None
@@ -656,7 +668,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if first.minute == 0:
             return None
         local_day = first.astimezone(self._contract_tz()).date()
-        if self._local_midnight_utc(local_day).minute == 0:
+        if first != self._local_midnight_utc(local_day):
             return None
         return self._first_full_hour(first)
 

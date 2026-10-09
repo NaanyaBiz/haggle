@@ -389,10 +389,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     partial first bucket from every series — derived from what the batch
     actually contains, not from the plan, so a failed overlap fetch cannot
     re-open the loss. Zero-export marker rows start at the first full hour
-    for the same reason. Accepted residuals: a fresh half-hour-zone install
-    has no overlap day at the 30-day floor and loses the very first day's
-    00:00 slot; a transient error on the overlap day costs that batch its
-    own 00:00 half-slot until the next cycle's overlap restores it.
+    for the same reason. The trim fires only when the batch's first slot IS
+    the contract-local 00:00 slot: a batch opening on a later hh:00 local
+    slot (the day's earlier slots were zero-on-zero and filtered — every
+    generation batch) owns that bucket outright and keeps it. Accepted
+    residuals: a fresh half-hour-zone install has no overlap day at the
+    30-day floor and loses the very first day's 00:00 consumption slot (the
+    generation series loses nothing: its 00:00 export slot is always
+    filtered); a transient error on the overlap day is non-fatal, but that
+    batch's own 00:00 half-slot is NOT restored by the next cycle's overlap
+    (an overlap day's own 00:00 is always inside the trimmed first bucket).
+    In the steady-state rewindow the previous cycle already wrote that
+    bucket whole, so nothing is lost; during initial backfill or a big-gap
+    chunk resume it is one 30-min slot permanently missing per such error
+    (the stored 23:30 half is intact; the chain stays monotone).
   - The Daily endpoint is not affected: its `dateTime` is the local calendar
     date with a literal `00:00:00Z` (verified against raw captures), and it
     is not used at runtime anyway.

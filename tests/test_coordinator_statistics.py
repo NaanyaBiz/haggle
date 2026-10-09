@@ -3957,6 +3957,70 @@ class TestContractTzHelpers:
         cutoff = coord._straddle_trim_before(intervals)
         assert cutoff == datetime(2026, 5, 31, 15, 0, tzinfo=UTC)
 
+    def test_straddle_trim_before_returns_none_for_non_midnight_half_hour_slot(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Adelaide batch whose 00:00..02:30 slots were zero-on-zero (filtered
+        by the parser): first slot 03:00 ACST = 17:30Z is NOT the straddle;
+        its bucket's other half (02:30 ACST) is the same local day's, so the
+        batch owns the 17:00Z bucket outright — no trim.
+
+        Mutation: key only on `minute != 0` in a half-hour zone (the pre-fix
+        gate) → 17:30Z trims to 18:00Z and the day's first real consumption
+        bucket is dropped; permanent on a floor/heal/big-gap batch.
+        """
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        intervals = [
+            _make_interval(datetime(2026, 5, 31, 17, 30, tzinfo=UTC), kwh=0.4),
+            _make_interval(datetime(2026, 5, 31, 18, 0, tzinfo=UTC), kwh=0.5),
+        ]
+        assert coord._straddle_trim_before(intervals) is None
+
+    def test_straddle_trim_before_returns_none_for_dawn_export_slot(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Generation-shaped Adelaide batch: night slots filtered, first export
+        at 08:00 ACST = 22:30Z (an hh:00 local slot, so also :30Z). Not the
+        straddle slot → no trim. Same mutation as the test above; the
+        generation series hits it on every batch whose first export lands on
+        an hh:00 local slot (~half of all days)."""
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        intervals = [
+            _make_interval(datetime(2026, 5, 31, 22, 30, tzinfo=UTC), kwh=0.2),
+        ]
+        assert coord._straddle_trim_before(intervals) is None
+
+    def test_straddle_trim_before_fires_on_acdt_midnight_slot(
+        self, hass: HomeAssistant
+    ) -> None:
+        """The DST side of the zone: Adelaide midnight 2026-12-01 is 13:30Z
+        (ACDT), and a batch opening there IS the straddle → trim to 14:00Z.
+        Mutation: compare against a fixed ACST midnight → no trim under DST
+        and the 23:30 slot of 30 Nov leaves the chain."""
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        intervals = [
+            _make_interval(datetime(2026, 11, 30, 13, 30, tzinfo=UTC), kwh=1.0),
+            _make_interval(datetime(2026, 11, 30, 14, 0, tzinfo=UTC), kwh=1.0),
+        ]
+        assert coord._straddle_trim_before(intervals) == datetime(
+            2026, 11, 30, 14, 0, tzinfo=UTC
+        )
+
     def test_straddle_trim_before_returns_none_for_whole_hour_zone(
         self, hass: HomeAssistant
     ) -> None:
@@ -4327,11 +4391,112 @@ class TestOverlapDayAndContractMidnightSites:
             await coord._import_generation(slots, fetched_days=[date(2026, 12, 1)])
 
         gen_stats = mock_add.call_args_list[0][0][2]
-        # The 14:00Z straddle bucket is trimmed (batch starts at :30); the
-        # 15:00Z row remains and NO marker row appears anywhere.
+        # The batch's first slot is 01:00 ACDT (14:30Z), NOT local midnight
+        # (13:30Z), so nothing is trimmed: the 14:00Z bucket is wholly this
+        # day's own. Both rows are written and NO marker row appears anywhere.
         assert [r["start"] for r in gen_stats] == [
-            datetime(2026, 11, 30, 15, 0, tzinfo=UTC)
+            datetime(2026, 11, 30, 14, 0, tzinfo=UTC),
+            datetime(2026, 11, 30, 15, 0, tzinfo=UTC),
         ]
+        assert [r["sum"] for r in gen_stats] == [
+            pytest.approx(0.5),
+            pytest.approx(1.2),
+        ]
+
+    async def test_dawn_export_bucket_is_not_trimmed_in_half_hour_zone(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A generation batch's first slot is never the 00:00 slot (night
+        export is zero-on-zero-filtered). When the first export is at an
+        hh:00 local slot — 07:00 ACST = 21:30Z — its bucket is wholly this
+        day's own and must be written, not trimmed.
+
+        Mutation: key the trim on `minute != 0` in a half-hour zone (the
+        pre-fix gate) → 21:30Z trims to 22:00Z and the 0.3 kWh dawn bucket
+        is dropped — permanently on a floor/heal/big-gap batch.
+        """
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        slots = [
+            _make_interval(datetime(2026, 5, 31, 21, 30, tzinfo=UTC), kwh=0.3),
+            _make_interval(datetime(2026, 5, 31, 22, 0, tzinfo=UTC), kwh=0.5),
+            _make_interval(datetime(2026, 5, 31, 22, 30, tzinfo=UTC), kwh=0.7),
+        ]
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord, "_get_baseline_sums", new=AsyncMock(return_value=(0.0, 0.0))
+            ) as mock_base,
+        ):
+            await coord._import_generation(slots, fetched_days=[date(2026, 6, 1)])
+
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert [r["start"] for r in gen_stats] == [
+            datetime(2026, 5, 31, 21, 0, tzinfo=UTC),
+            datetime(2026, 5, 31, 22, 0, tzinfo=UTC),
+        ]
+        assert [r["sum"] for r in gen_stats] == [
+            pytest.approx(0.3),
+            pytest.approx(1.5),
+        ]
+        # Baseline cutoff is the dawn bucket itself, not the hour after it.
+        assert mock_base.await_args.args[2] == datetime(2026, 5, 31, 21, 0, tzinfo=UTC)
+
+    async def test_band_seen_only_in_trimmed_bucket_is_not_activated(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A4(b): a ToU band whose only slot sits in the trimmed straddle
+        bucket is neither emitted nor added to _active_tou_bands, and no
+        series of any kind carries a row at the trimmed hour.
+
+        Mutation: drop `bands_this_batch &= set(band_cons)` → "shoulder"
+        enters tou_seen, _active_tou_bands gains a band with zero stored
+        rows and _maybe_reload_for_new_tariffs schedules a reload for it.
+        """
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        straddle = datetime(2026, 5, 31, 14, 0, tzinfo=UTC)
+        slots = [
+            IntervalReading(
+                dt=datetime(2026, 5, 31, 14, 30, tzinfo=UTC),  # Adelaide 00:00
+                kwh=0.5,
+                cost_aud=0.1,
+                rate_type="shoulder",
+            ),
+            IntervalReading(
+                dt=datetime(2026, 5, 31, 15, 0, tzinfo=UTC),
+                kwh=1.0,
+                cost_aud=0.3,
+                rate_type="peak",
+            ),
+            IntervalReading(
+                dt=datetime(2026, 5, 31, 15, 30, tzinfo=UTC),
+                kwh=1.0,
+                cost_aud=0.3,
+                rate_type="offpeak",
+            ),
+        ]
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord, "_get_baseline_sums", new=AsyncMock(return_value=(0.0, 0.0))
+            ),
+            patch.object(
+                coord, "_get_tariff_baseline_sums", new=AsyncMock(return_value={})
+            ),
+        ):
+            await coord._import_intervals(
+                slots, known_bands=frozenset({"peak", "offpeak"})
+            )
+
+        emitted = {c.args[1]["statistic_id"] for c in mock_add.call_args_list}
+        assert not any("shoulder" in sid for sid in emitted), emitted
+        assert "shoulder" not in coord._active_tou_bands
+        assert {"peak", "offpeak"} <= coord._active_tou_bands
+        for c in mock_add.call_args_list:
+            assert all(r["start"] != straddle for r in c.args[2]), c.args[1]
 
     async def test_heal_floor_is_contract_local_midnight(
         self, hass: HomeAssistant

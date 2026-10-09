@@ -481,20 +481,35 @@ timestamps exposes it, so the guard ships with the correction:
   overlap at the floor: a fresh half-hour-zone install loses the very first
   day's 00:00 slot — accepted, asserted by a test.
 - **Trim is derived from batch CONTENT, never the plan**: after dedupe and
-  bucketing, if the earliest fetched slot's minute is not `0` the batch does
-  not own its first bucket, and `_import_intervals` / `_import_generation`
-  drop that first hourly bucket in EVERY series (aggregate, cost, each ToU
-  band, generation, credit, marker rows) BEFORE the early return and
-  `cutoff = min(hour_cons)`. Keying the trim on the planned overlap day would
-  re-open the loss whenever the overlap fetch returned nothing usable
-  (per-day error, all-placeholder day, big-gap resume past the floor).
+  bucketing, if the earliest fetched slot IS the contract-local 00:00 slot
+  of a half-hour zone (`:30` past the UTC hour) the batch does not own its
+  first bucket, and `_import_intervals` / `_import_generation` drop that
+  first hourly bucket in EVERY series (aggregate, cost, each ToU band,
+  generation, credit, marker rows) BEFORE the early return and
+  `cutoff = min(hour_cons)`. Any OTHER `:30` first slot — a whole-hour
+  zone, or a half-hour-zone day whose opening slots were zero-on-zero and
+  parser-filtered (every generation batch; a meter reading exactly 0) — is
+  an hh:00 local slot whose bucket the batch owns outright, so no trim
+  (`_straddle_trim_before` compares against `_local_midnight_utc`, not the
+  minute). Keying the trim on the planned overlap day would re-open the
+  loss whenever the overlap fetch returned nothing usable (per-day error,
+  all-placeholder day, big-gap resume past the floor).
 - **Overlap-day errors are non-fatal** and never set `solar_skipped` — a
   heal sweep cannot be kept pending by a context-only day. With the content
   trim the stored straddle row is left intact (baseline row = the straddle
   hour, cutoff = the next full hour), so the chain stays monotone; the cost
-  is that batch's own 00:00 half-slot, restored by the next cycle's overlap
-  while the day is inside the rewindow — a bounded half-slot residual on
-  the failure path, never a stored-slot loss.
+  is that batch's own 00:00 half-slot. That slot is NOT restored by the
+  next cycle's overlap — an overlap day's own 00:00 is always inside the
+  trimmed first bucket — only by a later cycle that fetches the day as a
+  RANGE day together with its predecessor. In the steady-state rewindow the
+  previous cycle already wrote that bucket whole (both days were range days
+  then), so the cost is one skipped refresh of a week-old bucket: nothing
+  lost. During initial backfill / a big-gap chunk resume the chunk's
+  first-day 00:00 half-slot is permanently missing (one 30-min slot per
+  such error; the stored 23:30 half is intact; the chain stays monotone)
+  unless the day later re-enters the trailing rewindow as a non-first day.
+  Pinned on the real recorder by
+  `tests/test_recorder_statistics.py::test_half_hour_zone_overlap_day_error_residual_is_one_half_slot`.
 - **Stall tracking** counts `progressed` only from fetched days INSIDE the
   original un-overlapped range, and give-up markers never span the overlap
   day — otherwise a healthy overlap day would reset the #154 counter every
@@ -1012,9 +1027,14 @@ The HA Energy dashboard requires:
   leaves the sum chain permanently — on every sliding rewindow, chunk
   boundary and big-gap resume (reproduced on the real recorder: 96 → 95 kWh
   per sliding day). Fetch `S-1` as context, then drop the first bucket in
-  EVERY series whenever the earliest fetched slot's minute is not `0` —
-  keyed on batch content, never on whether the overlap day was planned or
-  succeeded. Never write a zero-export marker at the floored midnight hour
+  EVERY series whenever the earliest fetched slot IS the contract-local
+  00:00 slot (`:30` past the UTC hour) — keyed on batch content, never on
+  whether the overlap day was planned or succeeded, and never on the bare
+  minute: in a half-hour zone every hh:00 local slot is also `:30Z`, and a
+  batch opening on one of those (the parser filtered the zero-on-zero
+  slots before it — every generation batch) owns that bucket outright, so
+  a minute-keyed trim dropped a real bucket for good at every floor / heal
+  / big-gap start. Never write a zero-export marker at the floored midnight hour
   for the same reason (`_first_full_hour`), never let an overlap-day error
   mark a solar sweep incomplete, and never count the overlap day as stall
   progress. Whole-hour zones: no overlap, no trim, unchanged request budget.
