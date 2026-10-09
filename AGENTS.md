@@ -65,7 +65,7 @@ custom_components/haggle/
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys (incl. CONF_LOCAL_TZ, the contract-tz authority), AGL_API_TZ_KEY (the zone AGL converts dateTime through, #292), data keys
 ├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth via its own `reauth_confirm` step (#284; token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle); MINOR_VERSION 2 — stores CONF_LOCAL_TZ from the selected contract's address at creation (fast path + picker) and refreshes it on reauth/reconfigure (#292/#268)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v3 — adds coordinator.contract_timezone + entry.data.local_tz) — public-safe; parsed by the triage routine (docs/diagnostics.md)
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals + half-hour-zone straddle guard (overlap day + content-derived trim, #292) + contract-local midnight helper _local_midnight_utc (#268)
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals + half-hour-zone straddle guard (overlap day + content-derived trim, #292) + contract-local midnight helper _local_midnight_utc (#268) + stale-key fill on every import (_stale_key_fill: provenance-gated zero / carry-forward re-chain of stored rows the batch has no value for, #300)
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
@@ -99,7 +99,7 @@ tests/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards, half-hour-zone overlap/trim + contract-local midnight sites (#292)
-├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST convention re-key, provenance gate, straddle both-days, conservation guard, read budget)
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 ├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
 ├── test_provenance_hook.py          # executes scripts/check_provenance_trailer.sh against sample messages (any-vendor Co-Authored-By / AI-Assisted: none / merge skip)
@@ -520,6 +520,52 @@ timestamps exposes it, so the guard ships with the correction:
 - **Zero-export marker rows** start at `_first_full_hour(local midnight)`,
   never the floored straddle bucket — a marker at `14:00Z` would overwrite
   the previous day's 23:30 export. Identical to before for whole-hour zones.
+
+**Stale-key fill (#300, every import)**: the #292 correction moves slots
+between hourly keys, and the parser drops zero-on-zero slots, so a
+corrected batch can carry NO value at an hourly key that still holds an
+old-convention row. That row kept its old running sum, above its newly
+written neighbour: a downward step (reproduced on the real recorder on
+beta.3: SA 5 × 0.38 kWh, QLD-in-DST 4 × 0.78 kWh at `04:00Z`, the end of a
+solar home's midday zero-import block; generation the same at night).
+`_import_intervals` (aggregate, cost, every ToU band series) and
+`_import_generation` (generation, credit) therefore make ONE extra batched
+executor read per import (`_stored_hourly_states`, in the same
+`asyncio.gather` as the baselines, stored `state` for every row at/after
+the cutoff, unbounded above) and `_stale_key_fill` emits every stored key
+`k >= cutoff` the batch has no value for:
+
+- **0.0** only when every contract-local date `k` holds (`_key_days`: `k`
+  and `k + 30 min`, so a half-hour zone's straddle bucket needs BOTH days)
+  is authoritative: dated by >= 1 deduped READING (never a marker or a
+  bucket) AND in `reading_days`, the set of days whose OWN fetch returned
+  readings (`_fetch_sweep_day` / `_fetch_solar_day_into` provenance; a
+  neighbour's trailing-slack row never vouches for a day; the #154
+  give-up passes `()`; `None` — direct callers — trusts the readings'
+  dates). Conservation guard (`_non_conserving_days`): a day that would
+  lose stored kWh also needs batch kWh >= stored kWh less the stored kWh
+  in its last local hour (the correction only moves readings later, so a
+  pure re-key shifts at most the next day's opening slots into that
+  hour); a failing day is de-authorised for the whole family and logs one
+  bounded WARNING per import.
+- **its stored state, carried forward** otherwise — the hour's kWh is
+  unchanged and only its sum is re-chained, so an errored, empty or
+  short day (and a stored row after the batch's last key) keeps its data
+  while every row from the cutoff on becomes baseline + non-negative
+  deltas.
+
+Batch values always win; the fill never creates a key or a band series
+that has no stored rows (`_emit_tariff_series` skips an empty band but
+emits a band whose only rows are fill rows). Baselines are unchanged, the
+`if not hour_cons: return` early exit still precedes everything (an empty
+batch reads and writes nothing), and the steady state finds no stale key
+and writes nothing extra. Active ONLY when `client.tz_is_contract is
+True` (identity check): under the HA-timezone fallback local dates are
+untrustworthy, so there is no read and no fill — imports behave exactly as
+before #300. The rule is convention-agnostic: the beta.3 trailing week,
+any future re-key, and a downgrade followed by a re-upgrade all self-heal
+on the next poll. Pinned on the real recorder by the `test_300_*` tests in
+`tests/test_recorder_statistics.py`.
 
 ### Previous Bill Period
 
@@ -1041,6 +1087,20 @@ The HA Energy dashboard requires:
   for the same reason (`_first_full_hour`), never let an overlap-day error
   mark a solar sweep incomplete, and never count the overlap day as stall
   progress. Whole-hour zones: no overlap, no trim, unchanged request budget.
+- **Don't assume "no batch data at an hourly key" means "that key is
+  untouched".** The parser's zero-on-zero filter drops slots, so a batch
+  is silent at any hour whose slots all read zero. Any change that moves
+  slots between hourly keys (#292's timestamp correction, a downgrade and
+  re-upgrade, a future re-key) leaves stored rows at keys the new batch
+  never writes, still carrying a running sum from the OLD chain, above
+  their re-written neighbours: a #114-class downward step (#300, shipped
+  in the withdrawn v0.5.0-beta.3). Every import must re-chain every stored
+  key at/after its cutoff (`_stale_key_fill`). Never zero a key whose
+  days the batch is not authoritative for — a per-day AGL error or a
+  neighbour's trailing-slack row is not evidence that a day's stored kWh
+  is gone; carry its stored state forward instead. Never let the fill
+  create a key or a band series, and never arm it under the HA-timezone
+  fallback (`tz_is_contract is True` only).
 - **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
   unparenthesised form is intentional: it is `ruff format`'s canonical output
   for this repo's Python 3.14 target (PEP 758, where `except A, B:` means
