@@ -617,7 +617,11 @@ request still succeeds. This keeps a legitimate AGL cert rotation from
 bricking HACS users. `_check_pin` reads the stored pins LIVE from
 `entry.data` on every call (not from setup-time locals), so once a flow has
 re-pinned, the still-running old instance cannot raise a stale notice before
-the reload unloads it.
+the reload unloads it. Each distinct mismatching fingerprint is reported
+once per entry setup (#280) — the connector opens a new TLS connection per
+poll, so a single rotation used to log a WARNING on every connection until
+the user re-pinned; a different certificate is still reported, and a
+reload/restart resets the memory.
 
 **Re-pin and reauth (#275)** — until #275 the notice's "Reconfigure" did not
 exist and reauth always aborted `already_configured`, so the only real

@@ -131,7 +131,13 @@ request observes the live SPKI and compares it to the stored value.
 
 **Mismatch is warn-only**: a HA persistent notification fires
 (`haggle_pin_mismatch_<host>`) and a WARNING is logged, but the request
-still completes. This is deliberate — a strict-reject mode would brick
+still completes. Each distinct mismatching fingerprint is reported once
+per entry setup (#280) — repeats of the same certificate log only at
+DEBUG, a different certificate on either host is a new report, and a
+reload or restart resets the memory. Dismissing the notification without
+re-pinning therefore suppresses further alerts for that certificate
+until the entry is reloaded or HA restarts (previously it came back on
+the next connection). This is deliberate — a strict-reject mode would brick
 HACS users on legitimate AGL cert rotations. The remediation is the
 standard HA Reconfigure flow on the integration card (implemented in
 #275; before that the flow did not exist), which re-pins each host whose
