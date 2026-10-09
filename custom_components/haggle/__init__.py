@@ -30,6 +30,7 @@ from .agl.client import AglAuth, AglClient
 from .agl.parser import tz_for_address
 from .agl.pinning import AGL_AUTH_HOST_NAME, HagglePinningConnector
 from .const import (
+    AGL_API_TZ_KEY,
     AGL_AUTH0_CLIENT,
     AGL_AUTH_HOST,
     AGL_CLIENT_FLAVOR,
@@ -97,7 +98,9 @@ async def async_migrate_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> 
     if entry.version == 1 and entry.minor_version < 2:
         key: str = entry.data.get(CONF_LOCAL_TZ, "")
         if not key:
-            tz = tz_for_address(entry.title or "")
+            # ZoneInfo(key) inside tz_for_address reads tzdata on a cache
+            # miss — keep that off the event loop.
+            tz = await hass.async_add_executor_job(tz_for_address, entry.title or "")
             key = getattr(tz, "key", "") if tz is not None else ""
         hass.config_entries.async_update_entry(
             entry, data={**entry.data, CONF_LOCAL_TZ: key}, minor_version=2
@@ -259,7 +262,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     # address-derived, is what the parser re-localises AGL's
     # Sydney-converted timestamps into (#292). HA's configured tz stands in
     # for the window only until the zone is known.
-    local_tz, tz_is_contract = _resolve_local_tz(entry)
+    # Both zone loads are a tzdata file read on a cache miss — a contract
+    # zone that differs from HA's own is exactly the #292 case — so they
+    # run off the event loop. The second call only pre-warms the
+    # process-wide ZoneInfo cache with AGL's conversion zone, so the
+    # parser's first `_zone_for_key(AGL_API_TZ_KEY)` is a cache hit; a
+    # host without that tzdata entry returns None here and the parser's
+    # own `_default_api_tz` warns about it.
+    local_tz, tz_is_contract = await hass.async_add_executor_job(
+        _resolve_local_tz, entry
+    )
+    await dt_util.async_get_time_zone(AGL_API_TZ_KEY)
     client = AglClient(auth, session, local_tz=local_tz, tz_is_contract=tz_is_contract)
     coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
