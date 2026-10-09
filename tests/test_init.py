@@ -644,3 +644,99 @@ async def test_check_pin_reads_stored_pins_live(hass: HomeAssistant) -> None:
     # Only 12-char prefixes may reach the log; the message carries none.
     assert "a" * 64 not in message
     assert "c" * 64 not in message
+
+
+async def test_pin_mismatch_is_reported_once_per_distinct_certificate(
+    hass: HomeAssistant, caplog
+) -> None:
+    """#280: the same mismatching fingerprint is reported once per setup.
+
+    The connector opens a new TLS connection per poll, so a single AGL
+    rotation used to log a WARNING (and re-create the notice) on every
+    connection until the user re-pinned. Now: one WARNING + one notice per
+    distinct (host, fingerprint); a different fingerprint, or the other
+    host, is still reported.
+    """
+    import logging
+
+    from custom_components.haggle.agl.pinning import (
+        AGL_AUTH_HOST_NAME,
+        AGL_BFF_HOST_NAME,
+    )
+    from custom_components.haggle.const import (
+        CONF_PINNED_SPKI_AUTH,
+        CONF_PINNED_SPKI_BFF,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            **_ENTRY_DATA,
+            CONF_PINNED_SPKI_AUTH: "a" * 64,
+            CONF_PINNED_SPKI_BFF: "b" * 64,
+        },
+        unique_id="1234567890_9999999999",
+    )
+    entry.add_to_hass(hass)
+
+    mock_session = MagicMock()
+    mock_session.close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=mock_session,
+        ),
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        ),
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=_COORDINATOR_DATA,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        pin_check = entry.runtime_data.connector.on_new_connection
+        assert pin_check is not None
+        caplog.set_level(logging.WARNING, logger="custom_components.haggle")
+
+        def warnings() -> int:
+            return sum(
+                1
+                for r in caplog.records
+                if r.levelno == logging.WARNING and "SPKI mismatch" in r.getMessage()
+            )
+
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+            pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+            pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+        assert mock_notify.call_count == 1
+        assert warnings() == 1
+
+        # A different certificate on the same host is a new event.
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "e" * 64)
+        assert mock_notify.call_count == 1
+        assert warnings() == 2
+
+        # The other host is tracked separately.
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_BFF_HOST_NAME, "f" * 64)
+            pin_check(AGL_BFF_HOST_NAME, "f" * 64)
+        assert mock_notify.call_count == 1
+        assert warnings() == 3
