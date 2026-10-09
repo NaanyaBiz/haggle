@@ -1019,6 +1019,13 @@ The HA Energy dashboard requires:
   safe under the optional machine-global managed-settings deployment the
   script prints (the complete fix for checkout-time wiring substitution
   — threat-model §6).
+- **Don't import `voluptuous` directly in `config_flow.py`.** HA 2026.10
+  replaced it with `probatio` (API-compatible) and types `data_schema` as
+  `probatio.Schema`, so a plain `voluptuous` import fails `mypy` against
+  current HA while a plain `probatio` import breaks every install on HA <
+  2026.10 (the runtime floor is 2026.7.0). Keep the try/except compat import
+  until the floor reaches 2026.10, then drop the fallback (#294). The weekly
+  `compat.yml` run is pytest-only and did not catch this type-level break.
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had
