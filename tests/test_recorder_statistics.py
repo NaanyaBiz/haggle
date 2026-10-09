@@ -1958,3 +1958,239 @@ async def test_300_fill_inactive_on_ha_zone_fallback(
         {stat_id}, datetime(2026, 1, 1, tzinfo=UTC)
     )
     assert result == {}, "_stored_hourly_states must return {} when fill inactive"
+
+
+# --- #300 fetch-site provenance + one-read budget (mutation-table gaps) ---
+
+
+def _300_small_day_seed(
+    days: list[date], small: date, tz: ZoneInfo
+) -> list[IntervalReading]:
+    """Full 0.3 kWh days, except `small`, which stores ONE 0.01 kWh slot.
+
+    A slack row (0.3 kWh) dated `small` then out-weighs the day's stored
+    energy, so the conservation guard cannot be what keeps the day's stored
+    rows: only the provenance gate does.
+    """
+    out: list[IntervalReading] = []
+    for d in days:
+        slots = [20] if d == small else range(48)
+        kwh = 0.01 if d == small else 0.3
+        out += [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=kwh,
+                cost_aud=round(kwh * 0.3, 6),
+                rate_type="normal",
+            )
+            for i in slots
+        ]
+    return out
+
+
+async def test_300_provenance_gate_small_skipped_day_not_zeroed(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Provenance gate on its own (critic MAJOR 2).
+
+    Same shape as the slack-row test above, but the skipped day stores LESS
+    energy than the stray slack row carries, so the conservation guard
+    passes and only `reading_days` stops the zero fill. Ignoring provenance
+    (gating on reading timestamps alone) zeroes the day's one stored slot:
+    permanent kWh loss.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    skipped = days[4]
+    await coord._import_intervals(
+        _300_small_day_seed(days, skipped, tz), reading_days=frozenset(days)
+    )
+    await async_wait_recording_done(hass)
+
+    fetched = [d for d in days[1:] if d != skipped]
+    batch = _300_small_day_seed(fetched, skipped, tz)
+    batch.append(
+        IntervalReading(
+            dt=_300_slot_dt(skipped, 0, tz, "new"),
+            kwh=0.3,
+            cost_aud=0.09,
+            rate_type="normal",
+        )
+    )
+    await coord._import_intervals(batch, reading_days=frozenset(fetched))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    assert _300_steps(rows) == []
+    small_key = _300_slot_dt(skipped, 20, tz, "new").replace(minute=0).timestamp()
+    states = {r["start"]: r["state"] for r in rows}
+    assert states[small_key] == pytest.approx(0.01), (
+        "a day whose own fetch returned nothing must keep its stored kWh"
+    )
+
+
+async def test_300_fetch_provenance_empty_day_not_vouched_by_slack_row(
+    recorder_mock, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provenance is recorded at the fetch site, end to end (#300).
+
+    Through `_fetch_range`: day D-1's response carries a trailing-slack row
+    dated D, and D's own fetch returns nothing (an AGL per-day error is the
+    `[]` skip). D must not join the reading days, so its one small stored
+    slot survives. Counting an empty day as a reading day lets the slack
+    row zero it.
+    """
+    from zoneinfo import ZoneInfo
+
+    import custom_components.haggle.coordinator as coordinator_mod
+
+    monkeypatch.setattr(coordinator_mod, "BACKFILL_INTER_REQUEST_DELAY", 0)
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    empty = days[4]
+    await coord._import_intervals(
+        _300_small_day_seed(days, empty, tz), reading_days=frozenset(days)
+    )
+    await async_wait_recording_done(hass)
+
+    async def hourly(contract: str, day: date) -> list[IntervalReading]:
+        if day == empty:
+            return []
+        out = _300_small_day_seed([day], empty, tz)
+        if day == empty - timedelta(days=1):
+            out.append(
+                IntervalReading(
+                    dt=_300_slot_dt(empty, 0, tz, "new"),
+                    kwh=0.3,
+                    cost_aud=0.09,
+                    rate_type="normal",
+                )
+            )
+        return out
+
+    coord.client.async_get_usage_hourly = AsyncMock(side_effect=hourly)
+    await coord._fetch_range((days[1], days[5]), None, None, today=date(2026, 10, 20))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    assert _300_steps(rows) == []
+    small_key = _300_slot_dt(empty, 20, tz, "new").replace(minute=0).timestamp()
+    states = {r["start"]: r["state"] for r in rows}
+    assert states[small_key] == pytest.approx(0.01)
+
+
+async def test_300_fetch_provenance_zero_export_day_not_a_reading_day(
+    recorder_mock, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generation twin of the fetch-site provenance test.
+
+    A zero-export solar day (the fetch succeeds but every slot is filtered)
+    gets a marker, never a place in the reading days: a stray reading dated
+    that day from its neighbour's response must not zero its stored export.
+    """
+    from zoneinfo import ZoneInfo
+
+    import custom_components.haggle.coordinator as coordinator_mod
+
+    monkeypatch.setattr(coordinator_mod, "BACKFILL_INTER_REQUEST_DELAY", 0)
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    gen_id, _ = coord._generation_stat_ids()
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    cloudy = days[4]
+
+    def export(d: date) -> list[IntervalReading]:
+        slots = [24] if d == cloudy else range(16, 36)
+        kwh = 0.01 if d == cloudy else 0.3
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=kwh,
+                cost_aud=round(kwh * 0.05, 6),
+                rate_type="normal",
+            )
+            for i in slots
+        ]
+
+    await coord._import_generation(
+        [s for d in days for s in export(d)], reading_days=frozenset(days)
+    )
+    await async_wait_recording_done(hass)
+
+    async def solar(
+        contract: str, day: date, previous: bool = False
+    ) -> list[IntervalReading]:
+        if day == cloudy:
+            return []
+        out = export(day)
+        if day == cloudy - timedelta(days=1):
+            out.append(
+                IntervalReading(
+                    dt=_300_slot_dt(cloudy, 0, tz, "new"),
+                    kwh=0.3,
+                    cost_aud=0.015,
+                    rate_type="normal",
+                )
+            )
+        return out
+
+    coord.client.async_get_solar_hourly = AsyncMock(side_effect=solar)
+    await coord._fetch_range(None, (days[1], days[5]), None, today=date(2026, 10, 20))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, gen_id)
+    assert _300_steps(rows) == []
+    small_key = _300_slot_dt(cloudy, 24, tz, "new").replace(minute=0).timestamp()
+    states = {r["start"]: r["state"] for r in rows}
+    assert states[small_key] == pytest.approx(0.01)
+
+
+async def test_300_one_real_state_read_per_import(
+    recorder_mock, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read budget, counted at the recorder API rather than our seam.
+
+    The stale-key fill is the only caller asking `statistics_during_period`
+    for `{"state"}`: exactly one such call per non-empty import (consumption
+    and generation alike, batched across every series), none for an empty
+    batch, and none at all when the fill is inactive (HA-zone fallback, or a
+    truthy non-True `tz_is_contract`).
+    """
+    from zoneinfo import ZoneInfo
+
+    from homeassistant.components.recorder import statistics as stats_mod
+
+    real = stats_mod.statistics_during_period
+    state_reads: list[set[str]] = []
+
+    def counting(hass_, start, end, ids, period, units, types):
+        if types == {"state"}:
+            state_reads.append(set(ids))
+        return real(hass_, start, end, ids, period, units, types)
+
+    monkeypatch.setattr(stats_mod, "statistics_during_period", counting)
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    day = date(2026, 10, 10)
+    batch = _300_day_slots(day, tz, "new")
+
+    await coord._import_intervals([])
+    assert state_reads == []
+    await coord._import_intervals(batch, reading_days={day})
+    await coord._import_intervals(batch, reading_days={day})
+    await coord._import_generation(batch, reading_days={day})
+    assert len(state_reads) == 3
+    gen_id, credit_id = coord._generation_stat_ids()
+    assert state_reads[-1] == {gen_id, credit_id}
+
+    for inactive in (False, 1):
+        coord.client.tz_is_contract = inactive
+        await coord._import_intervals(batch, reading_days={day})
+        await coord._import_generation(batch, reading_days={day})
+    assert len(state_reads) == 3, "an inactive fill must not read the recorder"
