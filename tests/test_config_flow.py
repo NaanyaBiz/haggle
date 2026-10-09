@@ -1556,6 +1556,8 @@ def test_flow_strings_mirror_and_cover_new_reasons() -> None:
     assert "{authorize_url}" in config["step"]["reconfigure"]["description"]
     # #284: reauth has its own step; it must carry the login URL and say
     # that it keeps the existing pins (re-pinning is Reconfigure's job).
+    # #280: a refused Reconfigure may have swallowed a pending reauth prompt.
+    assert "reload the entry" in config["abort"]["contract_not_found"]
     reauth = config["step"]["reauth_confirm"]
     assert reauth["title"]
     desc = reauth["description"].lower()

@@ -175,6 +175,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     # AGL cert rotations should not brick HACS users. Re-pin via Reconfigure
     # (config_flow.async_step_reconfigure) — reauth deliberately never
     # overwrites a stored pin (config_flow._pin_updates).
+    #
+    # Each distinct mismatching fingerprint is reported ONCE per entry setup
+    # (#280): the connector opens a new TLS connection per poll (and more
+    # under retries), so without this a single AGL rotation logged a WARNING
+    # on every connection for as long as the user had not re-pinned. The
+    # persistent notification is not re-created on repeats either (a
+    # dismissed notice stays dismissed until re-pin/reload/restart —
+    # accepted, #280); a *different* mismatch (another cert) is still
+    # reported. A reload/restart resets the memory.
+    reported_mismatches: set[tuple[str, str]] = set()
+
     def _check_pin(host: str, observed: str) -> None:
         # Read the pin LIVE from entry.data, not from the setup-time locals:
         # Reconfigure writes the new pins and dismisses the notice BEFORE the
@@ -189,6 +200,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
         )
         if not expected or observed == expected:
             return
+        if (host, observed) in reported_mismatches:
+            _LOGGER.debug(
+                "Pinned SPKI mismatch for %s unchanged (observed=%s) — already reported",
+                host,
+                observed[:12],
+            )
+            return
+        reported_mismatches.add((host, observed))
         _LOGGER.warning(
             "Pinned SPKI mismatch for %s (stored=%s observed=%s) — if AGL rotated "
             "its certificate, run Reconfigure on the Haggle entry to re-pin; "

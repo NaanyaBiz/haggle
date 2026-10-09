@@ -722,7 +722,11 @@ request still succeeds. This keeps a legitimate AGL cert rotation from
 bricking HACS users. `_check_pin` reads the stored pins LIVE from
 `entry.data` on every call (not from setup-time locals), so once a flow has
 re-pinned, the still-running old instance cannot raise a stale notice before
-the reload unloads it.
+the reload unloads it. Each distinct mismatching fingerprint is reported
+once per entry setup (#280) — the connector opens a new TLS connection per
+poll, so a single rotation used to log a WARNING on every connection until
+the user re-pinned; a different certificate is still reported, and a
+reload/restart resets the memory.
 
 **Re-pin and reauth (#275)** — until #275 the notice's "Reconfigure" did not
 exist and reauth always aborted `already_configured`, so the only real
@@ -1210,6 +1214,13 @@ The HA Energy dashboard requires:
   safe under the optional machine-global managed-settings deployment the
   script prints (the complete fix for checkout-time wiring substitution
   — threat-model §6).
+- **Don't import `voluptuous` directly in `config_flow.py`.** HA 2026.10
+  replaced it with `probatio` (API-compatible) and types `data_schema` as
+  `probatio.Schema`, so a plain `voluptuous` import fails `mypy` against
+  current HA while a plain `probatio` import breaks every install on HA <
+  2026.10 (the runtime floor is 2026.7.0). Keep the try/except compat import
+  until the floor reaches 2026.10, then drop the fallback (#294). The weekly
+  `compat.yml` run is pytest-only and did not catch this type-level break.
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had

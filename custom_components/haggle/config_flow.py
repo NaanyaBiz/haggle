@@ -37,7 +37,17 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import aiohttp
-import voluptuous as vol
+
+try:
+    # HA 2026.10 replaced voluptuous with probatio (an API-compatible drop-in)
+    # in the data-entry-flow API and types ``data_schema`` as
+    # ``probatio.Schema``. Prefer it when present so type-checking against
+    # current HA stays clean; fall back to voluptuous on HA < 2026.10, which
+    # the runtime floor (hacs.json) still supports. Drop the fallback once the
+    # floor reaches 2026.10 (#294).
+    import probatio as vol
+except ImportError:  # pragma: no cover - exercised only on HA < 2026.10
+    import voluptuous as vol  # type: ignore[no-redef]
 from homeassistant.components import persistent_notification
 from homeassistant.config_entries import (
     SOURCE_REAUTH,
