@@ -72,9 +72,12 @@ Any prior release (except yanked ones) can be reinstalled:
 **HACS → Haggle → ⋮ → Redownload → pick the version → restart HA.**
 
 - **Config entries are downgrade-safe.** Newer versions only *add* keys
-  to the stored entry (e.g. the solar-heal record, TLS-pin hashes);
-  older versions ignore keys they don't know, and the entry schema
-  version has never changed. No re-setup needed in either direction.
+  to the stored entry (e.g. the solar-heal record, TLS-pin hashes, the
+  contract timezone); older versions ignore keys they don't know. The
+  entry's *major* schema version has never changed — only a major bump
+  could block a downgrade. Its *minor* version was bumped to 2 in v0.5.0
+  (adds `local_tz`), which older versions load unchanged. No re-setup
+  needed in either direction.
 - **Statistics survive.** Downgrading never requires touching the
   recorder: imports are idempotent, so the older version simply
   overwrites the trailing rewindow with its own (identical) sums. A

@@ -6,7 +6,10 @@ Field semantics are documented in AGENTS.md §AGL API — Key Facts.
 Critical fields:
   - Interval kWh:  consumption.quantity        (outer — matches AEMO/CSV)
   - Interval cost: consumption.amount          (outer — AUD for the slot)
-  - Interval dt:   dateTime field is slot-start in UTC
+  - Interval dt:   dateTime is the meter's LOCAL slot-start label converted
+                   to UTC through the response's `timeZone` (Australia/Sydney
+                   for every contract, #292) — re-localised to the contract's
+                   zone by relocalise_agl_timestamp before any window check
   - Contract ID:   contractNumber (not accountNumber, not accountId)
 
 The inner ``consumption.values.{amount,quantity}`` block is a DPI/chart-scaled
@@ -18,6 +21,7 @@ ratio — confirmed by reconciling 11 mitm /Hourly captures against an AGL
 
 from __future__ import annotations
 
+import functools
 import logging
 import math
 import re
@@ -29,6 +33,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 from ..const import (
+    AGL_API_TZ_KEY,
     INTERVAL_DAY_TOLERANCE,
     INTERVAL_WINDOW_TRAILING_SLACK_HOURS,
     MAX_AGL_NUMERIC,
@@ -284,12 +289,172 @@ def _out_of_window_predicate(
     return lambda dt: not (lo_date <= dt.date() <= hi_date)
 
 
+# --- AGL Sydney-conversion correction (#292) --------------------------------
+# AGL's BFF labels every interval with the meter's LOCAL wall-clock slot
+# start, then converts that label to UTC through ONE fixed zone — the
+# response's top-level `timeZone`, "Australia/Sydney" in every capture seen,
+# a Queensland contract's included — regardless of the contract's own zone.
+# Confirmed on raw captures of a QLD meter: Dec-Mar local days run
+# D-1T13:00Z→DT12:30Z (Sydney AEDT midnight, an hour before Brisbane's) and
+# April days D-1T14:00Z→DT13:30Z (AEST, identical); the #292 Adelaide
+# reporter reconciled 887 hourly totals the same way (30 min early all
+# year). The inverse is exact: read the instant as a wall-clock label in the
+# API zone, re-attach the contract's zone, express in UTC again.
+
+# IANA keys are short ("America/Argentina/ComodRivadavia" is 32 chars); a
+# longer `timeZone` is garbage or hostile, never a zone — it must not reach
+# the tzdata filesystem lookup, and the LRU below must never cache it.
+_MAX_TZ_KEY_LEN = 64
+# Longest raw `dateTime` worth echoing in the DEBUG tripwire line.
+_MAX_DT_STR_LEN = 40
+
+
+@functools.lru_cache(maxsize=8)
+def _zone_for_key(key: str) -> tzinfo | None:
+    """ZoneInfo for an UNTRUSTED key, or None.
+
+    Bounded LRU so a MITM cycling hostile keys can't grow memory. ZoneInfo
+    raises ValueError for empty/path-like/NUL-bearing keys, KeyError when
+    tzdata lacks the zone and OSError for over-long names (all probed on
+    3.14) — every one degrades to None, never out of the parser.
+    """
+    if not key or len(key) > _MAX_TZ_KEY_LEN:
+        return None
+    try:
+        return ZoneInfo(key)
+    except KeyError, OSError, ValueError:
+        return None
+
+
+@functools.lru_cache(maxsize=1)
+def _default_api_tz() -> tzinfo | None:
+    """AGL_API_TZ_KEY as a tzinfo, or None when this host's tzdata lacks it.
+
+    Cached so the WARNING fires once per process, not once per fetch. With
+    no API zone there is nothing to invert, so the parser leaves timestamps
+    untouched (today's behaviour) rather than guessing.
+    """
+    zone = _zone_for_key(AGL_API_TZ_KEY)
+    if zone is None:
+        _LOGGER.warning(
+            "Timezone %s unavailable on this host; AGL interval timestamps "
+            "cannot be re-localised to the contract's zone (#292)",
+            AGL_API_TZ_KEY,
+        )
+    return zone
+
+
+def relocalise_agl_timestamp(
+    dt: datetime, *, api_tz: tzinfo, contract_tz: tzinfo
+) -> datetime:
+    """Undo AGL's conversion of a local slot label through ``api_tz``.
+
+    ``dt.astimezone(api_tz)`` recovers the wall-clock label the meter
+    actually carried; ``replace(tzinfo=contract_tz, fold=...)`` reads that
+    label in the contract's zone — ``fold`` kept explicitly so the repeated
+    02:00-02:59 hour of a fall-back day round-trips per instant — and the
+    result is expressed in UTC again. Shift with api_tz Australia/Sydney:
+    NSW/VIC/TAS/ACT 0 (identity at every instant); QLD 0 in AEST, +1 h
+    while Sydney is on DST; SA/Broken Hill +30 min all year; NT +30/+90 min;
+    WA +2/+3 h. For every zone tz_for_address can produce the corrected
+    instant is never EARLIER than ``dt`` (verified over every 30-min instant
+    of 2026), and the caller's window check runs AFTER this anyway, so a
+    response naming some other ``timeZone`` still cannot land a reading
+    before the contract-local midnight (threat-model T-4: no leading
+    slack). Two once-a-year residuals are AGL's, not ours: a fall-back day
+    on which AGL collapses both folds onto one loses one slot, and a
+    no-DST zone's real 02:00-02:59 on Sydney's spring-forward day has no
+    Sydney label and cannot be recovered by any inverse. Raises
+    OverflowError at the edge of the representable datetime range — the
+    caller drops such an item as malformed.
+    """
+    labelled = dt.astimezone(api_tz)
+    return labelled.replace(tzinfo=contract_tz, fold=labelled.fold).astimezone(UTC)
+
+
+class _IntervalTimestamps:
+    """Per-parse timestamp pipeline: parse, re-localise (#292), tripwire.
+
+    Holds the once-per-parse state — the response's declared ``timeZone``,
+    the resolved zones and the first raw->corrected pair for the bounded
+    DEBUG line — so parse_interval_readings's loop stays under the
+    complexity gate (decompose, not noqa).
+    """
+
+    __slots__ = ("api_tz", "api_tz_label", "contract_tz", "first")
+
+    def __init__(
+        self, data: dict[str, Any], tz: tzinfo | None, tz_is_contract: bool
+    ) -> None:
+        # The field is the mechanism's in-band signature: honour it (bounded,
+        # untrusted) so the inverse self-corrects if AGL ever converts per
+        # contract; absent/unparseable/missing-tzdata -> AGL_API_TZ_KEY.
+        self.api_tz_label = _as_str(data.get("timeZone"))[:_MAX_TZ_KEY_LEN]
+        # Correct ONLY when the zone is the contract's own (address-derived).
+        # Under the HA-timezone fallback a mis-zoned entry must stay loud —
+        # dropped slots plus the counted WARNING, today's behaviour — rather
+        # than be shifted silently by Sydney's full offset into a window
+        # where every slot looks plausible.
+        self.contract_tz = tz if tz_is_contract else None
+        self.api_tz: tzinfo | None = None
+        if self.contract_tz is not None:
+            self.api_tz = _zone_for_key(self.api_tz_label) or _default_api_tz()
+        self.first: tuple[str, datetime, datetime] | None = None
+
+    def parse(self, item: dict[str, Any]) -> datetime | None:
+        """Slot start of one item as a true-UTC instant, or None if malformed.
+
+        The correction is applied here, BEFORE the caller's window check, so
+        the window sees the contract's real local day: the uncorrected first
+        slot of an SA/QLD-in-DST day sits before the contract-local midnight
+        and the strict lower bound would drop it every fetch (the v0.5.0
+        beta "Dropped N interval(s)" symptom on #292).
+        """
+        dt_str = item.get("dateTime", "")
+        try:
+            raw = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+            if raw.tzinfo is None:
+                raw = raw.replace(tzinfo=UTC)
+            dt = raw
+            if self.api_tz is not None and self.contract_tz is not None:
+                dt = relocalise_agl_timestamp(
+                    raw, api_tz=self.api_tz, contract_tz=self.contract_tz
+                )
+        except ValueError, AttributeError, OverflowError:
+            return None
+        if self.first is None:
+            self.first = (dt_str[:_MAX_DT_STR_LEN], raw, dt)
+        return dt
+
+    def log_tripwire(self, expected_day: date | None) -> None:
+        """ONE bounded DEBUG line per parse — the volunteer evidence hook.
+
+        Never per item (same flood rationale as the counted drops). A
+        contract_tz of None means the correction was not applied.
+        """
+        if self.first is None:
+            return
+        dt_str, raw, dt = self.first
+        _LOGGER.debug(
+            "first raw dateTime %s -> %s (delta %s, api_tz %s, declared timeZone "
+            "%.64r, contract_tz %s) for %s",
+            dt_str,
+            dt.isoformat(),
+            dt - raw,
+            getattr(self.api_tz, "key", self.api_tz),
+            self.api_tz_label,
+            getattr(self.contract_tz, "key", self.contract_tz),
+            expected_day,
+        )
+
+
 def parse_interval_readings(
     data: dict[str, Any],
     *,
     source_field: str = "consumption",
     expected_day: date | None = None,
     tz: tzinfo | None = None,
+    tz_is_contract: bool = False,
 ) -> list[IntervalReading]:
     """Parse /Hourly response into 30-min interval readings.
 
@@ -298,7 +463,16 @@ def parse_interval_readings(
     these for days where AEMO meter reads have not yet been delivered, even with
     a non-``none`` type — they would otherwise create phantom flat rows in the
     statistics table that the resume logic would never re-check).
-    dateTime is slot-start UTC; kwh from consumption.quantity (outer).
+    kwh from consumption.quantity (outer).
+
+    ``dateTime`` is NOT the slot start in true UTC: it is the meter's LOCAL
+    wall-clock label converted to UTC through the response's ``timeZone``
+    (Australia/Sydney in every capture, whatever the contract's state —
+    #292). With ``tz_is_contract`` the slot is re-localised into ``tz`` via
+    relocalise_agl_timestamp BEFORE the window check; otherwise (HA-timezone
+    fallback, or no ``tz``) it is read as-is, exactly as before the fix, so a
+    mis-zoned entry stays loud rather than silently shifted. One bounded
+    DEBUG line per call records the first raw->corrected pair as evidence.
 
     ``source_field`` selects which per-item block to read. The default
     "consumption" covers the Electricity endpoint; the ElectricitySolar
@@ -312,12 +486,12 @@ def parse_interval_readings(
     ``expected_day`` is the day actually requested via ``period=``; readings
     outside its window are dropped (#242) so a crafted timestamp can't pin
     the baseline cutoff before real recorder history (threat-model T-4, the
-    #114 sum-step class). With ``tz`` — the contract's local timezone, which
-    the caller asserts is the HA instance's configured one (the same
-    assumption every local-midnight computation in the coordinator makes) —
-    the window is exact: [local midnight of the day, next local midnight +
+    #114 sum-step class). With ``tz`` — the contract's local timezone,
+    resolved from the persisted CONF_LOCAL_TZ at setup and refined from the
+    service address each overview cycle, HA's own zone as the last fallback
+    — the window is exact: [local midnight of the day, next local midnight +
     trailing slack) in UTC, DST handled by the tzinfo. AGL reads
-    ``period=`` in LOCAL time and returns UTC, so this is the true shape of
+    ``period=`` in the contract's LOCAL time, so this is the true shape of
     one requested day. Without ``tz`` the fallback is the coarser
     ``expected_day ± INTERVAL_DAY_TOLERANCE`` DATE window — Codex P1 on PR
     #266 showed that window alone still admits an injected D-1T00:00Z
@@ -326,6 +500,7 @@ def parse_interval_readings(
     """
     _skip_types = {"none", "pending"}
     out_of_window = _out_of_window_predicate(expected_day, tz)
+    timestamps = _IntervalTimestamps(_as_dict(data), tz, tz_is_contract)
     readings: list[IntervalReading] = []
     dropped_out_of_window = 0
     rejections = NumericRejections()
@@ -338,12 +513,8 @@ def parse_interval_readings(
             # one would blow up the set membership) — treat as malformed.
             if not isinstance(rate_type, str) or rate_type in _skip_types:
                 continue
-            dt_str = item.get("dateTime", "")
-            try:
-                dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-                if dt.tzinfo is None:
-                    dt = dt.replace(tzinfo=UTC)
-            except ValueError, AttributeError:
+            dt = timestamps.parse(item)
+            if dt is None:
                 continue
             # Counted, not logged per-item: a hostile response could carry
             # thousands of these, and a synchronous WARNING per reading
@@ -363,6 +534,7 @@ def parse_interval_readings(
                     rate_type=rate_type,
                 )
             )
+    timestamps.log_tripwire(expected_day)
     if dropped_out_of_window:
         _LOGGER.warning(
             "Dropped %d interval(s) outside the window for requested day %s",
@@ -383,8 +555,14 @@ def parse_daily_readings(data: dict[str, Any]) -> list[DailyReading]:
     """Parse /Daily response.
 
     Response uses sections[].items[] — same envelope as /Hourly.
-    dateTime is day-start in UTC (time component is 00:00:00Z).
+    dateTime is the LOCAL calendar date with a literal 00:00:00Z time
+    component — a date label, not an instant: verified on raw Current/Daily
+    and Previous/Daily captures spanning both DST seasons (every item reads
+    ``YYYY-MM-DDT00:00:00Z``, never the D-1T13:00Z/14:00Z local-midnight
+    instant the Hourly endpoint emits). ``.date()`` is therefore already the
+    local day and the #292 Sydney re-localisation does NOT apply here.
     kWh from consumption.quantity (outer — see module docstring).
+    Currently unused at runtime: AglClient exposes no Daily method.
     """
     readings: list[DailyReading] = []
     for section_raw in _as_list(_as_dict(data).get("sections")):

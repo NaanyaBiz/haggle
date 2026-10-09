@@ -843,3 +843,145 @@ class TestAglClientSolar:
 
         url = session.get.call_args[0][0]
         assert "/ElectricitySolar/9999999999/Previous/Hourly" in url
+
+
+# ---------------------------------------------------------------------------
+# #292 — AglClient timezone flag wiring
+# ---------------------------------------------------------------------------
+
+
+class TestAglClientTzCorrection:
+    """#292: tz_is_contract flag wired through to parse_interval_readings.
+
+    Mutation targets per A10:
+    - set_contract_tz assigns bare local_tz → tz_is_contract stays False
+    - fetch methods don't forward tz_is_contract → correction silently off
+    - __init__ warns when local_tz given and flag False → missing fallback warning
+    """
+
+    def test_set_contract_tz_sets_both_attributes(self) -> None:
+        """set_contract_tz must set local_tz AND tz_is_contract together.
+
+        Mutation: bare `self.local_tz = tz` (no tz_is_contract flip) →
+        correction off for the overview-cycle refinement path (#292 A3).
+        """
+        from zoneinfo import ZoneInfo
+
+        auth = AglAuth("v1.tok", AsyncMock())
+        client = AglClient(auth, _make_session({}))
+        tz = ZoneInfo("Australia/Adelaide")
+        client.set_contract_tz(tz)
+        assert client.local_tz is tz
+        assert client.tz_is_contract is True
+
+    def test_init_with_local_tz_but_no_flag_warns_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Constructor warns when local_tz is given but tz_is_contract=False.
+
+        This is the HA-fallback path: the zone tightens the interval window
+        but the Sydney-conversion correction is OFF (the entry may be on the
+        wrong state). The WARNING fires exactly ONCE per setup so the log
+        stays readable on HA restart.
+
+        Mutation: no warning → mis-zoned entry with HA fallback is silent.
+        """
+        import logging
+        from zoneinfo import ZoneInfo
+
+        auth = AglAuth("v1.tok", AsyncMock())
+        tz = ZoneInfo("Australia/Brisbane")
+        with caplog.at_level(
+            logging.WARNING, logger="custom_components.haggle.agl.client"
+        ):
+            AglClient(auth, _make_session({}), local_tz=tz, tz_is_contract=False)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "Contract timezone not yet known" in warnings[0].getMessage()
+        assert "Australia/Brisbane" in warnings[0].getMessage()
+
+    def test_init_with_tz_is_contract_true_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No warning when the zone is address-derived (tz_is_contract=True).
+
+        Mutation: always warn regardless of flag → false positive on correct
+        setups.
+        """
+        import logging
+        from zoneinfo import ZoneInfo
+
+        auth = AglAuth("v1.tok", AsyncMock())
+        tz = ZoneInfo("Australia/Brisbane")
+        with caplog.at_level(
+            logging.WARNING, logger="custom_components.haggle.agl.client"
+        ):
+            AglClient(auth, _make_session({}), local_tz=tz, tz_is_contract=True)
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert not warnings
+
+    def test_init_with_no_tz_does_not_warn(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """No warning when local_tz=None (config flow / unit tests)."""
+        import logging
+
+        auth = AglAuth("v1.tok", AsyncMock())
+        with caplog.at_level(
+            logging.WARNING, logger="custom_components.haggle.agl.client"
+        ):
+            AglClient(auth, _make_session({}))
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert not warnings
+
+    @staticmethod
+    async def _kwargs_for_method(method: str, tz_is_contract: bool) -> dict:
+        """Capture parse_interval_readings kwargs for the given client method."""
+        from datetime import date
+        from zoneinfo import ZoneInfo
+
+        auth = AglAuth("v1.tok", AsyncMock())
+        tz = ZoneInfo("Australia/Adelaide")
+        client = AglClient(
+            auth,
+            _make_session({}),
+            local_tz=tz,
+            tz_is_contract=tz_is_contract,
+        )
+        with (
+            patch(
+                "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+                new_callable=AsyncMock,
+                return_value="tok",
+            ),
+            patch(
+                "custom_components.haggle.agl.client.parse_interval_readings",
+                return_value=[],
+            ) as parser,
+        ):
+            await getattr(client, method)("9999999999", date(2026, 10, 5))
+        return parser.call_args.kwargs
+
+    async def test_current_hourly_forwards_tz_is_contract(self) -> None:
+        """tz_is_contract is passed through to parse_interval_readings.
+
+        Mutation: fetch method always passes tz_is_contract=False → correction
+        off even when the zone is address-derived.
+        """
+        kwargs = await self._kwargs_for_method("async_get_usage_hourly", True)
+        assert kwargs["tz_is_contract"] is True
+
+    async def test_previous_hourly_forwards_tz_is_contract(self) -> None:
+        """Same mutation target for the Previous/Hourly path."""
+        kwargs = await self._kwargs_for_method("async_get_usage_hourly_previous", True)
+        assert kwargs["tz_is_contract"] is True
+
+    async def test_solar_forwards_tz_is_contract(self) -> None:
+        """Same mutation target for ElectricitySolar."""
+        kwargs = await self._kwargs_for_method("async_get_solar_hourly", True)
+        assert kwargs["tz_is_contract"] is True
+
+    async def test_flag_false_forwarded_unchanged(self) -> None:
+        """When tz_is_contract=False the False propagates (no silent coercion)."""
+        kwargs = await self._kwargs_for_method("async_get_usage_hourly", False)
+        assert kwargs["tz_is_contract"] is False

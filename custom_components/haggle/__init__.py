@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+from zoneinfo import ZoneInfo
 
 import aiohttp
 from homeassistant.components import persistent_notification
@@ -26,6 +27,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.util import dt as dt_util
 
 from .agl.client import AglAuth, AglClient
+from .agl.parser import tz_for_address
 from .agl.pinning import AGL_AUTH_HOST_NAME, HagglePinningConnector
 from .const import (
     AGL_AUTH0_CLIENT,
@@ -34,6 +36,7 @@ from .const import (
     AGL_CLIENT_ID,
     AGL_USER_AGENT,
     CONF_CONTRACT_NUMBER,
+    CONF_LOCAL_TZ,
     CONF_PINNED_SPKI_AUTH,
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
@@ -42,6 +45,8 @@ from .const import (
 from .coordinator import HaggleCoordinator
 
 if TYPE_CHECKING:
+    from datetime import tzinfo
+
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
 
@@ -67,6 +72,67 @@ class HaggleRuntimeData:
     coordinator: HaggleCoordinator
     session: aiohttp.ClientSession
     connector: HagglePinningConnector
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
+    """Migrate a config entry to the current schema (currently 1.2).
+
+    1.1 → 1.2 (#268, #292): persist the contract's timezone as
+    CONF_LOCAL_TZ. Both creation paths store the contract's service address
+    as the entry title, so the zone is derived from it here; a title the
+    user renamed (or the legacy `AGL <contract>` fallback) yields "" and the
+    entry runs on the HA-timezone fallback — window only, no Sydney-conversion
+    correction — until the first successful overview cycle persists the
+    address-derived zone (coordinator._refresh_from_overview) or the user
+    runs Reconfigure. A failed derivation is "", never a refused load.
+
+    A key already stored on a 1.1 entry (a repair flow that wrote it before
+    the reload reached this migration) is kept — the title-derived value is
+    only ever a fallback for an entry that has none.
+
+    Only a minor bump: HA refuses to load an entry whose MAJOR version is
+    newer than the handler's, so a major bump would break the downgrade
+    path README.md promises; an older release loads a 1.2 entry unchanged.
+    """
+    if entry.version == 1 and entry.minor_version < 2:
+        key: str = entry.data.get(CONF_LOCAL_TZ, "")
+        if not key:
+            tz = tz_for_address(entry.title or "")
+            key = getattr(tz, "key", "") if tz is not None else ""
+        hass.config_entries.async_update_entry(
+            entry, data={**entry.data, CONF_LOCAL_TZ: key}, minor_version=2
+        )
+        # The title is the service address (Class B-adjacent) — log the
+        # derived zone, never the title.
+        _LOGGER.info(
+            "Migrated haggle entry to 1.2: local_tz=%s", key or "unknown (HA tz)"
+        )
+    return True
+
+
+def _resolve_local_tz(entry: HaggleConfigEntry) -> tuple[tzinfo, bool]:
+    """(zone, zone is the contract's own) for the AglClient.
+
+    Resolution order: ZoneInfo(entry.data[CONF_LOCAL_TZ]) → HA's configured
+    timezone. The stored key is address-derived (config flow, migration,
+    repair flows, overview refinement) and is the only source the parser
+    may undo AGL's Sydney conversion against (#292, A3); the HA fallback
+    bounds the interval window only. A hand-edited key that tzdata cannot
+    resolve degrades to the fallback rather than failing setup — the client
+    itself announces the fallback once, so only the reason is logged here.
+    """
+    key: str = entry.data.get(CONF_LOCAL_TZ, "")
+    if key:
+        try:
+            return ZoneInfo(key), True
+        except KeyError, OSError, ValueError:
+            # The key is user-editable text; log it bounded.
+            _LOGGER.warning(
+                "Stored local_tz %.64r is not a usable timezone key; "
+                "run Reconfigure to re-derive it from the service address",
+                key,
+            )
+    return dt_util.get_default_time_zone(), False
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bool:
@@ -169,10 +235,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     entry.async_on_unload(session.close)
 
     auth = AglAuth(refresh_token, _persist_refresh_token)
-    # HA's configured tz stands in for the contract's local tz (the property
-    # hosts the HA instance) — it bounds the interval-timestamp window to the
-    # true UTC shape of one local day (Codex P1, PR #266).
-    client = AglClient(auth, session, local_tz=dt_util.get_default_time_zone())
+    # The contract's local tz bounds the interval-timestamp window to the
+    # true UTC shape of one local day (Codex P1, PR #266) and, when it is
+    # address-derived, is what the parser re-localises AGL's
+    # Sydney-converted timestamps into (#292). HA's configured tz stands in
+    # for the window only until the zone is known.
+    local_tz, tz_is_contract = _resolve_local_tz(entry)
+    client = AglClient(auth, session, local_tz=local_tz, tz_is_contract=tz_is_contract)
     coordinator = HaggleCoordinator(hass, entry, client, contract_number)  # type: ignore[arg-type]
 
     await coordinator.async_config_entry_first_refresh()

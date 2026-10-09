@@ -21,6 +21,7 @@ from custom_components.haggle.config_flow import CALLBACK_URL_FIELD
 from custom_components.haggle.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
+    CONF_LOCAL_TZ,
     CONF_PINNED_SPKI_AUTH,
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
@@ -676,6 +677,7 @@ def _repair_entry(
         CONF_ACCOUNT_NUMBER: account,
         CONF_PINNED_SPKI_AUTH: _OLD_AUTH_SPKI,
         CONF_PINNED_SPKI_BFF: _OLD_BFF_SPKI,
+        CONF_LOCAL_TZ: "",
         **extra_data,
     }
     entry = MockConfigEntry(
@@ -683,6 +685,7 @@ def _repair_entry(
         title="1 Sample St",
         unique_id=uid or f"{account}_{contract}",
         data=data,
+        minor_version=2,
     )
     entry.add_to_hass(hass)
     return entry
@@ -1631,3 +1634,198 @@ async def test_reauth_exchange_error_keeps_reauth_confirm_step(
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_REFRESH_TOKEN] == "v1.new_token"
     assert entry.data[CONF_PINNED_SPKI_AUTH] == _OLD_AUTH_SPKI
+
+
+# ---------------------------------------------------------------------------
+# #292 — CONF_LOCAL_TZ persistence in config flow
+# ---------------------------------------------------------------------------
+
+
+async def test_creation_stores_local_tz_from_contract_address(
+    hass: HomeAssistant,
+) -> None:
+    """New entry stores the contract's IANA zone derived from address (#292 A6).
+
+    Mutation: _async_create_entry omits CONF_LOCAL_TZ key →
+    entry.data has no 'local_tz'; setup falls back to HA zone for the
+    first cycle and async_migrate_entry must fix it on every restart.
+    """
+    qld_contract = Contract(
+        contract_number="9999999999",
+        account_number="1234567890",
+        address="1 Sample Street SUBURB QLD 4000",
+        fuel_type="electricityContract",
+        status="active",
+    )
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    authorize_url: str = result["description_placeholders"]["authorize_url"]
+    callback_url = _make_callback_url(authorize_url)
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("access_tok", "refresh_tok", "deadbeef" * 8),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=([qld_contract], "cafef00d" * 8),
+        ),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            user_input={CALLBACK_URL_FIELD: callback_url},
+        )
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_LOCAL_TZ] == "Australia/Brisbane"
+
+
+async def test_reauth_refreshes_local_tz_from_contract_address(
+    hass: HomeAssistant,
+) -> None:
+    """Reauth updates CONF_LOCAL_TZ from the matched contract's address (#292 A6 D2).
+
+    Mutation: _async_update_existing_entry doesn't write CONF_LOCAL_TZ →
+    a user who migrates from SA to QLD retains the old zone forever.
+    """
+    # Start with an entry that has an SA address.
+    sa_tz = "Australia/Adelaide"
+    entry = _repair_entry(hass, **{CONF_LOCAL_TZ: sa_tz})
+    # The matching contract now has a QLD address.
+    qld_contract = _matching_contract()  # "1 Sample Street SUBURB QLD 4000"
+    result = await _run_repair(
+        hass, entry, source=config_entries.SOURCE_REAUTH, contracts=[qld_contract]
+    )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reauth_successful"
+    assert entry.data[CONF_LOCAL_TZ] == "Australia/Brisbane"
+
+
+async def test_reconfigure_refreshes_local_tz_from_contract_address(
+    hass: HomeAssistant,
+) -> None:
+    """Reconfigure updates CONF_LOCAL_TZ from the matched contract's address (#292 A6).
+
+    Mutation: _async_update_existing_entry doesn't write CONF_LOCAL_TZ →
+    an existing install that never reconfigures keeps whatever zone the migration
+    derived from the title, even after tz_for_address produces a better key.
+    """
+    sa_tz = "Australia/Adelaide"
+    entry = _repair_entry(hass, **{CONF_LOCAL_TZ: sa_tz})
+    qld_contract = _matching_contract()
+    result = await _run_repair(
+        hass, entry, source=config_entries.SOURCE_RECONFIGURE, contracts=[qld_contract]
+    )
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_LOCAL_TZ] == "Australia/Brisbane"
+
+
+# ---------------------------------------------------------------------------
+# #292 — async_migrate_entry (1.1 → 1.2) tests
+# ---------------------------------------------------------------------------
+
+
+async def test_migration_11_to_12_sa_address_stores_adelaide_zone(
+    hass: HomeAssistant,
+) -> None:
+    """Migration derives Australia/Adelaide from an SA-street title (#292 A6).
+
+    Mutation: async_migrate_entry stores "" instead of the tz key →
+    setup uses HA fallback; Adelaide slots are shifted by 30 min forever.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="1 Sample Street SUBURB SA 5000",
+        unique_id="1234567890_9999999999",
+        data={
+            CONF_REFRESH_TOKEN: "v1.testtoken",
+            CONF_CONTRACT_NUMBER: "9999999999",
+            CONF_ACCOUNT_NUMBER: "1234567890",
+        },
+        version=1,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.haggle.async_setup_entry",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.data[CONF_LOCAL_TZ] == "Australia/Adelaide"
+    assert entry.minor_version == 2
+
+
+async def test_migration_11_to_12_unknown_title_stores_empty_key(
+    hass: HomeAssistant,
+) -> None:
+    """Migration stores '' when tz_for_address can't map the title (#292 A6).
+
+    Mutation: async_migrate_entry raises on unknown title instead of "" →
+    HA refuses to load the entry (MIGRATION_FAILED) and the integration
+    is dead until the user reconfigures.
+    The WARNING must be logged so the user knows the fallback is active.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Renamed by user",
+        unique_id="1234567890_9999999999",
+        data={
+            CONF_REFRESH_TOKEN: "v1.testtoken",
+            CONF_CONTRACT_NUMBER: "9999999999",
+            CONF_ACCOUNT_NUMBER: "1234567890",
+        },
+        version=1,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.haggle.async_setup_entry",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.data[CONF_LOCAL_TZ] == ""
+    assert entry.minor_version == 2
+
+
+async def test_migration_already_at_12_is_noop(hass: HomeAssistant) -> None:
+    """Migration for a minor_version=2 entry does not modify data.
+
+    Mutation: async_migrate_entry runs unconditionally → CONF_LOCAL_TZ gets
+    overwritten from the title on every HA restart, discarding the coordinator's
+    address-derived value.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Renamed by user",
+        unique_id="1234567890_9999999999",
+        data={
+            CONF_REFRESH_TOKEN: "v1.testtoken",
+            CONF_CONTRACT_NUMBER: "9999999999",
+            CONF_ACCOUNT_NUMBER: "1234567890",
+            CONF_LOCAL_TZ: "Australia/Brisbane",
+        },
+        version=1,
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+    with patch(
+        "custom_components.haggle.async_setup_entry",
+        new_callable=AsyncMock,
+        return_value=True,
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    # The pre-stored key must not be overwritten.
+    assert entry.data[CONF_LOCAL_TZ] == "Australia/Brisbane"

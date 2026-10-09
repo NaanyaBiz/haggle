@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -49,6 +49,7 @@ from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
     BACKFILL_INTER_REQUEST_DELAY,
+    CONF_LOCAL_TZ,
     CONF_SOLAR_HEAL,
     CONF_SOLAR_STALL_SPANS,
     DEFAULT_POLL_INTERVAL_HOURS,
@@ -320,8 +321,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # cost stat's last row is no longer needed here.
         last_cons_sum, last_cons_date = await self._get_last_stat(stat_id_cons)
 
-        # AGL `dateTime` slots are UTC; using `date.today()` (OS local time)
-        # would skew the fetch range by a day around midnight in non-UTC zones.
+        # AGL `dateTime` slots are UTC once the parser has undone AGL's Sydney
+        # conversion (#292); using `date.today()` (OS local time) would skew
+        # the fetch range by a day around midnight in non-UTC zones.
         today = datetime.now(UTC).date()
         yesterday = today - timedelta(days=1)
 
@@ -363,7 +365,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             and (last_gen_date is None or solar_range[0] > last_gen_date)
         )
         fetch_complete = await self._fetch_with_heal_accounting(
-            cons_range, solar_range, bill_start, heal_ctx, track_stall=track_stall
+            cons_range,
+            solar_range,
+            bill_start,
+            heal_ctx,
+            track_stall=track_stall,
+            today=today,
         )
 
         # Extract rates from plan.
@@ -514,9 +521,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 # fetch (Codex pass-3 P1, PR #266). Best source available is
                 # the service address's state; HA's tz (set at client
                 # construction) remains the fallback when it doesn't parse.
+                # set_contract_tz (not a bare attribute assignment) also
+                # flags the zone as address-derived, which is what licenses
+                # the parser to undo AGL's Sydney conversion (#292); the key
+                # is persisted so the NEXT setup starts corrected from its
+                # first chunk, overview reachable or not (#268).
                 tz = tz_for_address(contract.address)
                 if tz is not None:
-                    self.client.local_tz = tz
+                    self.client.set_contract_tz(tz)
+                    self._persist_contract_tz(tz)
                 return
         # HTTP-successful overview WITHOUT the configured contract (contract
         # removed from the account, or its contractNumber dropped as malformed
@@ -529,6 +542,141 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         _LOGGER.debug(
             "Configured contract absent from overview; cleared bill projection"
         )
+
+    def _persist_contract_tz(self, tz: tzinfo) -> None:
+        """Store the address-derived zone key in entry.data when it changes.
+
+        CONF_LOCAL_TZ is the contract-zone authority read by async_setup_entry
+        (#268): without it every restart ran its first chunk on the HA zone
+        until the overview cycle refined the client, and after #292 a wrong
+        zone means shifted timestamps rather than a dropped slot. Written
+        like the rotated refresh token / heal record — no reload listener
+        fires. A zone without an IANA key (not a ZoneInfo) is not persisted;
+        the in-memory client still uses it.
+        """
+        key = getattr(tz, "key", "")
+        if key and self.config_entry.data.get(CONF_LOCAL_TZ) != key:
+            self.hass.config_entries.async_update_entry(
+                self.config_entry,
+                data={**self.config_entry.data, CONF_LOCAL_TZ: key},
+            )
+
+    def _contract_tz(self) -> tzinfo:
+        """The zone every contract-local-midnight computation uses (#268).
+
+        The client's zone is address-derived (CONF_LOCAL_TZ at setup, refined
+        each overview cycle via set_contract_tz) with the HA instance's zone
+        as the fallback — the same authority as the parser's interval window,
+        so "local midnight" means one thing throughout this module. The
+        isinstance narrowing keeps a client constructed without a zone on
+        the fallback.
+        """
+        tz = self.client.local_tz
+        return tz if isinstance(tz, tzinfo) else dt_util.get_default_time_zone()
+
+    def _local_midnight_utc(self, day: date) -> datetime:
+        """UTC instant of local midnight starting `day` in the contract zone.
+
+        Replaces the HA-zone `dt_util.start_of_local_day` at every site that
+        bounds a local day (heal floor, period-totals cutoff, covered_from,
+        zero-export markers) — a Brisbane HA host managing an Adelaide
+        contract otherwise bounds its days 30 min early (#268 acceptance
+        criterion 2; Codex pass-5 P2). For a half-hour zone the result lands
+        at :30 past a UTC hour, which is what the A4 straddle handling below
+        keys on.
+        """
+        return datetime(
+            day.year, day.month, day.day, tzinfo=self._contract_tz()
+        ).astimezone(UTC)
+
+    @staticmethod
+    def _first_full_hour(dt: datetime) -> datetime:
+        """`dt` if it is on the hour, else the next whole UTC hour (ceil).
+
+        Statistics rows start on the UTC hour. For a half-hour zone the hourly
+        bucket containing local midnight is split between two local days, so
+        the first bucket a local day owns OUTRIGHT is the one after it.
+        """
+        floored = dt.replace(minute=0, second=0, microsecond=0)
+        return floored if floored == dt else floored + timedelta(hours=1)
+
+    def _with_overlap_day(
+        self, rng: tuple[date, date] | None, today: date
+    ) -> tuple[date, date] | None:
+        """Start a half-hour-zone fetch range one day early (A4, #292).
+
+        In a half-hour zone (SA, Broken Hill, NT) local midnight sits at :30
+        past a UTC hour, so the hourly statistics bucket at every local-day
+        boundary holds the previous day's 23:30 slot AND this day's 00:00
+        slot. A batch starting at day S rewrites that bucket from its own
+        half alone and the stored 23:30 slot leaves the cumulative chain for
+        good (reproduced on the real recorder: 96 -> 95 kWh per sliding day).
+        Fetching S-1 as well — the OVERLAP day, context only — fills the
+        bucket whole; _straddle_trim_before then drops the batch's own first
+        half-bucket (S-1's boundary with S-2), which is already stored.
+
+        No overlap below the retention floor: a fresh install's first chunk
+        (and a heal floor at today - BACKFILL_DAYS) loses that first day's
+        00:00 slot, accepted and stated in the acceptance plan — AGL may not
+        serve the day before, and a request that cannot succeed is wasted
+        budget. Whole-hour zones are untouched: no extra request, ever.
+        """
+        if rng is None:
+            return None
+        start, end = rng
+        if self._local_midnight_utc(start).minute == 0:
+            return rng
+        overlap = start - timedelta(days=1)
+        if overlap < today - timedelta(days=BACKFILL_DAYS):
+            return rng
+        return overlap, end
+
+    def _straddle_trim_before(
+        self, intervals: list[IntervalReading]
+    ) -> datetime | None:
+        """Cutoff below which this batch's hourly buckets must be dropped (A4).
+
+        Derived from batch CONTENT, never from the fetch plan: the batch does
+        not own its first hourly bucket when its earliest slot sits at :30
+        past the UTC hour in a half-hour zone (the slot before it, same
+        bucket, belongs to the previous local day and is not in the batch).
+        Keying on the plan instead would re-open the loss on every path
+        where the overlap day yields nothing — per-day AGL error, a
+        zero-on-zero placeholder day, the retention floor on a big-gap
+        resume — because the batch would then start at day S with a
+        half-full boundary bucket that overwrites the stored full row.
+
+        Returns None (no trim) for an empty batch, a batch whose first slot
+        is on the hour, or a whole-hour zone (where :30 slots are ordinary
+        half-hours inside the day and the bucket is wholly owned).
+        """
+        if not intervals:
+            return None
+        first = min(r.dt for r in intervals)
+        if first.minute == 0:
+            return None
+        local_day = first.astimezone(self._contract_tz()).date()
+        if self._local_midnight_utc(local_day).minute == 0:
+            return None
+        return self._first_full_hour(first)
+
+    @staticmethod
+    def _drop_before(
+        hourly: dict[datetime, float], cutoff: datetime
+    ) -> dict[datetime, float]:
+        """Hourly buckets at/after `cutoff` only (A4 straddle trim)."""
+        return {h: v for h, v in hourly.items() if h >= cutoff}
+
+    @classmethod
+    def _drop_bands_before(
+        cls, bands: dict[str, dict[datetime, float]], cutoff: datetime
+    ) -> dict[str, dict[datetime, float]]:
+        """_drop_before over per-tariff buckets; a band left empty is removed
+        so no series is emitted with zero rows."""
+        trimmed = {
+            tariff: cls._drop_before(hourly, cutoff) for tariff, hourly in bands.items()
+        }
+        return {tariff: hourly for tariff, hourly in trimmed.items() if hourly}
 
     def _maybe_reload_for_new_tariffs(self) -> None:
         """Schedule a reload when a ToU band first appears after first refresh.
@@ -848,6 +996,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         heal_ctx: tuple[date, int] | None,
         *,
         track_stall: bool = False,
+        today: date | None = None,
     ) -> bool:
         """Run the fetch, guaranteeing heal attempts are counted on ANY exit.
 
@@ -868,6 +1017,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 bill_start,
                 known_bands=frozenset(self._active_tou_bands),
                 track_stall=track_stall,
+                today=today,
             )
         except asyncio.CancelledError:
             # HA unload/restart mid-sweep is not an AGL failure — the frozen
@@ -1029,7 +1179,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         from homeassistant.helpers.recorder import get_instance
 
         _, stat_id_credit = self._generation_stat_ids()
-        floor_dt = dt_util.as_utc(dt_util.start_of_local_day(floor))
+        floor_dt = self._local_midnight_utc(floor)
         now = datetime.now(UTC)
         result = await get_instance(self.hass).async_add_executor_job(
             statistics_during_period,
@@ -1111,13 +1261,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         earliest — same assumption _baseline_sums_before / _generation_heal_triggers
         rely on.
 
-        Converts to the LOCAL date, not the raw UTC row timestamp. AGL's
-        `period=` boundary and bill_start are both local-timezone concepts
-        (see the "AGL period= query is local-timezone" note elsewhere in this
-        file); every AGL contract is in a positive-UTC-offset zone, so local
-        midnight is stored under the PREVIOUS UTC calendar date. Comparing raw
-        UTC dates against a local-date bill_start would misreport covered_from
-        by a day in the truncated case (and could even mask a real one-day
+        Converts to the CONTRACT-local date, not the raw UTC row timestamp
+        (nor the HA instance's local date — #268). AGL's `period=` boundary
+        and bill_start are both contract-local concepts (see the "AGL
+        period= query is local-timezone" note elsewhere in this file); every
+        AGL contract is in a positive-UTC-offset zone, so local midnight is
+        stored under the PREVIOUS UTC calendar date. Comparing raw UTC dates
+        against a local-date bill_start would misreport covered_from by a
+        day in the truncated case (and could even mask a real one-day
         truncation as covered_from == bill_start).
         """
         from homeassistant.components.recorder.statistics import (
@@ -1142,9 +1293,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         first_start = rows[0].get("start")
         if first_start is None:
             return None
-        return dt_util.as_local(
+        return (
             datetime.fromtimestamp(float(first_start), tz=UTC)
-        ).date()
+            .astimezone(self._contract_tz())
+            .date()
+        )
 
     async def _get_generation_period_totals(
         self,
@@ -1183,14 +1336,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         Half-hour timezones (e.g. ACST, local midnight = 14:30Z): the hourly
         row strictly before the cutoff contains the day's first 30-min slot,
         so at most one midnight slot folds into the baseline — solar export at
-        local midnight is zero, so no correction is needed.
+        local midnight is zero, so no correction is needed. The cutoff is
+        local midnight in the CONTRACT zone (#268), not the HA instance's.
         """
         if last_gen_date is None or last_gen_date < today - timedelta(
             days=REWINDOW_DAYS
         ):
             return None, None, None, False
         stat_id_gen, stat_id_credit = self._generation_stat_ids()
-        cutoff = dt_util.start_of_local_day(bill_start)
+        cutoff = self._local_midnight_utc(bill_start)
         base_gen, base_credit = await self._get_baseline_sums(
             stat_id_gen, stat_id_credit, cutoff
         )
@@ -1201,10 +1355,6 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         truncated = covered_from > bill_start
         return kwh, credit, covered_from, truncated
 
-    # C901: complexity 13 vs gate of 12 — the 429-break / heal-accounting /
-    # per-series-range logic is deliberately in one place. Decomposition is
-    # tracked in the debt issue created with this change; do not grow this
-    # function further.
     async def _fetch_range(
         self,
         cons_range: tuple[date, date] | None,
@@ -1213,6 +1363,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         *,
         known_bands: frozenset[str] = frozenset(),
         track_stall: bool = False,
+        today: date | None = None,
     ) -> bool:
         """Fetch per-series day ranges with smart endpoint selection, then import.
 
@@ -1233,8 +1384,20 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         floor..yesterday window un-chunked — 30 + 7 requests when the pending
         record is fresh, more if it aged while HA was offline (the floor
         deliberately never slides) — bounded per lifetime at
-        2x MAX_SOLAR_HEAL_ATTEMPTS sweeps. See TestComposedRequestCeiling
-        for the regression-guarded totals.
+        2x MAX_SOLAR_HEAL_ATTEMPTS sweeps. A half-hour-zone contract (SA,
+        Broken Hill, NT) adds exactly one leading OVERLAP day per series per
+        cycle (#292 A4/A12: (7+1) + (7+1) normally) and nothing for a
+        whole-hour zone. See TestComposedRequestCeiling for the
+        regression-guarded totals.
+
+        The overlap day is context only: its slots complete the local-day
+        boundary bucket (see _with_overlap_day) but it never counts as a
+        fetched solar day (no zero-export marker, no stall progress) and a
+        per-day AGL error on it is non-fatal — a heal sweep cannot be kept
+        pending by a day it only fetched for context. Stall tracking and
+        give-up markers see the ORIGINAL ranges. `today` anchors the overlap
+        retention guard; it defaults to the current UTC date for callers
+        outside _fetch_and_import.
 
         Sleeps between requests so a chunk-of-7 first-install backfill doesn't
         hammer AGL's BFF in under a second. AGL rate limits are account-wide,
@@ -1245,10 +1408,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         the solar endpoint's own consumption block is ignored until it has been
         reconciled against a real bill.
         """
-        ranges = [r for r in (cons_range, solar_range) if r is not None]
         self._sweep_halted = False
-        if not ranges:
+        if cons_range is None and solar_range is None:
             return True
+        if today is None:
+            today = datetime.now(UTC).date()
+        cons_fetch = self._with_overlap_day(cons_range, today)
+        solar_fetch = self._with_overlap_day(solar_range, today)
+        ranges = [r for r in (cons_fetch, solar_fetch) if r is not None]
         all_intervals: list[IntervalReading] = []
         solar_intervals: list[IntervalReading] = []
         fetched_solar_days: list[date] = []
@@ -1260,13 +1427,14 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         while current <= loop_end:
             first, day_rate_limited, day_skipped = await self._fetch_sweep_day(
                 current,
-                cons_range,
-                solar_range,
+                cons_fetch,
+                solar_fetch,
                 bill_start,
                 first=first,
                 all_intervals=all_intervals,
                 solar_intervals=solar_intervals,
                 fetched_solar_days=fetched_solar_days,
+                solar_overlap=solar_range is not None and current < solar_range[0],
             )
             solar_skipped = solar_skipped or day_skipped
             if day_rate_limited:
@@ -1274,19 +1442,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 break
             current += timedelta(days=1)
 
-        if all_intervals:
-            await self._import_intervals(all_intervals, known_bands=known_bands)
-        # Partial solar batches import too — idempotent, and the trailing
-        # rewindow re-fetches the last REWINDOW_DAYS so short gaps self-heal.
-        # fetched_solar_days matters even with zero intervals: an all-zero
-        # export day must still advance the generation resume point.
-        if solar_intervals or fetched_solar_days:
-            await self._import_generation(
-                solar_intervals, fetched_days=fetched_solar_days
-            )
+        await self._import_sweep_batches(
+            all_intervals, solar_intervals, fetched_solar_days, known_bands
+        )
         # Normal-path give-up (#154): only non-heal, non-rate-limited sweeps
         # count toward the stall detector — a 429 halts before days are even
         # attempted, and heal sweeps have their own attempt accounting.
+        # fetched_solar_days never holds the overlap day, so "progressed"
+        # means progress INSIDE the original range (A4(d)): an overlap day
+        # that fetches fine while the whole chunk permanently errors must
+        # not reset the counter and re-arm the #154 wedge.
         if track_stall and solar_range is not None and not rate_limited:
             await self._track_solar_stall(
                 solar_range, bool(fetched_solar_days), solar_skipped
@@ -1301,6 +1466,25 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         self._sweep_halted = rate_limited
         return not rate_limited and not solar_skipped
 
+    async def _import_sweep_batches(
+        self,
+        all_intervals: list[IntervalReading],
+        solar_intervals: list[IntervalReading],
+        fetched_solar_days: list[date],
+        known_bands: frozenset[str],
+    ) -> None:
+        """Import what a sweep collected (extracted from _fetch_range, #187)."""
+        if all_intervals:
+            await self._import_intervals(all_intervals, known_bands=known_bands)
+        # Partial solar batches import too — idempotent, and the trailing
+        # rewindow re-fetches the last REWINDOW_DAYS so short gaps self-heal.
+        # fetched_solar_days matters even with zero intervals: an all-zero
+        # export day must still advance the generation resume point.
+        if solar_intervals or fetched_solar_days:
+            await self._import_generation(
+                solar_intervals, fetched_days=fetched_solar_days
+            )
+
     async def _fetch_sweep_day(
         self,
         current: date,
@@ -1312,6 +1496,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         all_intervals: list[IntervalReading],
         solar_intervals: list[IntervalReading],
         fetched_solar_days: list[date],
+        solar_overlap: bool = False,
     ) -> tuple[bool, bool, bool]:
         """Fetch one sweep day for whichever series cover it, into the batches.
 
@@ -1324,6 +1509,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         this solar day (the sweep is incomplete so a heal retries it). Extracted
         verbatim from the ``_fetch_range`` loop body — behaviour is unchanged
         (#187).
+
+        ``solar_overlap`` marks the half-hour-zone OVERLAP day (#292 A4(c)):
+        it is fetched for the boundary bucket only, so a per-day error on it
+        neither flags the sweep incomplete nor counts it as fetched. A
+        429/transport halt still halts — those are endpoint-wide and would
+        hit the next day regardless. The consumption overlap day needs no
+        special case: its per-day error is already the non-fatal `[]` skip.
         """
         fetch_cons = cons_range is not None and (
             cons_range[0] <= current <= cons_range[1]
@@ -1345,13 +1537,17 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
             first = False
             status = await self._fetch_solar_day_into(
-                current, previous, solar_intervals, fetched_solar_days
+                current,
+                previous,
+                solar_intervals,
+                fetched_solar_days,
+                context_only=solar_overlap,
             )
             if status == "halt":
                 # 429 or transport failure — endpoint-wide, not per-day;
                 # halt and retry the whole chunk next cycle.
                 return first, True, False
-            if status == "skip":
+            if status == "skip" and not solar_overlap:
                 # Per-day AGL HTTP error on this solar day: unmarked, and the
                 # sweep is flagged incomplete so a heal retries it rather than
                 # declaring done with a hole. On normal cycles the return is
@@ -1522,6 +1718,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         previous: bool,
         solar_intervals: list[IntervalReading],
         fetched_solar_days: list[date],
+        *,
+        context_only: bool = False,
     ) -> str:
         """Fetch one solar day into the accumulators; classify the outcome.
 
@@ -1529,7 +1727,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         error — unmarked, sweep is incomplete), or "halt" (429 or transport
         failure — caller halts the chunk; the whole thing retries next cycle).
         Only a *successful* fetch appends to `fetched_solar_days`, so a
-        skipped day is retried while a heal is pending.
+        skipped day is retried while a heal is pending. A `context_only`
+        day (the half-hour-zone overlap day, #292 A4) contributes its slots
+        but is never marked covered: it was covered by an earlier cycle, and
+        a zero-export marker for it could only overwrite real stored rows.
         """
         try:
             readings = await self._fetch_day_solar(day, previous)
@@ -1546,7 +1747,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if readings is None:
             return "skip"
         solar_intervals.extend(readings)
-        fetched_solar_days.append(day)
+        if not context_only:
+            fetched_solar_days.append(day)
         return "ok"
 
     @staticmethod
@@ -1601,18 +1803,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         fetched interval as the cutoff — never a fetch_start-derived UTC
         midnight. AGL's period= query is interpreted in the contract's local
         timezone, so the first interval of a day query lands at local midnight
-        in UTC ((fetch_start - 1)T14:00Z for AEST), and a fixed-UTC cutoff would
-        fold ~10 h of about-to-be-overwritten old sums into the baseline and
+        in UTC ((fetch_start - 1)T14:00Z for AEST, once the parser has undone
+        AGL's Sydney conversion — #292), and a fixed-UTC cutoff would fold
+        ~10 h of about-to-be-overwritten old sums into the baseline and
         re-add them — spiking the cumulative sum every local midnight.
+
+        Half-hour zones (#292 A4): when the batch's earliest slot sits at :30
+        past the UTC hour, its first hourly bucket is shared with the previous
+        local day and is dropped from EVERY series (aggregate, cost, each ToU
+        band) before the baseline cutoff is taken — the stored full row keeps
+        the other half and the chain continues from the next hour. See
+        _straddle_trim_before.
         """
         from homeassistant.const import UnitOfEnergy
 
         intervals = _dedupe_slots(intervals)
+        trim_before = self._straddle_trim_before(intervals)
 
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = (
             self._bucket_hourly(intervals)
         )
+        if trim_before is not None:
+            hour_cons = self._drop_before(hour_cons, trim_before)
+            hour_cost = self._drop_before(hour_cost, trim_before)
+            band_cons = self._drop_bands_before(band_cons, trim_before)
+            band_cost = self._drop_bands_before(band_cost, trim_before)
+            bands_this_batch &= set(band_cons)
 
         # Nothing fetched → nothing to import, and no baseline lookup needed.
         if not hour_cons:
@@ -1757,17 +1974,25 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         A successfully fetched day whose intervals all filtered out (zero
         export: cloudy day, or a solar system newer than the backfill floor)
-        still gets ONE zero-delta marker row at the hour of local midnight so
-        the generation resume point advances. Without it the backfill would
-        refetch the same all-zero chunk forever and the bill-period sensors
-        would never unlock (Codex review, PR #144). An AEMO-lag placeholder
-        day marked this way self-heals: the trailing rewindow re-fetches the
-        last REWINDOW_DAYS and the idempotent import overwrites the marker
-        (data lag is 24-48 h, well inside the window).
+        still gets ONE zero-delta marker row at the first full hour of local
+        midnight so the generation resume point advances. Without it the
+        backfill would refetch the same all-zero chunk forever and the
+        bill-period sensors would never unlock (Codex review, PR #144). An
+        AEMO-lag placeholder day marked this way self-heals: the trailing
+        rewindow re-fetches the last REWINDOW_DAYS and the idempotent import
+        overwrites the marker (data lag is 24-48 h, well inside the window).
+
+        Local midnight is the CONTRACT zone's (#268). In a half-hour zone the
+        marker is CEILED to the next full hour (#292 A4(e)), never floored:
+        the floored hour is the straddle bucket holding the previous day's
+        23:30 export, and a zero marker there would overwrite it. The same
+        straddle trim as _import_intervals drops the batch's shared first
+        bucket (markers included) before the baseline cutoff is taken.
         """
         from homeassistant.const import UnitOfEnergy
 
         intervals = _dedupe_slots(intervals)
+        trim_before = self._straddle_trim_before(intervals)
 
         hour_kwh: dict[datetime, float] = {}
         hour_credit: dict[datetime, float] = {}
@@ -1777,17 +2002,17 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             hour_credit[h] = hour_credit.get(h, 0.0) + r.cost_aud
 
         for day in fetched_days:
-            day_start = dt_util.start_of_local_day(day)
-            day_end = day_start + timedelta(days=1)
+            day_start = self._local_midnight_utc(day)
+            day_end = self._local_midnight_utc(day + timedelta(days=1))
             if any(day_start <= h < day_end for h in hour_kwh):
                 continue
-            # Floor to the hour: half-hour zones (ACST) have local midnight at
-            # :30 past a UTC hour, and statistics rows start on the hour.
-            marker = dt_util.as_utc(day_start).replace(
-                minute=0, second=0, microsecond=0
-            )
+            marker = self._first_full_hour(day_start)
             hour_kwh.setdefault(marker, 0.0)
             hour_credit.setdefault(marker, 0.0)
+
+        if trim_before is not None:
+            hour_kwh = self._drop_before(hour_kwh, trim_before)
+            hour_credit = self._drop_before(hour_credit, trim_before)
 
         if not hour_kwh:
             return

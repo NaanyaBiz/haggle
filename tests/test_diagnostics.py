@@ -446,3 +446,126 @@ class TestSagaFields:
             "row_count": 0,
             "last_sum": None,
         }
+
+
+# ---------------------------------------------------------------------------
+# #292 — Diagnostics schema v3: contract_timezone + tz_is_contract
+# ---------------------------------------------------------------------------
+
+
+class TestDiagnosticsV3Timezone:
+    """Diagnostics schema v3 adds contract_timezone and tz_is_contract (#292 A7).
+
+    Mutation targets:
+    - schema_version stays 2 → triage routine parses wrong block offsets
+    - contract_timezone omitted → triage can't tell if correction is active
+    - tz_is_contract omitted → can't distinguish address-derived from HA fallback
+    - IANA key passes through scrub → NOT a leak (accepted residual)
+    """
+
+    async def _make_tz_entry(
+        self,
+        hass: HomeAssistant,
+        *,
+        zone: str | None = "Australia/Adelaide",
+        tz_is_contract: bool = True,
+    ) -> MockConfigEntry:
+        from types import SimpleNamespace
+        from zoneinfo import ZoneInfo
+
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data={**_ENTRY_DATA, "local_tz": zone or ""},
+            unique_id=f"{_ACCOUNT}_{_CONTRACT}",
+        )
+        entry.add_to_hass(hass)
+        coordinator = HaggleCoordinator(hass, entry, AsyncMock(), _CONTRACT)
+        coordinator.data = _data()
+        coordinator._has_solar = False
+        coordinator._active_tou_bands = set()
+        # Inject a real ZoneInfo onto the mock client so getattr reads correctly.
+        coordinator.client.local_tz = ZoneInfo(zone) if zone else None
+        coordinator.client.tz_is_contract = tz_is_contract
+        entry.runtime_data = SimpleNamespace(coordinator=coordinator)
+        return entry
+
+    async def test_schema_version_is_3(self, hass: HomeAssistant) -> None:
+        """DIAGNOSTICS_SCHEMA_VERSION is 3 in this build (#292 A7).
+
+        Mutation: stays at 2 → triage routine reads wrong field offsets and
+        may log incorrect contract_timezone / tz_is_contract values.
+        """
+        assert DIAGNOSTICS_SCHEMA_VERSION == 3
+
+    async def test_contract_timezone_field_present_and_correct(
+        self, hass: HomeAssistant
+    ) -> None:
+        """coordinator.contract_timezone is the IANA key from client.local_tz.
+
+        Mutation: field omitted → triage cannot verify the correction is
+        active; #292-class reports become undiagnosable without log access.
+        """
+        entry = await self._make_tz_entry(hass, zone="Australia/Adelaide")
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        assert result["coordinator"]["contract_timezone"] == "Australia/Adelaide"
+
+    async def test_tz_is_contract_true_when_address_derived(
+        self, hass: HomeAssistant
+    ) -> None:
+        """coordinator.tz_is_contract reflects whether the zone is address-derived.
+
+        Mutation: always False → triage always sees HA-fallback regardless
+        of actual zone source; correction appears inactive when it is active.
+        """
+        entry = await self._make_tz_entry(
+            hass, zone="Australia/Brisbane", tz_is_contract=True
+        )
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        assert result["coordinator"]["tz_is_contract"] is True
+
+    async def test_tz_is_contract_false_for_ha_fallback(
+        self, hass: HomeAssistant
+    ) -> None:
+        """tz_is_contract is False when the zone is the HA fallback."""
+        entry = await self._make_tz_entry(hass, zone=None, tz_is_contract=False)
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        assert result["coordinator"]["tz_is_contract"] is False
+        assert result["coordinator"]["contract_timezone"] is None
+
+    async def test_local_tz_key_passes_through_scrub(self, hass: HomeAssistant) -> None:
+        """IANA zone key in entry.data is an accepted non-identifying residual.
+
+        It is NOT scrubbed — Australia/Broken_Hill is the finest granularity
+        (one postcode); docs/diagnostics.md documents this as accepted.
+        Mutation: scrub removes IANA keys → triage loses the zone source and
+        the test catches the regression by finding 'local_tz' absent.
+        """
+        entry = await self._make_tz_entry(hass, zone="Australia/Adelaide")
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        # 'local_tz' key must survive into the entry.data block.
+        assert "local_tz" in result["entry"]["data"]
+
+    async def test_iana_keys_not_in_leak_corpus(self, hass: HomeAssistant) -> None:
+        """IANA keys are NOT the identifiers that must be scrubbed.
+
+        The leak corpus covers token/account/contract/SPKI. An IANA key like
+        'Australia/Broken_Hill' is a geographic label, not a customer identifier.
+        This test documents the accepted behaviour: the key passes through.
+        Mutation: scrub adds IANA keys → test_local_tz_key_passes_through_scrub
+        fails simultaneously, guarding the boundary from both sides.
+        """
+        entry = await self._make_tz_entry(hass, zone="Australia/Broken_Hill")
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+
+        blob = json.dumps(result)
+        # Real identifiers still must not appear.
+        assert _TOKEN not in blob
+        assert _CONTRACT not in blob
+        assert _ACCOUNT not in blob
+        # But the IANA key IS expected to appear (it's the contract_timezone).
+        assert "Australia/Broken_Hill" in blob

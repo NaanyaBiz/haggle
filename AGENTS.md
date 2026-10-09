@@ -60,18 +60,18 @@ updates the affected conformance rows in the same PR.
 
 ```
 custom_components/haggle/
-├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData; _check_pin reads pins live from entry.data
+├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData; _check_pin reads pins live from entry.data; async_migrate_entry (minor 1→2: CONF_LOCAL_TZ derived from the entry title, #268); setup resolves the contract tz CONF_LOCAL_TZ → HA tz (fallback flagged tz_is_contract=False)
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
-├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth via its own `reauth_confirm` step (#284; token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle)
-├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
+├── const.py             # all constants — DOMAIN, API hosts, config-entry keys (incl. CONF_LOCAL_TZ, the contract-tz authority), AGL_API_TZ_KEY (the zone AGL converts dateTime through, #292), data keys
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth via its own `reauth_confirm` step (#284; token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle); MINOR_VERSION 2 — stores CONF_LOCAL_TZ from the selected contract's address at creation (fast path + picker) and refreshes it on reauth/reconfigure (#292/#268)
+├── diagnostics.py       # anonymized config-entry diagnostics (schema v3 — adds coordinator.contract_timezone + entry.data.local_tz) — public-safe; parsed by the triage routine (docs/diagnostics.md)
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals + half-hour-zone straddle guard (overlap day + content-derived trim, #292) + contract-local midnight helper _local_midnight_utc (#268)
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
 ├── agl/
 │   ├── __init__.py
-│   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods)
+│   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods; local_tz + tz_is_contract, set_contract_tz)
 │   ├── models.py        # TokenSet, Contract, IntervalReading, DailyReading, BillPeriod, PlanRates
-│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals; label-keyed bill projection (_projection_label, #253)
+│   ├── parser.py        # JSON → typed dataclasses; TOTAL over arbitrary JSON (fuzz-enforced) — filters type=none intervals; label-keyed bill projection (_projection_label, #253); Sydney-conversion inverse relocalise_agl_timestamp keyed on the response's timeZone (#292)
 │   └── pinning.py       # SPKI extraction helper for Trust-On-First-Use TLS pinning
 ├── strings.json         # translatable config-flow strings
 └── translations/en.json # English strings (must mirror strings.json)
@@ -89,21 +89,21 @@ tests/
 │   ├── solar_plan_response.json     # solar plan — feed-in rate in gstExclusiveRates
 │   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
 │   └── bill_period_response.json    # usage summary
-├── test_init.py                     # setup/unload smoke tests
-├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract) + reauth/reconfigure update-in-place
+├── test_init.py                     # setup/unload smoke tests + minor-version migration (CONF_LOCAL_TZ from title) + stored-tz resolution at setup
+├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract) + reauth/reconfigure update-in-place + CONF_LOCAL_TZ stored on creation/reauth/reconfigure
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
-├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float
+├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float, relocalise_agl_timestamp zone/DST vectors + window interaction (#292)
 ├── test_pinning.py                  # SPKI extraction + host-name guards
 ├── fuzz/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
-├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards
-├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition classes
+├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards, half-hour-zone overlap/trim + contract-local midnight sites (#292)
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 ├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
 ├── test_provenance_hook.py          # executes scripts/check_provenance_trailer.sh against sample messages (any-vendor Co-Authored-By / AI-Assisted: none / merge skip)
-└── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v1 shape
+└── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v3 shape
 
 docs/
 ├── compliance/
@@ -113,7 +113,7 @@ docs/
 ├── delivery-metrics.md  # quarterly delivery-metrics process + recorded time-to-restore exception (CO-18.3)
 ├── releasing.md         # release acceptance policy — beta-soak rule, hotfix evidence rule, downgrade test, acceptance record
 ├── testing.md           # test strategy — four layers, coverage floor, when live-HA manual testing is required
-├── diagnostics.md       # diagnostics schema v1 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
+├── diagnostics.md       # diagnostics schema v3 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
 ├── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
 └── agents/
     ├── triage-routine.md    # authoritative spec of the haggle-triage routine (repo-first change control, CO-12.8) — edit HERE, then sync the platform copy
@@ -341,7 +341,61 @@ quarterly delivery metrics (see `docs/delivery-metrics.md`).
     that undercounts kWh by 4-73% with no consistent ratio. Reading it was the
     root cause of the v0.1.0 / v0.2.0-beta.{1,2,3} meter-undercounting bug.
 - **Cost source of truth**: `consumption.amount` (outer) — AUD for the slot.
-- **`dateTime` field**: slot start, in **UTC**. Convert to local for display.
+- **`timeZone` field** (top-level): `"Australia/Sydney"` in EVERY usage
+  response seen — Hourly and Daily, Current and Previous, a Queensland
+  contract's included. It is the zone AGL converts `dateTime` through (next
+  bullet), NOT the contract's zone.
+- **`dateTime` field — NOT the slot start in true UTC** (#292). It is the
+  meter's LOCAL wall-clock slot label converted to UTC through the
+  response's `timeZone` (Australia/Sydney), whatever the contract's zone.
+  CONFIRMED two ways: the #292 Adelaide reporter reconciled 887 hourly
+  totals against the portal CSV only when the CSV's local labels were read
+  as Sydney time (DST-aware; TeslaMate corroborates the CSV labels are
+  Adelaide local), and the maintainer's raw Queensland captures (held
+  locally, not committed) show Dec–Mar local days running
+  `D-1T13:00Z → DT12:30Z` — Sydney AEDT midnight, an hour before Brisbane's
+  — and April days `D-1T14:00Z → DT13:30Z` (AEST, identical for both). The
+  `period=` query IS still interpreted in the contract's local day. How
+  early the raw value is, by contract zone:
+
+  | Contract zone | Raw `dateTime` is early by | Status |
+  |---|---|---|
+  | NSW / VIC / TAS / ACT | 0 — identity at every instant | by construction |
+  | QLD | 0 Apr–Oct; **1 h** while Sydney is on DST (first Sun Oct → first Sun Apr) | **confirmed** (raw captures) |
+  | SA / Broken Hill | **30 min** all year | **confirmed** (#292 reporter) |
+  | NT | 30 min Apr–Oct; 90 min in Sydney DST | derived |
+  | WA | 2 h Apr–Oct; 3 h in Sydney DST | derived |
+
+  `parser.relocalise_agl_timestamp` inverts it — read the instant as a
+  wall-clock label in the API zone, re-attach the contract's zone, express
+  in UTC again, `fold` preserved — immediately after the parse and BEFORE
+  the window check, using the response's own `timeZone` (bounded,
+  untrusted; `AGL_API_TZ_KEY` as the fallback) so it self-corrects if AGL
+  ever converts per contract. Applied ONLY when the zone is address-derived
+  (`AglClient.tz_is_contract`); under the HA-timezone fallback timestamps
+  are left as-is — loud (dropped slots + WARNING), as before — rather than
+  shifted silently. For every zone `tz_for_address` can produce, the
+  correction never moves a reading EARLIER (verified over every 30-min
+  instant of 2026), so the no-leading-slack invariant holds unchanged. ONE
+  bounded DEBUG line per parse records the first raw → corrected pair
+  (`api_tz`, declared `timeZone`, `contract_tz`) as the evidence hook. Two
+  once-a-year residuals are AGL's, not ours: on a fall-back day (first Sun
+  Apr) AGL may collapse both 02:xx folds onto one and lose a slot; on
+  Sydney's spring-forward day a no-DST zone's real 02:00–02:59 has no
+  Sydney label and cannot be recovered by any inverse. Exposure: SA
+  installs have written shifted data since v0.1.0; public releases
+  post-date the 2026 DST end (2026-05-03), so QLD installs first wrote
+  shifted data on 2026-10-04 — a 30-day in-place re-alignment (the
+  follow-up PR) covers the whole QLD span only if users upgrade by about
+  3 November 2026.
+- **Daily endpoint `dateTime`** (`/Current/Daily`, `/Previous/Daily`): the
+  LOCAL calendar date with a literal `00:00:00Z` — a date label, not an
+  instant. Verified on raw captures from both DST seasons: every item is
+  `YYYY-MM-DDT00:00:00Z`, and each day's `consumption.quantity` equals the
+  Hourly day-query sum for the same label (2026-03-06 → 85.869 kWh,
+  2026-04-28 → 29.044 kWh). `.date()` is therefore already the local day
+  and the Sydney re-localisation must NOT be applied. `parse_daily_readings`
+  is unused at runtime — `AglClient` has no Daily method.
 - **`consumption.type`**: `normal` | `peak` | `offpeak` | `shoulder` | `none`
   (filter out `none` — future-dated or unavailable intervals)
 - **Zero-on-zero filter**: AGL also returns intervals with non-`none` type
@@ -386,7 +440,8 @@ using the **actual earliest fetched-interval hour** as the cutoff — NOT a
 `fetch_start`-derived UTC midnight, and NOT the most-recent stored sum. AGL's
 `period=` query is interpreted in the contract's local timezone, so the first
 interval of a day query lands at local midnight in UTC (e.g.
-`(fetch_start - 1)T14:00Z` for an AEST account). A cutoff fixed at
+`(fetch_start - 1)T14:00Z` for an AEST account, `T14:30Z` for Adelaide once
+the #292 re-localisation has run). A cutoff fixed at
 `fetch_start T00:00Z` UTC folded ~10 h of about-to-be-overwritten old sums into
 the baseline and the new chain re-added those hours' deltas, producing a phantom
 `+N kWh` jump in the recorder `sum` column every local midnight (the Energy
@@ -404,6 +459,49 @@ is wrong here). Without the reach-back, a ToU band absent for longer than the
 window and then reappearing inside the rewindow would reset its cumulative sum to
 0.0 — a downward step breaking that series' `TOTAL_INCREASING` monotonicity
 (#114, fixed v0.3.2).
+
+**Half-hour zones (SA / Broken Hill / NT)** (#292): after re-localisation
+the contract-local midnight lands at `:30` past the UTC hour (`14:30Z` /
+`13:30Z` for Adelaide), so the hourly statistics bucket at every local-day
+boundary is shared by two days — `_bucket_hourly` floors to the UTC hour and
+HA rejects any row not on the hour. A batch that starts at day D holds only
+its own half of that bucket, and because imports overwrite
+`(statistic_id, start)` in place and the baseline is the row BEFORE
+`min(hour_cons)`, the previous day's 23:30 slot left the sum chain for good
+on every sliding rewindow, chunk boundary and big-gap resume (reproduced on
+the real recorder: 96 → 95 kWh per sliding day). The loss was invisible
+while AGL's Sydney conversion aligned SA to whole hours — correcting the
+timestamps exposes it, so the guard ships with the correction:
+
+- **Overlap day**: `_fetch_range` starts each series range one day earlier
+  (`S-1`) when `_local_midnight_utc(S).minute != 0` and `S-1` is still inside
+  the `BACKFILL_DAYS` retention floor — exactly one extra request per series
+  per cycle for half-hour zones (`3 + (7+1) + (7+1)` on a solar contract,
+  pinned by `TestComposedRequestCeiling`), none for whole-hour zones. No
+  overlap at the floor: a fresh half-hour-zone install loses the very first
+  day's 00:00 slot — accepted, asserted by a test.
+- **Trim is derived from batch CONTENT, never the plan**: after dedupe and
+  bucketing, if the earliest fetched slot's minute is not `0` the batch does
+  not own its first bucket, and `_import_intervals` / `_import_generation`
+  drop that first hourly bucket in EVERY series (aggregate, cost, each ToU
+  band, generation, credit, marker rows) BEFORE the early return and
+  `cutoff = min(hour_cons)`. Keying the trim on the planned overlap day would
+  re-open the loss whenever the overlap fetch returned nothing usable
+  (per-day error, all-placeholder day, big-gap resume past the floor).
+- **Overlap-day errors are non-fatal** and never set `solar_skipped` — a
+  heal sweep cannot be kept pending by a context-only day. With the content
+  trim the stored straddle row is left intact (baseline row = the straddle
+  hour, cutoff = the next full hour), so the chain stays monotone; the cost
+  is that batch's own 00:00 half-slot, restored by the next cycle's overlap
+  while the day is inside the rewindow — a bounded half-slot residual on
+  the failure path, never a stored-slot loss.
+- **Stall tracking** counts `progressed` only from fetched days INSIDE the
+  original un-overlapped range, and give-up markers never span the overlap
+  day — otherwise a healthy overlap day would reset the #154 counter every
+  cycle and re-fetch a permanently-erroring chunk forever.
+- **Zero-export marker rows** start at `_first_full_hour(local midnight)`,
+  never the floored straddle bucket — a marker at `14:00Z` would overwrite
+  the previous day's 23:30 export. Identical to before for whole-hour zones.
 
 ### Previous Bill Period
 
@@ -439,6 +537,13 @@ and each item carries **both** a `consumption` block and a shape-identical
   2026-07-01 capture carries `normal` and `peak` typed feedIn slots. Filter
   `none`/`pending` as usual. Zero-on-zero feedIn slots are *real* at night
   (no sun) but are still safe to drop — a zero delta never moves the sum.
+- **`dateTime`** on solar items is Sydney-converted exactly like consumption
+  (#292, see Data API) and goes through the same re-localisation —
+  `async_get_solar_hourly` passes `expected_day`/`tz`/`tz_is_contract`. The
+  2026-07-01 fixture is an eastern-winter capture of UNKNOWN state: its
+  `14:00Z` first slot fits any eastern state in winter and an SA contract
+  under the bug alike, so it evidences field selection only, never a
+  timezone convention (`tests/fixtures/PROVENANCE.md`).
 - **Contract discovery**: `accounts[].contracts[].hasSolar` in `/v3/overview`
   gates the feature (the overview also shows a "Sold To Grid" label pair on
   solar contracts). A `Previous/Hourly` variant is assumed symmetric with the
@@ -654,6 +759,47 @@ SPKI strings (verified 2026-05-03) — until the connector subclass redesign.
 Tests must use a real local TLS server (see `tests/test_pinning.py`); mocking
 `resp.connection` will not catch this lifecycle issue.
 
+### Contract timezone (`CONF_LOCAL_TZ`)
+
+The CONTRACT's local zone — not the HA instance's — is the authority for the
+interval window (#242/#266) and, since #292, for the Sydney-conversion
+correction, so a wrong zone now means WRONG timestamps rather than a dropped
+slot. It is persisted in `entry.data[CONF_LOCAL_TZ]` as an IANA key (`""` =
+unknown), derived from the service address by `parser.tz_for_address`
+(state-level keys; postcode 2880 → `Australia/Broken_Hill`). Chain of
+custody:
+
+1. **Config time**: written from the selected contract's address on both
+   the single-contract fast path and the picker path.
+2. **Migration** (`__init__.async_migrate_entry`, `MINOR_VERSION` 1 → 2;
+   `VERSION` stays 1): derived from `entry.title`, which is the address on
+   both creation paths. A user-renamed title (or the `AGL <contract>`
+   fallback title) migrates to `""` — bounded residual: that entry runs on
+   HA's zone, uncorrected and loud, until the first successful overview
+   cycle persists the real key. The migration never returns `False`.
+3. **Reauth AND Reconfigure** refresh it from the matched contract's address
+   (a non-security value from the authoritative source) — this is what
+   upgrades legacy hash-title entries at their next repair.
+4. **Every overview cycle**: `_refresh_from_overview` refines the client's
+   zone via `set_contract_tz` and persists the key when it differs (no
+   reload listener fires — same pattern as the heal record).
+
+`async_setup_entry` resolves `ZoneInfo(entry.data[CONF_LOCAL_TZ])` → HA's
+zone → `None`, guarded so a hand-edited key degrades to the HA fallback with
+a WARNING rather than failing setup. The fallback is announced ONCE per
+setup by `AglClient` (WARNING naming the zone and that timestamps stay
+uncorrected) and flagged `tz_is_contract=False`. The four coordinator
+local-midnight sites (heal floor, `_earliest_stat_date`, the period-totals
+cutoff, generation markers) use `_local_midnight_utc(day)` in the contract
+zone with the same fallback (#268). Diagnostics (schema v3) expose
+`coordinator.contract_timezone` (resolved runtime zone) and
+`entry.data.local_tz` (persisted key) beside HA's `timezone` — the triple
+needed to triage a #292-class report.
+
+**Downgrade stays safe**: a minor-version bump is loaded unchanged by any
+older build (HA refuses an entry only when its MAJOR version is newer than
+the handler's); the older build simply ignores the extra key.
+
 ---
 
 ## Energy Dashboard Contract
@@ -801,9 +947,10 @@ The HA Energy dashboard requires:
   untouched, whereas a clamped `1e6` writes a permanent false spike.
 - **Don't parse interval readings without telling the parser which day was
   requested — and pass the local timezone.** `parse_interval_readings` takes
-  `expected_day` and `tz`; every `AglClient` fetch site must pass both
-  (#242, Codex P1 on PR #266 — `AglClient` gets `local_tz` from HA's
-  configured tz at construction, refined each overview cycle from the
+  `expected_day` and `tz` (plus `tz_is_contract`, #292); every `AglClient`
+  fetch site must pass them (#242, Codex P1 on PR #266 — `AglClient` gets
+  `local_tz` from the persisted `CONF_LOCAL_TZ` at setup, HA's configured
+  tz only as a flagged fallback, refined each overview cycle from the
   contract's service-address state via `parser.tz_for_address`: the
   CONTRACT's local day is the correct window and can differ from the HA
   instance's timezone). Without `expected_day`,
@@ -816,8 +963,9 @@ The HA Energy dashboard requires:
   window is the true UTC shape of the requested LOCAL day, with
   `INTERVAL_WINDOW_TRAILING_SLACK_HOURS` of TRAILING-only slack (AGL
   interprets `period=` in the contract's local timezone and returns
-  `dateTime` in UTC, so a single-day query spans two UTC dates; DST is
-  handled by the tzinfo). Never add LEADING slack: the baseline cutoff is
+  `dateTime` as a Sydney-converted UTC label that the parser re-localises
+  BEFORE this check (#292), so a single-day query spans two UTC dates; DST
+  is handled by the tzinfo). Never add LEADING slack: the baseline cutoff is
   `min(hour_cons)`, so leading slack of any width re-admits the cutoff
   attack at that width, while a late row cannot lower the min (Codex
   pass-2 P1 on PR #266). The tz-less ±1-DATE fallback
@@ -825,6 +973,47 @@ The HA Energy dashboard requires:
   so an injected `D-1T00:00Z` reading still dragged the cutoff ~14 h early —
   stored rows in that gap left out of the baseline but not re-emitted, a
   #114 downward step with no 1970-style absurdity to catch.
+- **Don't treat AGL `dateTime` as the slot start in contract-local UTC, and
+  don't widen the interval window to absorb the Sydney offset.** The value
+  is the meter's LOCAL label converted through the response's `timeZone` —
+  Australia/Sydney for every contract (#292): 30 min early for SA/Broken
+  Hill all year, 1 h early for QLD while Sydney is on DST, exact only for
+  NSW/VIC/TAS/ACT. Every published release wrote SA data 30 min early
+  (escaped, sev:high); the v0.5.0 betas additionally DROPPED the first slots
+  of every SA and QLD-in-DST day, because the uncorrected `14:00Z` sat
+  before the contract-local midnight (the daily "Dropped N interval(s)
+  outside the window" WARNING on #292). Correct it in the parser
+  (`relocalise_agl_timestamp`, keyed on the response's `timeZone` with
+  `AGL_API_TZ_KEY` as the fallback) BEFORE the window check; the correction
+  is monotone later-only for every mapped zone, so the no-leading-slack
+  invariant above holds unchanged, whereas leading slack would re-admit
+  #242 at its own width. Three corollaries: (1) correct ONLY when the zone
+  is address-derived (`tz_is_contract`) — under the HA-timezone fallback a
+  mis-zoned entry (HA on UTC or overseas, a hash-title entry before its
+  first overview) would otherwise be shifted by Sydney's full offset into a
+  window where all 48 slots look plausible: silent instead of loud; (2) if
+  the premise were ever wrong for a zone the failure is SILENT (corrected
+  slots still fit the window, data lands late), which is why the parser
+  emits one bounded DEBUG tripwire per parse and why the stable gate needs
+  a positive confirmation from the reporter, not an absence of warnings;
+  (3) never apply it to the Daily endpoint — its `dateTime` is a date label
+  with a literal `00:00:00Z`, already the local day.
+- **Don't import a batch whose first hourly bucket straddles the
+  contract-local day boundary without the overlap day AND the
+  content-derived trim.** In a half-hour zone (SA / Broken Hill / NT) local
+  midnight is `:30` past the UTC hour, so the boundary bucket holds the
+  previous day's 23:30 slot AND this day's 00:00 slot. A batch starting at
+  day D rewrites that `(statistic_id, start)` row with only its own half,
+  and the baseline is taken from the row before it, so the 23:30 slot
+  leaves the sum chain permanently — on every sliding rewindow, chunk
+  boundary and big-gap resume (reproduced on the real recorder: 96 → 95 kWh
+  per sliding day). Fetch `S-1` as context, then drop the first bucket in
+  EVERY series whenever the earliest fetched slot's minute is not `0` —
+  keyed on batch content, never on whether the overlap day was planned or
+  succeeded. Never write a zero-export marker at the floored midnight hour
+  for the same reason (`_first_full_hour`), never let an overlap-day error
+  mark a solar sweep incomplete, and never count the overlap day as stall
+  progress. Whole-hour zones: no overlap, no trim, unchanged request budget.
 - **Don't "fix" a bare multi-type `except A, B:` by adding parentheses.** The
   unparenthesised form is intentional: it is `ruff format`'s canonical output
   for this repo's Python 3.14 target (PEP 758, where `except A, B:` means
@@ -907,7 +1096,9 @@ The HA Energy dashboard requires:
 - **Don't derive the cumulative-sum baseline cutoff from a `fetch_start` UTC
   midnight.** AGL's `period=YYYY-MM-DD_YYYY-MM-DD` query is interpreted in the
   contract's LOCAL timezone, so the first interval returned lands at local
-  midnight in UTC (e.g. `(fetch_start - 1)T14:00Z` for AEST). A baseline lookup
+  midnight in UTC (e.g. `(fetch_start - 1)T14:00Z` for AEST — `T14:30Z` for
+  Adelaide after the #292 re-localisation, where the first bucket is a
+  straddle bucket the content trim drops first). A baseline lookup
   cut off at `fetch_start T00:00Z` folds ~10 h of about-to-be-overwritten old
   sums into the baseline; the new chain re-adds those hours' deltas, producing
   a phantom `+N kWh` jump in the recorder `sum` column every local-midnight UTC

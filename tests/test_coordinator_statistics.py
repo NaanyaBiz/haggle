@@ -1956,12 +1956,15 @@ class TestSolarGeneration:
         A Sydney contract managed from a Brisbane HA host is off by 1 h
         during DST, and the window's strict lower bound would drop the
         day's first slots on every fetch — permanent undercount. The
-        overview cycle refines client.local_tz from the service address.
+        overview cycle refines the client's zone from the service address
+        through set_contract_tz — not a bare local_tz assignment, which
+        would leave tz_is_contract False and the #292 correction off.
         """
         from custom_components.haggle.agl.models import Contract
 
         mock_client = AsyncMock()
         mock_client.local_tz = None
+        mock_client.set_contract_tz = MagicMock()
         mock_client.async_get_overview.return_value = [
             Contract(
                 contract_number=_CONTRACT,
@@ -1973,7 +1976,9 @@ class TestSolarGeneration:
         ]
         coord = _make_coordinator(hass, client=mock_client)
         await coord._refresh_from_overview()
-        assert getattr(mock_client.local_tz, "key", None) == "Australia/Sydney"
+        mock_client.set_contract_tz.assert_called_once()
+        tz = mock_client.set_contract_tz.call_args.args[0]
+        assert getattr(tz, "key", None) == "Australia/Sydney"
 
     async def test_unparseable_address_keeps_fallback_tz(
         self, hass: HomeAssistant
@@ -3760,3 +3765,414 @@ class TestTransportHaltSemantics:
             complete = await coord._fetch_range(None, (day, day), None)
         assert complete is False
         mock_import.assert_not_awaited()  # nothing marked, nothing advanced
+
+
+# ---------------------------------------------------------------------------
+# #292 — Coordinator half-hour-zone helpers
+# ---------------------------------------------------------------------------
+
+
+class TestContractTzHelpers:
+    """Unit tests for the contract-timezone helper methods added in #292.
+
+    Mutation targets:
+    - _contract_tz returns HA tz instead of client.local_tz → four sites wrong
+    - _local_midnight_utc uses start_of_local_day instead of contract zone
+    - _first_full_hour returns floor instead of ceil → markers at straddle bucket
+    - _with_overlap_day always returns rng → overlap omitted for half-hour zones
+    - _straddle_trim_before always returns None → trim off
+    """
+
+    def test_contract_tz_returns_client_local_tz(self, hass: HomeAssistant) -> None:
+        """_contract_tz uses the client's zone, not the HA instance tz.
+
+        Mutation: always return dt_util.get_default_time_zone() →
+        four local-midnight sites use HA zone for an Adelaide contract
+        managed from a Brisbane HA host → wrong midnight by 30 min.
+        """
+        from zoneinfo import ZoneInfo
+
+        adl = ZoneInfo("Australia/Adelaide")
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = adl
+        assert coord._contract_tz() is adl
+
+    def test_contract_tz_falls_back_to_ha_zone_for_none(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Fallback to HA zone when local_tz is None (no zone stored yet)."""
+        from homeassistant.util import dt as dt_util
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = None
+        assert coord._contract_tz() is dt_util.get_default_time_zone()
+
+    def test_local_midnight_utc_adelaide_lands_at_30(self, hass: HomeAssistant) -> None:
+        """Adelaide midnight is at :30 past a UTC hour (ACST=UTC+9:30).
+
+        Mutation: use dt_util.start_of_local_day (HA zone) for a Brisbane-HA /
+        Adelaide-contract pair → midnight is off by 30 min → _with_overlap_day
+        fails to add the overlap day and the straddle bucket is half-written.
+        """
+        from datetime import UTC, date, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        midnight = coord._local_midnight_utc(date(2026, 6, 1))
+        # ACST midnight Jun 1 = May 31 14:30Z
+        assert midnight == datetime(2026, 5, 31, 14, 30, tzinfo=UTC)
+        # Key check: minute is 30 (not 0) → half-hour zone gate arms.
+        assert midnight.minute == 30
+
+    def test_local_midnight_utc_brisbane_lands_at_0(self, hass: HomeAssistant) -> None:
+        """Brisbane midnight is on the hour (UTC+10).
+
+        Mutation: same → Brisbane is incorrectly treated as half-hour zone.
+        """
+        from datetime import UTC, date, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Brisbane")
+        coord.client.tz_is_contract = True
+        midnight = coord._local_midnight_utc(date(2026, 6, 1))
+        assert midnight == datetime(2026, 5, 31, 14, 0, tzinfo=UTC)
+        assert midnight.minute == 0
+
+    def test_first_full_hour_on_the_hour_is_identity(self, hass: HomeAssistant) -> None:
+        """A datetime already on the hour is returned unchanged."""
+        from datetime import UTC, datetime
+
+        coord = _make_coordinator(hass)
+        dt = datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+        assert coord._first_full_hour(dt) == dt
+
+    def test_first_full_hour_at_30_rounds_up(self, hass: HomeAssistant) -> None:
+        """A :30 datetime is rounded up to the next full hour.
+
+        Mutation: return floor instead of ceil → marker at 14:30Z instead of
+        15:00Z for Adelaide; that first half-slot is not wholly owned by the
+        local day and must not be a zero-export marker (#292 A4(e)).
+        """
+        from datetime import UTC, datetime
+
+        coord = _make_coordinator(hass)
+        dt = datetime(2026, 6, 1, 14, 30, tzinfo=UTC)
+        assert coord._first_full_hour(dt) == datetime(2026, 6, 1, 15, 0, tzinfo=UTC)
+
+    def test_with_overlap_day_adds_one_day_for_half_hour_zone(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Half-hour zone: start is extended one day earlier (A4).
+
+        Mutation: always return rng unchanged → overlap day omitted; the
+        day-boundary straddle bucket is written from the current day's half
+        alone and the 23:30 slot from the prior day's fetch is lost permanently.
+        """
+        from datetime import UTC
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        today = datetime.now(UTC).date()
+        start = today - timedelta(days=5)
+        end = today - timedelta(days=1)
+        result = coord._with_overlap_day((start, end), today)
+        assert result is not None
+        assert result[0] == start - timedelta(days=1)
+        assert result[1] == end
+
+    def test_with_overlap_day_whole_hour_zone_unchanged(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Whole-hour zone (Brisbane): no overlap day, no extra request.
+
+        Mutation: add overlap for all zones → inflates QLD request budget
+        by 2 per cycle (A12: no extra requests for whole-hour zones).
+        """
+        from datetime import UTC
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Brisbane")
+        coord.client.tz_is_contract = True
+        today = datetime.now(UTC).date()
+        rng = (today - timedelta(days=7), today - timedelta(days=1))
+        result = coord._with_overlap_day(rng, today)
+        assert result == rng
+
+    def test_with_overlap_day_none_stays_none(self, hass: HomeAssistant) -> None:
+        """None range (no series to fetch) stays None."""
+        from datetime import UTC
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        today = datetime.now(UTC).date()
+        assert coord._with_overlap_day(None, today) is None
+
+    def test_with_overlap_day_not_below_floor(self, hass: HomeAssistant) -> None:
+        """No overlap when start-1 would be before the retention floor.
+
+        Mutation: omit floor guard → a fetch at the backfill floor tries to
+        fetch a day AGL may not serve, wastes a request slot, and may 429.
+        """
+        from datetime import UTC
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        today = datetime.now(UTC).date()
+        # start exactly at the retention floor (today - BACKFILL_DAYS)
+        start = today - timedelta(days=BACKFILL_DAYS)
+        rng = (start, today - timedelta(days=1))
+        result = coord._with_overlap_day(rng, today)
+        # start-1 = today - BACKFILL_DAYS - 1 < floor → no overlap
+        assert result == rng
+
+    def test_straddle_trim_before_returns_next_full_hour_for_half_hour_slot(
+        self, hass: HomeAssistant
+    ) -> None:
+        """First batch slot at :30 in a half-hour zone → trim to next full hour.
+
+        Mutation: always return None → the straddle bucket is written from
+        only the current day's half; the stored prior-day 23:30 row is
+        overwritten and the cumulative sum drops by that hour's kWh.
+        """
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        # Adelaide midnight Jun 1 is 14:30Z; so the first slot sits at :30.
+        intervals = [
+            _make_interval(datetime(2026, 5, 31, 14, 30, tzinfo=UTC), kwh=1.0),
+            _make_interval(datetime(2026, 5, 31, 15, 0, tzinfo=UTC), kwh=1.0),
+        ]
+        cutoff = coord._straddle_trim_before(intervals)
+        assert cutoff == datetime(2026, 5, 31, 15, 0, tzinfo=UTC)
+
+    def test_straddle_trim_before_returns_none_for_whole_hour_zone(
+        self, hass: HomeAssistant
+    ) -> None:
+        """First slot at :30 in Brisbane is NOT the day-boundary straddle.
+
+        Brisbane doesn't have local midnight at :30, so a :30 slot is just an
+        ordinary half-hour interval; no trim.
+        Mutation: key only on minute != 0 → Brisbane :30 slots are trimmed,
+        losing the first real slot of every export day.
+        """
+        from datetime import UTC, datetime
+        from zoneinfo import ZoneInfo
+
+        coord = _make_coordinator(hass)
+        coord.client.local_tz = ZoneInfo("Australia/Brisbane")
+        coord.client.tz_is_contract = True
+        intervals = [
+            _make_interval(datetime(2026, 6, 1, 0, 30, tzinfo=UTC), kwh=1.0),
+        ]
+        assert coord._straddle_trim_before(intervals) is None
+
+    def test_straddle_trim_before_empty_batch_returns_none(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Empty batch: no trim needed."""
+        coord = _make_coordinator(hass)
+        assert coord._straddle_trim_before([]) is None
+
+
+class TestPersistContractTz:
+    """_persist_contract_tz and overview persistence (#292 A6).
+
+    Mutation targets:
+    - _persist_contract_tz is not called → tz not stored; next restart uses HA tz
+    - Only writes when key differs → idempotent (not mutation, just invariant)
+    - _refresh_from_overview calls set_contract_tz not bare assignment → A3
+    """
+
+    async def test_overview_persists_tz_when_address_derived(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Overview cycle persists address-derived timezone to entry.data.
+
+        Mutation: _persist_contract_tz not called → timezone is NOT written;
+        next HA restart uses HA fallback zone for the first chunk until the
+        next overview call, violating the A6 'first chunk corrected' goal.
+        """
+        from custom_components.haggle.agl.models import Contract
+        from custom_components.haggle.const import CONF_LOCAL_TZ
+
+        mock_client = AsyncMock()
+        mock_client.local_tz = None
+        mock_client.set_contract_tz = MagicMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="1 Sample Street SUBURB QLD 4000",
+                fuel_type="electricityContract",
+                status="active",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        await coord._refresh_from_overview()
+        # Zone must be persisted into entry.data.
+        assert coord.config_entry.data.get(CONF_LOCAL_TZ) == "Australia/Brisbane"
+
+    async def test_overview_does_not_persist_when_unchanged(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Entry.data is not modified when the zone matches what is already stored.
+
+        Mutation: always write → spurious async_update_entry calls on every
+        overview cycle, each of which updates the entry's modified_at timestamp.
+        """
+        from custom_components.haggle.agl.models import Contract
+        from custom_components.haggle.const import CONF_LOCAL_TZ
+
+        mock_client = AsyncMock()
+        mock_client.local_tz = None
+        mock_client.set_contract_tz = MagicMock()
+        mock_client.async_get_overview.return_value = [
+            Contract(
+                contract_number=_CONTRACT,
+                account_number="1234567890",
+                address="1 Sample Street SUBURB QLD 4000",
+                fuel_type="electricityContract",
+                status="active",
+            )
+        ]
+        coord = _make_coordinator(hass, client=mock_client)
+        # Pre-store the zone.
+        hass.config_entries.async_update_entry(
+            coord.config_entry,
+            data={**coord.config_entry.data, CONF_LOCAL_TZ: "Australia/Brisbane"},
+        )
+        version_before = (
+            coord.config_entry.modified_at
+            if hasattr(coord.config_entry, "modified_at")
+            else None
+        )
+        await coord._refresh_from_overview()
+        if version_before is not None:
+            assert coord.config_entry.modified_at == version_before
+
+    async def test_persist_contract_tz_writes_key(self, hass: HomeAssistant) -> None:
+        """_persist_contract_tz writes the IANA key when different from stored."""
+        from zoneinfo import ZoneInfo
+
+        from custom_components.haggle.const import CONF_LOCAL_TZ
+
+        coord = _make_coordinator(hass)
+        adl = ZoneInfo("Australia/Adelaide")
+        coord._persist_contract_tz(adl)
+        assert coord.config_entry.data[CONF_LOCAL_TZ] == "Australia/Adelaide"
+
+    async def test_persist_contract_tz_no_op_when_same(
+        self, hass: HomeAssistant
+    ) -> None:
+        """No update when the key is already correct."""
+        from zoneinfo import ZoneInfo
+
+        from custom_components.haggle.const import CONF_LOCAL_TZ
+
+        coord = _make_coordinator(hass)
+        hass.config_entries.async_update_entry(
+            coord.config_entry,
+            data={**coord.config_entry.data, CONF_LOCAL_TZ: "Australia/Adelaide"},
+        )
+        adl = ZoneInfo("Australia/Adelaide")
+        # Should not raise and should not change data.
+        coord._persist_contract_tz(adl)
+        assert coord.config_entry.data[CONF_LOCAL_TZ] == "Australia/Adelaide"
+
+
+class TestHalfHourZoneRequestCeiling:
+    """A9 / A12: request ceiling for a half-hour-zone normal cycle.
+
+    Formula: 3 fixed (summary+plan+overview) + (REWINDOW_DAYS+1) consumption +
+    (REWINDOW_DAYS+1) solar = 3 + 2*(REWINDOW_DAYS+1) for the normal cycle.
+    The +1 per series is the overlap day.
+
+    Mutation targets:
+    - _with_overlap_day always returns rng → no extra day → ceiling is 3+2*REWINDOW_DAYS
+    """
+
+    @staticmethod
+    def _client_ceil() -> AsyncMock:
+        client = AsyncMock()
+        client.async_get_usage_summary.return_value = _empty_summary()
+        client.async_get_plan.return_value = _empty_plan()
+        client.async_get_overview.return_value = [_solar_contract()]
+        client.async_get_usage_hourly.return_value = []
+        client.async_get_usage_hourly_previous.return_value = []
+        client.async_get_solar_hourly.return_value = []
+        return client
+
+    async def test_half_hour_zone_rewindow_ceiling_includes_overlap(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Normal-cycle ceiling for Adelaide: 3 + 2*(REWINDOW_DAYS+1).
+
+        Mutation: overlap omitted → ceiling = 3 + 2*REWINDOW_DAYS (assertion
+        fails because actual call count is +2 more than that lower value).
+        """
+        from zoneinfo import ZoneInfo
+
+        client = self._client_ceil()
+        coord = _make_coordinator(hass, client=client)
+        # Inject Adelaide as the contract zone.
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+        today = datetime.now(UTC).date()
+        yesterday = today - timedelta(days=1)
+
+        async def _last_stat(stat_id: str) -> tuple[float | None, date | None]:
+            # Both series inside REWINDOW_DAYS (no disjoint chunk).
+            return (500.0, yesterday)
+
+        with (
+            patch.object(coord, "_get_last_stat", side_effect=_last_stat),
+            patch.object(
+                coord,
+                "_generation_needs_heal",
+                new_callable=AsyncMock,
+                return_value=False,
+            ),
+            patch.object(coord, "_import_intervals", new_callable=AsyncMock),
+            patch.object(coord, "_import_generation", new_callable=AsyncMock),
+            patch.object(
+                coord,
+                "_get_stored_tou_bands",
+                new_callable=AsyncMock,
+                return_value=set(),
+            ),
+            patch.object(
+                coord,
+                "_get_generation_period_totals",
+                new_callable=AsyncMock,
+                return_value=(None, None, None, False),
+            ),
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            await coord._fetch_and_import()
+
+        total = (
+            client.async_get_usage_summary.call_count
+            + client.async_get_plan.call_count
+            + client.async_get_overview.call_count
+            + client.async_get_usage_hourly.call_count
+            + client.async_get_usage_hourly_previous.call_count
+            + client.async_get_solar_hourly.call_count
+        )
+        # 3 fixed + (REWINDOW_DAYS+1) consumption + (REWINDOW_DAYS+1) solar.
+        expected = 3 + 2 * (REWINDOW_DAYS + 1)
+        assert total == expected

@@ -336,8 +336,103 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Interval timestamps were 30 minutes early for South Australian and
+  Broken Hill contracts all year, and one hour early for Queensland
+  contracts while New South Wales is on daylight saving** (#292; escaped,
+  sev:high — present in every published release; also closes #268). AGL's
+  API labels each slot with the meter's local wall-clock start and converts
+  that label to UTC through `Australia/Sydney` whatever the contract's own
+  zone: every usage response declares `"timeZone": "Australia/Sydney"`, a
+  Queensland contract's included. Confirmed twice over — the reporter's 887
+  hourly totals reconcile to the watt-hour only when the AGL CSV's local
+  labels are read as Sydney time, and the maintainer's own raw Queensland
+  captures from both DST seasons show the same thing (summer days start at
+  `13:00Z`, Sydney's midnight, an hour before Brisbane's). NSW, Victoria,
+  Tasmania and the ACT were never affected; Queensland is unaffected from
+  April to October.
+  - The parser now inverts the conversion into the contract's zone
+    (`relocalise_agl_timestamp`) before the day-window check, keyed on the
+    response's declared `timeZone` (Sydney as the fallback) so it
+    self-corrects if AGL ever converts per contract. The correction only
+    ever moves a slot later, so the #242 no-leading-slack guard is
+    unchanged. On v0.5.0-beta.1/beta.2 the bug also surfaced as a daily
+    "Dropped 2 interval(s) outside the window" WARNING and a missing first
+    hour on every SA (and, since 4 October, Queensland) day — that is gone.
+  - **What self-heals and what does not.** Statistics rows are keyed on the
+    UTC hour and imports overwrite in place, so the trailing 7-day rewindow
+    is rewritten correctly on the first poll after upgrading — no doubled
+    bars, no ghost rows; the only artefact is a one-off upward bump of one
+    slot (SA) or one hour (QLD) at the junction with the old rows, never a
+    downward step. **History older than the trailing week stays shifted
+    for now** (SA: 30 min; QLD: 1 h for the October–April span). A
+    follow-up change re-aligns the 30 days before the upgrade in place and
+    raises a Repairs notice for anything older. **Do not delete the
+    `haggle:*` statistics to force a rebuild**: rows older than ~30 days
+    cannot be re-fetched from AGL, and daily totals are already correct —
+    only the hour each slot sits in is off.
+  - The correction is applied only when the contract's zone is known from
+    its service address. Under the Home Assistant-timezone fallback the
+    parser behaves exactly as before (dropped slots and a WARNING) and
+    logs one WARNING at setup naming the fallback, so a mis-zoned entry
+    stays loud instead of being silently shifted by Sydney's full offset.
+    One DEBUG line per fetch (`custom_components.haggle.agl.parser`)
+    records the first raw → corrected timestamp as evidence for testers.
+  - **Half-hour zones lost one 30-minute slot per day — hidden until now.**
+    With correct timestamps an Adelaide day starts at `14:30Z`, so the
+    hourly bucket at every local-day boundary is shared by two days. Each
+    sliding batch rewrote that row with only its own half, dropping the
+    previous day's 23:30 slot from the cumulative sum for good (reproduced
+    on the real recorder: 96 → 95 kWh per sliding day). Half-hour-zone
+    contracts now fetch one extra leading day per series and trim the
+    partial first bucket from every series — derived from what the batch
+    actually contains, not from the plan, so a failed overlap fetch cannot
+    re-open the loss. Zero-export marker rows start at the first full hour
+    for the same reason. Accepted residuals: a fresh half-hour-zone install
+    has no overlap day at the 30-day floor and loses the very first day's
+    00:00 slot; a transient error on the overlap day costs that batch its
+    own 00:00 half-slot until the next cycle's overlap restores it.
+  - The Daily endpoint is not affected: its `dateTime` is the local calendar
+    date with a literal `00:00:00Z` (verified against raw captures), and it
+    is not used at runtime anyway.
+  - The `consumption.type` tariff mislabelling the reporter also noted on
+    #292 is unchanged by this fix — that is #141.
+  - **Acceptance** (`docs/releasing.md` beta-soak rule): the reporter on
+    #292 confirms, on the beta carrying this fix, that diagnostics show
+    `contract_timezone: Australia/Adelaide`, that the WARNING is gone, that
+    the trailing week reconciles to the AGL CSV read as Adelaide time, and
+    that every day inside the rewindow sums to the CSV daily total across
+    three consecutive polls (a day short by exactly one slot is the
+    straddle bug). Queensland is confirmed from the maintainer's local
+    captures; no separate Queensland volunteer is required. v0.5.0 stable
+    is gated on this fix AND the follow-up 30-day re-alignment both being
+    merged, plus the reporter's confirmation.
+
+### Added
+
+- **The contract's timezone is now stored on the config entry**
+  (`local_tz`, derived from the service address; closes #268). It is
+  written at setup, refreshed by reauth and Reconfigure, and persisted by
+  each overview cycle; existing entries are migrated from their title
+  (config-entry minor version 1 → 2 — a minor bump that older versions
+  load unchanged, so downgrading stays safe). The first backfill chunk and
+  the solar period-sensor boundaries now use the contract's own midnight
+  even when the account overview is unreachable or the HA instance runs in
+  a different timezone. A renamed entry title migrates to "unknown" and
+  picks the zone up on its first successful overview fetch.
+- **Diagnostics schema v3**: `coordinator.contract_timezone` (the zone the
+  parser corrects into) and `entry.data.local_tz` (the persisted key),
+  beside HA's own `timezone` — the triple needed to triage a timestamp
+  report. Both are IANA zone names (at finest `Australia/Broken_Hill`, a
+  single-postcode locality — documented as an accepted non-identifying
+  residual in `docs/diagnostics.md` and the threat model).
+
 ### Changed
 
+- **One extra AGL request per series per poll for half-hour-zone contracts**
+  (SA / Broken Hill / NT): `3 + 8 + 8` on a solar contract instead of
+  `3 + 7 + 7`. Whole-hour zones are unchanged.
 - **The reauth prompt now explains itself** (#284, from @stevelea's review
   of #277). When AGL rejects the stored sign-in, the repair form has its
   own `reauth_confirm` step that says why it appeared, that logging in

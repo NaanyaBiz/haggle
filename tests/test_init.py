@@ -12,12 +12,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.haggle.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
+    CONF_LOCAL_TZ,
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
 from custom_components.haggle.coordinator import HaggleData
 
 if TYPE_CHECKING:
+    import pytest
     from homeassistant.core import HomeAssistant
 
 _ENTRY_DATA = {
@@ -644,3 +646,136 @@ async def test_check_pin_reads_stored_pins_live(hass: HomeAssistant) -> None:
     # Only 12-char prefixes may reach the log; the message carries none.
     assert "a" * 64 not in message
     assert "c" * 64 not in message
+
+
+# ---------------------------------------------------------------------------
+# #292 — _resolve_local_tz and AglClient construction
+# ---------------------------------------------------------------------------
+
+_MOCK_SESSION = MagicMock()
+_MOCK_SESSION.close = AsyncMock()
+
+
+def _setup_patches(*, return_data: object = None):
+    """Context manager stack for a minimal successful setup."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=_MOCK_SESSION,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=return_data or _COORDINATOR_DATA,
+        )
+    )
+    return stack
+
+
+async def test_setup_with_stored_tz_sets_tz_is_contract_true(
+    hass: HomeAssistant,
+) -> None:
+    """Setup with a stored CONF_LOCAL_TZ key gives AglClient tz_is_contract=True.
+
+    Mutation: _resolve_local_tz always returns (tz, False) → tz_is_contract is
+    False for address-derived zones; the Sydney-correction is never applied even
+    when the zone is known (A3 violated); all SA/QLD slots stay shifted.
+    """
+    from zoneinfo import ZoneInfo
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: "Australia/Adelaide"},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with _setup_patches():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    client = entry.runtime_data.client
+    assert isinstance(client.local_tz, ZoneInfo)
+    assert client.local_tz.key == "Australia/Adelaide"
+    assert client.tz_is_contract is True
+
+
+async def test_setup_with_empty_tz_falls_back_to_ha_zone(
+    hass: HomeAssistant,
+) -> None:
+    """Setup with CONF_LOCAL_TZ='' gives AglClient tz_is_contract=False.
+
+    Mutation: _resolve_local_tz returns (tz, True) for empty key →
+    tz_is_contract is True but the zone is HA-derived; the correction would
+    be applied against the wrong zone, shifting all slots by HA offset.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: ""},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with _setup_patches():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    client = entry.runtime_data.client
+    assert client.tz_is_contract is False
+
+
+async def test_setup_with_hostile_tz_key_falls_back_logs_warning(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hand-edited invalid CONF_LOCAL_TZ degrades to HA fallback + 1 WARNING.
+
+    Mutation: _resolve_local_tz re-raises ZoneInfo exceptions → setup aborts
+    with a ConfigEntryError on a hand-edited entry; user must use Developer
+    Tools to fix it; effectively bricks the integration.
+    The key must be bounded in the log — no raw user input > 64 chars.
+    """
+    hostile_key = "Not/AZone/With/A/Really/Long/Name/" + "x" * 100
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: hostile_key},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with _setup_patches():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    client = entry.runtime_data.client
+    assert client.tz_is_contract is False
+    # The WARNING must mention the bad key, but only up to 64 chars.
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "local_tz" in r.message
+    ]
+    assert warnings, "Expected a WARNING about the invalid local_tz key"
+    # Raw hostile key must not appear beyond the 64-char bound.
+    assert hostile_key not in warnings[0].message

@@ -544,3 +544,142 @@ async def test_earliest_stat_date_no_rows_returns_none(
 
     since = datetime(2026, 1, 1, tzinfo=UTC)
     assert await coord._earliest_stat_date(stat_id_gen, since) is None
+
+
+async def test_half_hour_zone_straddle_23_30_slot_survives_re_import(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#292 A4: the day-boundary straddle bucket survives an overlap re-import.
+
+    For Adelaide (ACST = UTC+9:30), local midnight falls at :30 past the UTC
+    hour. The UTC bucket that straddles the day boundary is half-owned by each
+    adjacent local day. _straddle_trim_before detects a batch starting at :30
+    and trims the first (partial) UTC bucket so the prior day's fully-written
+    row is never overwritten.
+
+    Mutation: _straddle_trim_before returns None → the second import includes
+    the partial 14:00Z bucket in hour_cons; its baseline is computed including
+    that bucket (partial overlap), and the re-emitted chain steps down at
+    14:00Z — a #114-class defect.
+
+    Scenario (Adelaide ACST winter 2026-05-31):
+    - PRIOR DAY import: 4 half-hour slots starting at 13:00Z (minute=0 →
+      no straddle trim). Establishes the 14:00Z bucket with 2.0 kWh (the
+      two half-hour slots at 14:00 and 14:30).
+    - OVERLAP BATCH import: starts at 14:30Z (minute=30 → _straddle_trim_before
+      returns 15:00Z). The 14:00Z bucket is trimmed; only 15:00Z onward is
+      written. The stored 14:00Z row (2.0 kWh sum) must remain unchanged.
+    """
+    from zoneinfo import ZoneInfo
+
+    coord = _make_coordinator(hass)
+    coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+    coord.client.tz_is_contract = True
+
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    def _ts(dt: datetime) -> float:
+        return dt.timestamp()
+
+    straddle_hour = datetime(2026, 5, 31, 14, 0, tzinfo=UTC)
+
+    # --- PRIOR DAY import: slots starting at 13:00Z (minute=0 → no trim) ---
+    # 4 half-hour slots: 13:00, 13:30 → bucket 13:00Z; 14:00, 14:30 → bucket 14:00Z.
+    prior_slots: list[IntervalReading] = [
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 13, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 13, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 14, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 14, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+    ]
+    await coord._import_intervals(prior_slots)
+    await async_wait_recording_done(hass)
+
+    rows_prior = await _read_series(hass, stat_id)
+    # row["start"] is a Unix timestamp float.
+    straddle_ts = _ts(straddle_hour)
+    straddle_after_prior = next(
+        (r for r in rows_prior if abs(r["start"] - straddle_ts) < 1), None
+    )
+    assert straddle_after_prior is not None, (
+        "Straddle bucket at 14:00Z must be written on prior import"
+    )
+    # Both 14:00Z and 14:30Z slots land in the 14:00Z bucket → sum = 2.0.
+    # (Cumulative sum: 13:00Z bucket = 2.0 kWh, 14:00Z bucket = 4.0 kWh total)
+    straddle_sum_after_prior = straddle_after_prior["sum"]
+
+    # --- OVERLAP BATCH: starts at 14:30Z (minute=30 → straddle trim = 15:00Z) ---
+    # _straddle_trim_before returns 15:00Z; the 14:00Z bucket is dropped.
+    overlap_slots: list[IntervalReading] = [
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 14, 30, tzinfo=UTC),  # minute=30 → triggers trim
+            kwh=0.5,
+            cost_aud=0.15,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 15, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 15, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 16, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 16, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+    ]
+    await coord._import_intervals(overlap_slots)
+    await async_wait_recording_done(hass)
+
+    rows_after = await _read_series(hass, stat_id)
+
+    # Straddle bucket at 14:00Z must be unchanged.
+    straddle_after_overlap = next(
+        (r for r in rows_after if abs(r["start"] - straddle_ts) < 1), None
+    )
+    assert straddle_after_overlap is not None, "Straddle bucket must still exist"
+    assert straddle_after_overlap["sum"] == pytest.approx(straddle_sum_after_prior), (
+        f"Straddle sum changed from {straddle_sum_after_prior} to "
+        f"{straddle_after_overlap['sum']}: "
+        "_straddle_trim_before failed to protect the straddle bucket"
+    )
+
+    # Monotonicity check: no downward steps anywhere in the chain.
+    sums = [r["sum"] for r in sorted(rows_after, key=lambda r: r["start"])]
+    for earlier, later in pairwise(sums):
+        assert later >= earlier - 1e-9, (
+            f"Sum chain is not monotone: {earlier} → {later} (downward step)"
+        )

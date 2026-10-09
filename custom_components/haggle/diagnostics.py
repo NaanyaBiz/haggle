@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
     from . import HaggleConfigEntry
 
-DIAGNOSTICS_SCHEMA_VERSION = 2
+DIAGNOSTICS_SCHEMA_VERSION = 3
 
 _TO_REDACT = {CONF_REFRESH_TOKEN}
 
@@ -185,6 +185,10 @@ async def async_get_config_entry_diagnostics(
     # coverage stats look healthy over the hole, so this is the only place
     # the hole is visible (CO-16.4). None = never gave up.
     stall_spans = entry_data.pop(CONF_SOLAR_STALL_SPANS, None)
+    # CONF_LOCAL_TZ deliberately stays in entry_data (`entry.data.local_tz`):
+    # the persisted contract-zone authority, "" = never derived (#268 class).
+    # An IANA key is non-identifying — Australia/Broken_Hill is the finest
+    # it gets (one postcode; accepted residual, docs/diagnostics.md).
 
     runtime = getattr(entry, "runtime_data", None)
     coordinator = runtime.coordinator if runtime is not None else None
@@ -220,6 +224,11 @@ async def async_get_config_entry_diagnostics(
         # offending value into a raw ValueError that landed here verbatim.
         # A new raise site that interpolates response content re-opens it.
         last_exception = coordinator.last_exception
+        # Type-guarded: a tzinfo without `.key` (or a stand-in client) must
+        # yield null/false, never a non-serialisable object — diagnostics
+        # never raise.
+        local_tz_key = getattr(coordinator.client.local_tz, "key", None)
+        tz_is_contract = getattr(coordinator.client, "tz_is_contract", False)
         coordinator_block = {
             "last_update_success": coordinator.last_update_success,
             "last_exception": str(last_exception) if last_exception else None,
@@ -227,6 +236,15 @@ async def async_get_config_entry_diagnostics(
                 update_interval.total_seconds() / 3600 if update_interval else None
             ),
             "has_solar": coordinator._has_solar,
+            # The zone the parser corrects AGL's Sydney-converted timestamps
+            # into (#292) — compare with top-level `timezone` for a
+            # cross-tz household. `tz_is_contract` False = HA fallback, so
+            # the correction is NOT active and a #292-class report is
+            # expected, not this bug. None/False while runtime unavailable.
+            "contract_timezone": (
+                local_tz_key if isinstance(local_tz_key, str) else None
+            ),
+            "tz_is_contract": tz_is_contract is True,
             "active_tou_bands": sorted(coordinator._active_tou_bands),
             "bill_period_start": (
                 coordinator.last_bill_start.isoformat()

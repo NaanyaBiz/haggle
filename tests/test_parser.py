@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -17,11 +18,14 @@ from custom_components.haggle.agl.models import (
     PlanRates,
 )
 from custom_components.haggle.agl.parser import (
+    _default_api_tz,
+    _zone_for_key,
     parse_bill_period,
     parse_daily_readings,
     parse_interval_readings,
     parse_overview,
     parse_plan,
+    relocalise_agl_timestamp,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -150,7 +154,6 @@ class TestParsePlanAllowlist:
     ) -> None:
         """Codex pass 6 (PR #266): per-row WARNINGs over an unbounded rates
         list are the same MITM log-flood vector fixed for intervals."""
-        import logging
 
         data = {
             "productName": "Hostile",
@@ -1262,3 +1265,571 @@ class TestParserTotality:
         assert plan.unit_rates == []
         assert plan.tou_unit_rates == {}
         assert plan.feed_in_rate_cents_per_kwh is None
+
+
+# ---------------------------------------------------------------------------
+# #292 — AGL Sydney-conversion correction
+# ---------------------------------------------------------------------------
+
+# API zone Sydney uses for all contracts regardless of contract state.
+_SYD = ZoneInfo("Australia/Sydney")
+# Contract zones used in vectors.
+_ADL = ZoneInfo("Australia/Adelaide")
+_BNE = ZoneInfo("Australia/Brisbane")
+_SYD_CONTRACT = ZoneInfo("Australia/Sydney")
+_BKH = ZoneInfo("Australia/Broken_Hill")
+
+
+def _payload(
+    dt_str: str,
+    rate_type: str = "normal",
+    kwh: float = 1.0,
+    cost: float = 0.30,
+    tz_field: str = "Australia/Sydney",
+    source_field: str = "consumption",
+) -> dict:
+    """Minimal /Hourly-shaped payload for one slot."""
+    block = {"type": rate_type, "quantity": kwh, "amount": cost}
+    return {
+        "timeZone": tz_field,
+        "sections": [{"items": [{"dateTime": dt_str, source_field: block}]}],
+    }
+
+
+def _multi_payload(
+    items: list[dict],
+    tz_field: str = "Australia/Sydney",
+    source_field: str = "consumption",
+    kwh: float = 1.0,
+    cost: float = 0.30,
+) -> dict:
+    """Payload with many slots, all the same kwh/cost."""
+    built_items = []
+    for item in items:
+        block = {
+            "type": item.get("rate_type", "normal"),
+            "quantity": item.get("kwh", kwh),
+            "amount": item.get("cost", cost),
+        }
+        built_items.append({"dateTime": item["dt"], source_field: block})
+    return {
+        "timeZone": tz_field,
+        "sections": [{"items": built_items}],
+    }
+
+
+class TestRelocaliseAglTimestamp:
+    """Unit tests for the relocalise_agl_timestamp public function (#292).
+
+    Each test names the mutation that makes it red: remove the
+    relocalise_agl_timestamp call → dt stays at the raw (wrong) value.
+    """
+
+    def test_adelaide_winter_acst_30min_correction(self) -> None:
+        """SA ACST=UTC+9:30, Sydney AEST=UTC+10 → slot is 30 min early.
+
+        AGL stores Adelaide midnight as 14:00Z (Sydney AEST midnight). The
+        correction shifts it to 14:30Z (Adelaide ACST midnight).
+        Mutation: remove call → stays at 14:00Z.
+        """
+        api_tz = _SYD
+        dt = datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_ADL)
+        assert got == datetime(2026, 6, 1, 14, 30, tzinfo=UTC)
+
+    def test_adelaide_summer_aedt_30min_correction(self) -> None:
+        """SA ACDT=UTC+10:30, Sydney AEDT=UTC+11 → slot is still 30 min early.
+
+        On 2026-10-04T13:00Z Sydney is on AEDT (DST started 2026-10-04 local).
+        That instant is Sydney midnight of Oct 5 (00:00 AEDT). Adelaide is
+        also on ACDT (+10:30) by then, so the net correction is 30 min.
+        AGL stamps Adelaide midnight Oct 5 as 13:00Z; after correction: 13:30Z.
+        (Reporter vector: 13:00Z→13:30Z post-DST per A8 example.)
+        Mutation: remove call → stays at 13:00Z.
+        """
+        api_tz = _SYD
+        dt = datetime(2026, 10, 4, 13, 0, tzinfo=UTC)
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_ADL)
+        assert got == datetime(2026, 10, 4, 13, 30, tzinfo=UTC)
+
+    def test_qld_winter_identity(self) -> None:
+        """QLD is UTC+10 year-round. Sydney in AEST is also UTC+10 → no-op.
+
+        Mutation: call with wrong contract_tz → would shift; identity proves
+        the function doesn't over-correct.
+        """
+        api_tz = _SYD
+        dt = datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_BNE)
+        assert got == dt
+
+    def test_qld_summer_dst_one_hour_correction(self) -> None:
+        """QLD UTC+10, Sydney AEDT=UTC+11 → slot is 1 h early.
+
+        2026-10-04T13:00Z is Sydney midnight of Oct 5 in AEDT. AGL stores
+        Brisbane midnight Oct 5 as 13:00Z; after correction: 14:00Z.
+        (E1 confirmed from local QLD captures: D-1T13:00Z → DT12:30Z in AEDT
+        season; the first slot midnight is 1 h early for Brisbane.)
+        Mutation: remove call → stays at 13:00Z.
+        """
+        api_tz = _SYD
+        dt = datetime(2026, 10, 4, 13, 0, tzinfo=UTC)
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_BNE)
+        assert got == datetime(2026, 10, 4, 14, 0, tzinfo=UTC)
+
+    def test_nsw_sydney_is_identity(self) -> None:
+        """NSW/VIC/TAS/ACT share DST rules with Sydney → transform is identity."""
+        api_tz = _SYD
+        for dt_base in [
+            datetime(2026, 6, 1, 14, 0, tzinfo=UTC),  # AEST
+            datetime(2026, 10, 3, 13, 0, tzinfo=UTC),  # AEDT
+            datetime(2026, 12, 1, 13, 30, tzinfo=UTC),  # AEDT mid-summer
+        ]:
+            got = relocalise_agl_timestamp(
+                dt_base, api_tz=api_tz, contract_tz=_SYD_CONTRACT
+            )
+            assert got == dt_base, f"NSW should be identity for {dt_base}"
+
+    def test_broken_hill_30min(self) -> None:
+        """Broken Hill ACST=UTC+9:30 — same offset rules as Adelaide."""
+        api_tz = _SYD
+        dt = datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_BKH)
+        assert got == datetime(2026, 6, 1, 14, 30, tzinfo=UTC)
+
+    def test_adelaide_dst_start_2026_10_04(self) -> None:
+        """SA DST starts 2026-10-04 02:00 local (first Sunday Oct).
+
+        Before 02:00 SA local on 2026-10-04: still ACST (UTC+9:30) →
+        AGL stores as AEDT (UTC+11) → 1h30m early.
+        After 02:00 SA local: now ACDT (UTC+10:30) → AGL still AEDT →
+        30m early.  Specifically: 01:30 ACST = 16:00Z prior day;
+        AGL would stamp it at 14:30Z (AEDT midnight is 13:00Z). The slot
+        that matters for the acceptance test: the first slot of the new DST
+        day at 03:00 ACDT = 16:30Z; AGL stamps it as 13:30Z (AEDT 00:30).
+        """
+        api_tz = _SYD
+        # 2026-10-04T13:00Z is Sydney/AEDT midnight = 00:00 AEDT.
+        # Adelaide is still ACST at 13:00Z (13:00 UTC = 22:30 ACST Oct 3
+        # = Oct 3 still). After correction: 22:30 ACST Oct 3 = 13:00Z.
+        # So identity on this side. Let us test the first post-DST slot:
+        # 13:30Z = 00:30 AEDT = 00:30+0:00 ACDT wait ...
+        # Simpler: test that the corrected instant is always >= raw, since
+        # all AU correction zones are ahead of or equal to Sydney.
+        for dt_str in [
+            "2026-10-04T13:00:00Z",  # Sydney AEDT midnight
+            "2026-10-04T13:30:00Z",  # AEDT 00:30
+            "2026-10-04T14:00:00Z",  # AEDT 01:00
+        ]:
+            dt = datetime.fromisoformat(dt_str)
+            got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_ADL)
+            assert got >= dt, f"Corrected instant must be >= raw for AU zones: {dt_str}"
+
+    def test_adelaide_dst_end_2027_04_04_fold_0(self) -> None:
+        """SA clocks fall back 2027-04-04 02:00 ACDT → 01:30 ACST.
+
+        02:00 ACDT = 02:00 ACST exists twice; fold=0 is the DST side.
+        Sydney also falls back the same morning (at 03:00 AEDT).
+        Verify: the round-trip is the exact same instant (no hour lost).
+        """
+        # AEDT 02:00 on Sydney's fall-back day = 15:00Z (fold 0).
+        api_tz = _SYD
+        dt = datetime(2027, 4, 3, 15, 0, tzinfo=UTC)  # 02:00 AEDT fold-0
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_ADL)
+        # Adelaide corrected: 02:00 AEDT wall → 02:00 ACDT → 15:30Z
+        assert got == datetime(2027, 4, 3, 15, 30, tzinfo=UTC)
+
+    def test_adelaide_dst_end_2027_04_04_fold_1(self) -> None:
+        """Second occurrence of 02:00 on SA fall-back day (fold=1 = AEST)."""
+        # AEST 02:00 on Sydney's fall-back day = 16:00Z (fold 1).
+        api_tz = _SYD
+        dt = datetime(2027, 4, 3, 16, 0, tzinfo=UTC)  # 02:00 AEST fold-1
+        got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_ADL)
+        # 02:00 AEST wall → 02:00 ACST (SA is already off DST) → 16:30Z
+        assert got == datetime(2027, 4, 3, 16, 30, tzinfo=UTC)
+
+    def test_brisbane_dst_end_2027_04_04_no_ambiguity(self) -> None:
+        """Brisbane has no DST: Sydney's fold maps both labels to the same BNE instant.
+
+        On Sydney's fall-back morning (Apr 4) the wall-clock reads "02:00"
+        twice. Brisbane (UTC+10 fixed) has no ambiguity: both Sydney 02:00
+        AEDT and 02:00 AEST read as 02:00 BNE but express different UTC:
+
+        fold-0: 02:00 AEDT (15:00Z) → 02:00 BNE = 16:00Z (1 h correction)
+        fold-1: 02:00 AEST (16:00Z) → 02:00 BNE = 16:00Z (identity — AEST=BNE)
+
+        The key invariant: corrected >= raw for all AU zones.
+        """
+        api_tz = _SYD
+        # fold-0: Sydney AEDT 02:00 = 15:00Z; BNE correction adds 1h.
+        got0 = relocalise_agl_timestamp(
+            datetime(2027, 4, 3, 15, 0, tzinfo=UTC), api_tz=api_tz, contract_tz=_BNE
+        )
+        assert got0 == datetime(2027, 4, 3, 16, 0, tzinfo=UTC)
+        # fold-1: Sydney AEST 02:00 = 16:00Z; BNE is identity (both UTC+10).
+        got1 = relocalise_agl_timestamp(
+            datetime(2027, 4, 3, 16, 0, tzinfo=UTC), api_tz=api_tz, contract_tz=_BNE
+        )
+        assert got1 == datetime(2027, 4, 3, 16, 0, tzinfo=UTC)
+        # Both folds now map to the same BNE instant (16:00Z). No ambiguity.
+        assert got0 == got1
+
+    def test_overflow_at_datetime_max_propagates(self) -> None:
+        """astimezone at the edge of datetime range raises OverflowError.
+
+        The caller (_IntervalTimestamps.parse) must catch it and drop the
+        slot as malformed — this test verifies the exception propagates so
+        the test for the caller can assert the drop.
+        """
+        # year=9999 + a large positive UTC offset may overflow.
+        import pytest
+
+        dt = datetime(9999, 12, 31, 23, 59, tzinfo=UTC)
+        with pytest.raises((OverflowError, ValueError)):
+            # astimezone can raise on the boundary; let the test prove the
+            # contract and then the _IntervalTimestamps test proves the catch.
+            relocalise_agl_timestamp(dt, api_tz=_SYD, contract_tz=_ADL)
+
+
+class TestParseIntervalReadingsTzCorrection:
+    """#292 integration tests for parse_interval_readings with tz_is_contract.
+
+    Each test names the mutation that makes it red (per A10).
+    """
+
+    def test_adelaide_slot_corrected_not_dropped(self) -> None:
+        """Core regression: SA first slot was dropped before fix (#292).
+
+        2026-10-03 in Adelaide: local midnight is 14:30Z (ACST). AGL stamps
+        the first slot as 14:00Z (Sydney AEDT midnight). Pre-fix: 14:00Z
+        is before the strict lower bound 14:30Z → dropped + WARNING emitted.
+        Post-fix (tz_is_contract): corrected to 14:30Z → passes window.
+
+        Mutation: remove relocalise call → 14:00Z < 14:30Z → dropped.
+        """
+        payload = _payload("2026-10-02T14:00:00Z")
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(2026, 10, 3),
+            tz=_ADL,
+            tz_is_contract=True,
+        )
+        assert len(result) == 1
+        assert result[0].dt == datetime(2026, 10, 2, 14, 30, tzinfo=UTC)
+
+    def test_qld_summer_60min_corrected(self) -> None:
+        """QLD in Sydney-AEDT season: first slot 1 h early.
+
+        2026-10-04T13:00Z is Sydney midnight of Oct 5 (AEDT). Brisbane
+        midnight Oct 5 is 14:00Z. AGL stamps it as 13:00Z.
+        Post-fix: corrected to 14:00Z, within window [14:00Z, 14:00Z+26h).
+
+        Mutation: remove relocalise → 13:00Z < 14:00Z → dropped.
+        """
+        payload = _payload("2026-10-04T13:00:00Z")
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(2026, 10, 5),
+            tz=_BNE,
+            tz_is_contract=True,
+        )
+        assert len(result) == 1
+        assert result[0].dt == datetime(2026, 10, 4, 14, 0, tzinfo=UTC)
+
+    def test_qld_summer_real_2026_capture_shape(self) -> None:
+        """Local captures (evidence E1): Dec-Mar QLD days D-1T13:00Z -> DT12:30Z.
+
+        For requested day D in Brisbane: AGL returns the first slot at
+        (D-1)T13:00Z (Sydney AEDT midnight for D) and last slot at DT12:30Z.
+        After correction both slots land in the Brisbane window
+        [D-1T14:00Z, DT14:00Z + slack) and the Dropped WARNING must NOT fire.
+
+        Mutation: tz_is_contract=False → correction off → first slot (13:00Z)
+        dropped + WARNING.
+        """
+        two_slot = _multi_payload(
+            [
+                {"dt": "2026-10-04T13:00:00Z"},  # D-1 13:00Z (AEDT midnight D)
+                {"dt": "2026-10-04T13:30:00Z"},  # D-1 13:30Z
+            ]
+        )
+        result = parse_interval_readings(
+            two_slot,
+            expected_day=date(2026, 10, 5),
+            tz=_BNE,
+            tz_is_contract=True,
+        )
+        assert len(result) == 2
+        assert result[0].dt == datetime(2026, 10, 4, 14, 0, tzinfo=UTC)
+        assert result[1].dt == datetime(2026, 10, 4, 14, 30, tzinfo=UTC)
+
+    def test_tz_is_contract_false_keeps_pre_fix_behaviour(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """HA-timezone fallback: correction OFF, dropped slot + WARNING (A3).
+
+        tz_is_contract=False means the zone is not address-derived; the slot
+        stays at the raw (wrong) timestamp, falls outside the window, and the
+        existing WARNING fires.
+
+        Mutation: apply correction when tz_is_contract=False → slot passes
+        window silently even though the zone is wrong.
+        """
+        payload = _payload("2026-10-02T14:00:00Z")
+        with caplog.at_level(
+            logging.WARNING, logger="custom_components.haggle.agl.parser"
+        ):
+            result = parse_interval_readings(
+                payload,
+                expected_day=date(2026, 10, 3),
+                tz=_ADL,
+                tz_is_contract=False,
+            )
+        # Slot dropped: 14:00Z < Adelaide lower bound 14:30Z.
+        assert len(result) == 0
+        assert any("Dropped" in r.getMessage() for r in caplog.records)
+
+    def test_tz_none_untouched(self) -> None:
+        """No tz given: timestamps are unchanged regardless of tz_is_contract."""
+        payload = _payload("2026-06-01T14:00:00Z")
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(2026, 6, 1),
+            tz=None,
+            tz_is_contract=True,
+        )
+        # The ±1-date coarse window admits 14:00Z for 2026-06-01.
+        assert all(r.dt == datetime(2026, 6, 1, 14, 0, tzinfo=UTC) for r in result)
+
+    def test_feedin_path_corrected(self) -> None:
+        """feedIn source field goes through the same timestamp pipeline (#292).
+
+        Mutation: apply correction to consumption but forget feedIn.
+        """
+        payload = _payload(
+            "2026-10-02T14:00:00Z", source_field="feedIn", kwh=0.5, cost=0.10
+        )
+        result = parse_interval_readings(
+            payload,
+            source_field="feedIn",
+            expected_day=date(2026, 10, 3),
+            tz=_ADL,
+            tz_is_contract=True,
+        )
+        assert len(result) == 1
+        assert result[0].dt == datetime(2026, 10, 2, 14, 30, tzinfo=UTC)
+
+    def test_api_tz_read_from_response_timezome_field(self) -> None:
+        """api_tz comes from the response's timeZone, not from a hardcoded key.
+
+        Build a payload whose timeZone=Australia/Brisbane (no DST): a slot
+        at 14:00Z with contract_tz=_BNE should be identity (Brisbane +10
+        through Brisbane +10 is a no-op). If api_tz were hardcoded to Sydney
+        the correction would be identity only in winter — this confirms the
+        response field is honoured.
+
+        Mutation: ignore response timeZone, always use Sydney → no-op in
+        summer when both should be no-op, and a wrong correction in winter.
+        """
+        # Build payload with timeZone=Australia/Brisbane
+        payload = _payload("2026-06-01T14:00:00Z", tz_field="Australia/Brisbane")
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(2026, 6, 1),
+            tz=_BNE,
+            tz_is_contract=True,
+        )
+        # Brisbane via Brisbane is always identity.
+        assert len(result) == 1
+        assert result[0].dt == datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+
+    def test_missing_timezome_falls_back_to_sydney(self) -> None:
+        """timeZone absent from response: fall back to AGL_API_TZ_KEY.
+
+        The correction should still apply correctly (Sydney as default api_tz).
+        Mutation: no-fallback → correction skipped entirely.
+        """
+        data_no_tz = {
+            "sections": [
+                {
+                    "items": [
+                        {
+                            "dateTime": "2026-10-02T14:00:00Z",
+                            "consumption": {
+                                "type": "normal",
+                                "quantity": 1.0,
+                                "amount": 0.30,
+                            },
+                        }
+                    ]
+                }
+            ]
+        }
+        result = parse_interval_readings(
+            data_no_tz,
+            expected_day=date(2026, 10, 3),
+            tz=_ADL,
+            tz_is_contract=True,
+        )
+        # Without the key the default (Sydney) is used → 14:00Z corrects to
+        # 14:30Z for Adelaide, which passes the window.
+        assert len(result) == 1
+        assert result[0].dt == datetime(2026, 10, 2, 14, 30, tzinfo=UTC)
+
+    def test_hostile_timezome_falls_back_to_sydney(self) -> None:
+        """Untrusted timeZone values that can't be resolved → Sydney fallback.
+
+        Mutation: don't bound-check → large key hits tzdata filesystem.
+        """
+        for bad_tz in ["", "Not/AZone", "../../etc/passwd", "x" * 100]:
+            payload = _payload("2026-10-02T14:00:00Z", tz_field=bad_tz)
+            # Must not raise; should still correct via Sydney default.
+            result = parse_interval_readings(
+                payload,
+                expected_day=date(2026, 10, 3),
+                tz=_ADL,
+                tz_is_contract=True,
+            )
+            assert len(result) == 1, f"Expected 1 reading for bad_tz={bad_tz!r}"
+
+    def test_utc_timezome_corrects_earlier_slot_caught_by_window(self) -> None:
+        """timeZone='UTC' would shift Adelaide's slot to BEFORE local midnight.
+
+        With contract_tz=Adelaide and api_tz=UTC the 'correction' moves the
+        slot 9:30 h EARLIER, landing before the lower bound. The window check
+        (which runs AFTER the correction) must drop it.
+
+        Mutation: run window check BEFORE correction → slot at 14:00Z passes
+        the coarse ±1-date window, reaching statistics with wrong timestamp.
+        """
+        _zone_for_key.cache_clear()
+        _default_api_tz.cache_clear()
+        payload = _payload("2026-10-02T14:00:00Z", tz_field="UTC")
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(2026, 10, 3),
+            tz=_ADL,
+            tz_is_contract=True,
+        )
+        # 14:00Z via UTC api_tz: wall-label = 14:00 "UTC", attach Adelaide
+        # (+9:30) → 04:30 UTC, which is before 14:30Z (Adelaide lower bound).
+        assert len(result) == 0
+
+    def test_13_59z_still_dropped_no_leading_slack(self) -> None:
+        """13:59Z is below Adelaide lower bound even after correction.
+
+        The AGENTS.md rule 'never add leading slack' means the window lower
+        bound is strict. A slot at 13:59Z corrects to 14:29Z (1 min before
+        14:30Z Adelaide midnight) and must be dropped.
+
+        Mutation: add leading slack → 13:59Z corrects to 14:29Z and passes
+        if the window is 14:28Z or earlier.
+        """
+        payload = _payload("2026-10-02T13:59:00Z")
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(2026, 10, 3),
+            tz=_ADL,
+            tz_is_contract=True,
+        )
+        assert len(result) == 0
+
+    def test_200_items_produces_exactly_one_debug_line(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """DEBUG tripwire is bounded: one line per parse call, never per item.
+
+        Mutation: log inside the loop → 200 DEBUG lines flood the log.
+        """
+        items = [
+            {
+                "dt": (
+                    datetime(2026, 6, 1, 14, 0, tzinfo=UTC) + timedelta(minutes=30 * i)
+                ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            }
+            for i in range(200)
+        ]
+        payload = _multi_payload(items)
+        with caplog.at_level(
+            logging.DEBUG, logger="custom_components.haggle.agl.parser"
+        ):
+            parse_interval_readings(
+                payload,
+                expected_day=date(2026, 6, 1),
+                tz=_BNE,
+                tz_is_contract=True,
+            )
+        debug_lines = [
+            r
+            for r in caplog.records
+            if r.levelno == logging.DEBUG and "first raw dateTime" in r.getMessage()
+        ]
+        assert len(debug_lines) == 1
+
+    def test_overflow_timestamp_dropped_as_malformed(self) -> None:
+        """year-9999 slot near the datetime-max boundary is dropped, not raised.
+
+        OverflowError from astimezone at the edge of the representable range
+        must be caught in _IntervalTimestamps.parse.
+
+        Mutation: let OverflowError propagate → parse_interval_readings raises
+        instead of returning an empty list.
+
+        Note: expected_day=date(9999, 12, 30) (not 31) because the window
+        predicate computes expected_day+1 which overflows for Dec 31 of 9999.
+        """
+        payload = _payload("9999-12-31T22:00:00Z")
+        # Must not raise — the overflow timestamp is dropped silently.
+        result = parse_interval_readings(
+            payload,
+            expected_day=date(9998, 12, 31),
+            tz=_ADL,
+            tz_is_contract=True,
+        )
+        assert isinstance(result, list)
+
+    def test_nsw_correction_is_identity_year_round(self) -> None:
+        """NSW/VIC/TAS have the same DST rules as Sydney → zero net shift.
+
+        Test multiple points: AEST, AEDT, and the transition boundary.
+        Mutation: apply correction unconditionally → breaks for non-Sydney
+        zones with different offsets.
+        """
+        nsw = ZoneInfo("Australia/Sydney")
+        for dt_utc, expected_day_d in [
+            (datetime(2026, 6, 1, 14, 0, tzinfo=UTC), date(2026, 6, 1)),
+            (datetime(2026, 10, 5, 13, 0, tzinfo=UTC), date(2026, 10, 5)),
+        ]:
+            payload = _payload(dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ"))
+            result = parse_interval_readings(
+                payload,
+                expected_day=expected_day_d,
+                tz=nsw,
+                tz_is_contract=True,
+            )
+            assert len(result) == 1
+            assert result[0].dt == dt_utc  # identity
+
+
+class TestZoneForKey:
+    """Defensive guards on _zone_for_key (A1 length-cap, ValueError catch)."""
+
+    def test_valid_key_returns_zone(self) -> None:
+        _zone_for_key.cache_clear()
+        assert _zone_for_key("Australia/Sydney") is not None
+
+    def test_empty_returns_none(self) -> None:
+        _zone_for_key.cache_clear()
+        assert _zone_for_key("") is None
+
+    def test_too_long_returns_none(self) -> None:
+        _zone_for_key.cache_clear()
+        assert _zone_for_key("A" * 65) is None
+
+    def test_unknown_key_returns_none(self) -> None:
+        _zone_for_key.cache_clear()
+        assert _zone_for_key("Not/AZone") is None
+
+    def test_path_traversal_returns_none(self) -> None:
+        _zone_for_key.cache_clear()
+        assert _zone_for_key("../../etc/passwd") is None

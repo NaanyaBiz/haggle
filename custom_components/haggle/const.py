@@ -75,6 +75,16 @@ MAX_AGL_NUMERIC: Final = 1_000_000.0
 INTERVAL_WINDOW_TRAILING_SLACK_HOURS: Final = 2
 # Fallback when no timezone is available: requested day ± this many DATES.
 INTERVAL_DAY_TOLERANCE: Final = 1
+# The zone AGL's BFF converts every meter's LOCAL wall-clock slot label to UTC
+# through, regardless of the contract's own zone (#292): every usage response
+# declares `"timeZone": "Australia/Sydney"` — a Queensland contract's
+# included — so SA/Broken Hill slots arrive 30 min early all year and QLD
+# slots 1 h early while Sydney is on DST (both confirmed against real
+# captures). `parser.relocalise_agl_timestamp` inverts it. This key is the
+# fallback for a response that omits or mangles the field; the response's
+# own value wins so the inverse self-corrects if AGL ever converts per
+# contract.
+AGL_API_TZ_KEY: Final = "Australia/Sydney"
 # Max seconds to wait for the recorder to commit queued statistics after a
 # COMPLETE heal sweep before reading the bill-period baseline (#152). On
 # timeout the period sensors stay `unknown` for the cycle (safe fallback).
@@ -172,6 +182,15 @@ CONF_ACCOUNT_NUMBER: Final = "account_number"
 # = no pin yet (older entries pre-PR4 / capture failed at install time).
 CONF_PINNED_SPKI_AUTH: Final = "pinned_spki_auth"  # secure.agl.com.au
 CONF_PINNED_SPKI_BFF: Final = "pinned_spki_bff"  # api.platform.agl.com.au
+# IANA key of the CONTRACT's local timezone, derived from the service address
+# (parser.tz_for_address). "" = unknown (address never parsed). Written at
+# config time, by the minor-version migration (from the entry title), on
+# reauth/reconfigure, and persisted by each overview cycle that refines it.
+# It is the authority for the interval window AND for the Sydney-conversion
+# correction (#292, #268): only an address-derived zone may correct — under
+# the HA-timezone fallback the parser leaves timestamps untouched so a
+# mis-zoned entry stays loud (dropped slots) instead of silently shifted.
+CONF_LOCAL_TZ: Final = "local_tz"
 # Persistent-notification id for a pin mismatch, formatted with
 # host=AGL_AUTH_HOST_NAME / AGL_BFF_HOST_NAME. Shared by __init__._check_pin
 # (create) and config_flow's Reconfigure (dismiss) so the two cannot drift.
