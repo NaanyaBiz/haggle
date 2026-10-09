@@ -358,8 +358,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     self-corrects if AGL ever converts per contract. The correction only
     ever moves a slot later, so the #242 no-leading-slack guard is
     unchanged. On v0.5.0-beta.1/beta.2 the bug also surfaced as a daily
-    "Dropped 2 interval(s) outside the window" WARNING and a missing first
-    hour on every SA (and, since 4 October, Queensland) day — that is gone.
+    "Dropped N interval(s) outside the window" WARNING (one slot on SA /
+    Broken Hill, two on Queensland while Sydney is on DST) and a missing
+    first half-hour (SA) or first hour (Queensland, since 4 October) on
+    every day — that is gone.
   - **What self-heals and what does not.** Statistics rows are keyed on the
     UTC hour and imports overwrite in place, so the trailing 7-day rewindow
     is rewritten correctly on the first poll after upgrading — no doubled

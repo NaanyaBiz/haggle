@@ -383,9 +383,10 @@ quarterly delivery metrics (see `docs/delivery-metrics.md`).
   Apr) AGL may collapse both 02:xx folds onto one and lose a slot; on
   Sydney's spring-forward day a no-DST zone's real 02:00–02:59 has no
   Sydney label and cannot be recovered by any inverse. Exposure: SA
-  installs have written shifted data since v0.1.0; public releases
-  post-date the 2026 DST end (2026-05-03), so QLD installs first wrote
-  shifted data on 2026-10-04 — a 30-day in-place re-alignment (the
+  installs have written shifted data since v0.1.0; the first public
+  release (v0.1.0, 2026-05-02) post-dates the 2026 DST end (2026-04-05),
+  so QLD installs first wrote shifted data on 2026-10-04 — a 30-day
+  in-place re-alignment (the
   follow-up PR) covers the whole QLD span only if users upgrade by about
   3 November 2026.
 - **Daily endpoint `dateTime`** (`/Current/Daily`, `/Previous/Daily`): the
@@ -409,7 +410,6 @@ quarterly delivery metrics (see `docs/delivery-metrics.md`).
 | Data | Interval | Reason |
 |---|---|---|
 | 30-min intervals | 24 h floor, user-configurable up to 168 h (7 days) | AGL data is delayed 24-48 h (AEMO feed lag), so nothing below 24 h finds anything new — see `OPT_POLL_INTERVAL_HOURS` (#228) below |
-| Daily series | 6 h | Picks up newly available days |
 | Plan / overview | 7 days | Rarely changes |
 | Token refresh | Just-in-time (< 2 min to `exp`) | tokens expire at 15 min |
 | **After a FAILED poll** | 30 min (`RETRY_INTERVAL_ON_ERROR`) | #155: a transient error previously cost a full 24 h and looked like "the poll never ran" (#126). Restored to the configured cadence on the next success; auth failures go to reauth, not fast retry |
@@ -477,7 +477,10 @@ timestamps exposes it, so the guard ships with the correction:
   (`S-1`) when `_local_midnight_utc(S).minute != 0` and `S-1` is still inside
   the `BACKFILL_DAYS` retention floor — exactly one extra request per series
   per cycle for half-hour zones (`3 + (7+1) + (7+1)` on a solar contract,
-  pinned by `TestComposedRequestCeiling`), none for whole-hour zones. No
+  pinned by `TestHalfHourZoneRequestCeiling`; the whole-hour `3 + 7 + 7`
+  contrast by
+  `TestComposedRequestCeiling.test_worst_case_disjoint_chunks_normal_cycle`),
+  none for whole-hour zones. No
   overlap at the floor: a fresh half-hour-zone install loses the very first
   day's 00:00 slot — accepted, asserted by a test.
 - **Trim is derived from batch CONTENT, never the plan**: after dedupe and

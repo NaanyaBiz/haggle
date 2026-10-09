@@ -89,12 +89,13 @@ On quarterly billing the period sensors under-read once the billing period is
 older than the 30-day backfill window (see the glossary above).
 
 **Hourly bars are 30 minutes (SA / Broken Hill) or one hour (Queensland,
-October–April) early — or, on v0.5.0-beta.1/beta.2, the first hour of every
-day is missing.**
+October–April) early — or, on v0.5.0-beta.1/beta.2, the first half-hour (SA /
+Broken Hill) or first hour (Queensland) of every day is missing.**
 AGL's API converts every meter's local slot labels to UTC through Sydney
 time, wherever the meter actually is
-([#292](https://github.com/NaanyaBiz/haggle/issues/292)). Fixed from
-v0.5.0-beta.3: slots are re-localised to your contract's zone before import.
+([#292](https://github.com/NaanyaBiz/haggle/issues/292)). Fixed in the
+release that carries #292 (see the CHANGELOG): slots are re-localised to
+your contract's zone before import.
 What self-heals: the trailing 7 days are rewritten correctly on the first
 poll after upgrading (rows are overwritten in place — no doubled bars; one
 small upward step where the new rows meet the old ones). What does not,
