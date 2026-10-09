@@ -114,8 +114,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaggleConfigEntry) -> bo
     # (#280): the connector opens a new TLS connection per poll (and more
     # under retries), so without this a single AGL rotation logged a WARNING
     # on every connection for as long as the user had not re-pinned. The
-    # persistent notification stays up regardless; a *different* mismatch
-    # (another cert) is still reported. A reload/restart resets the memory.
+    # persistent notification is not re-created on repeats either (a
+    # dismissed notice stays dismissed until re-pin/reload/restart —
+    # accepted, #280); a *different* mismatch (another cert) is still
+    # reported. A reload/restart resets the memory.
     reported_mismatches: set[tuple[str, str]] = set()
 
     def _check_pin(host: str, observed: str) -> None:

@@ -354,7 +354,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every poll, and more under retries — until the user re-pinned. Each
   distinct mismatching fingerprint is now reported once per entry setup; a
   different certificate is still reported, and a reload or restart resets
-  that memory. The notice itself stays up until re-pinned, as before.
+  that memory. The notice itself stays up until re-pinned. If you
+  dismiss it without re-pinning, it is not re-raised for that same
+  certificate until the entry is reloaded or Home Assistant restarts
+  (previously it came back on the next connection); a different
+  certificate still raises a fresh warning and notice.
 - The Reconfigure refusal ("does not include the contract this entry
   monitors") now says that if Home Assistant had asked you to
   re-authenticate, reloading the entry brings that prompt back — an open

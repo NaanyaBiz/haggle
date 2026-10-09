@@ -616,6 +616,14 @@ async def test_check_pin_reads_stored_pins_live(hass: HomeAssistant) -> None:
         pin_check = entry.runtime_data.connector.on_new_connection
         assert pin_check is not None
 
+        # Matches the CURRENT pin: silent, and must NOT be remembered by the
+        # #280 dedupe set — once "a" becomes a mismatch below it is reported.
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "a" * 64)
+        mock_notify.assert_not_called()
+
         # Simulate Reconfigure's write landing while this instance still runs.
         hass.config_entries.async_update_entry(
             entry, data={**entry.data, CONF_PINNED_SPKI_AUTH: "c" * 64}
@@ -655,7 +663,7 @@ async def test_pin_mismatch_is_reported_once_per_distinct_certificate(
     rotation used to log a WARNING (and re-create the notice) on every
     connection until the user re-pinned. Now: one WARNING + one notice per
     distinct (host, fingerprint); a different fingerprint, or the other
-    host, is still reported.
+    host, is still reported; a reload resets the memory.
     """
     import logging
 
@@ -740,3 +748,17 @@ async def test_pin_mismatch_is_reported_once_per_distinct_certificate(
             pin_check(AGL_BFF_HOST_NAME, "f" * 64)
         assert mock_notify.call_count == 1
         assert warnings() == 3
+
+        # A reload resets the memory (the set is closure-local to the setup):
+        # the same fingerprint is reported again, once.
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+        pin_check = entry.runtime_data.connector.on_new_connection
+        assert pin_check is not None
+        with patch(
+            "custom_components.haggle.persistent_notification.async_create"
+        ) as mock_notify:
+            pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+            pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
+        assert mock_notify.call_count == 1, "reload must reset the dedupe memory"
+        assert warnings() == 4
