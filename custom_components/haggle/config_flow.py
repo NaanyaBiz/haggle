@@ -61,7 +61,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 
 from .agl.client import AGLAuthError, AGLError, _plausible_token
-from .agl.parser import parse_overview
+from .agl.parser import parse_overview, tz_for_address
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -84,6 +84,7 @@ from .const import (
     AGL_USER_AGENT,
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
+    CONF_LOCAL_TZ,
     CONF_PINNED_SPKI_AUTH,
     CONF_PINNED_SPKI_BFF,
     CONF_REFRESH_TOKEN,
@@ -174,6 +175,19 @@ def _match_existing_contract(
         if not want_account or contract.account_number == want_account:
             return contract
     return None
+
+
+def _local_tz_key(address: str) -> str:
+    """IANA key of the contract's zone from its service address, or "".
+
+    The persisted CONF_LOCAL_TZ value (#268, #292): written at creation and
+    refreshed by both repair flows from the matched contract, so the window
+    and the Sydney-conversion correction have a contract-derived authority
+    from the first poll instead of waiting for the first overview cycle. ""
+    (address did not parse) keeps the HA-timezone fallback, uncorrected.
+    """
+    tz = tz_for_address(address)
+    return getattr(tz, "key", "") if tz is not None else ""
 
 
 def _pin_updates(
@@ -375,6 +389,10 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the haggle config flow."""
 
     VERSION = 1
+    # 1.2: entry.data gains CONF_LOCAL_TZ (__init__.async_migrate_entry derives
+    # it from the title). Minor only — an older release loads a 1.2 entry
+    # unchanged, so the README's downgrade promise holds.
+    MINOR_VERSION = 2
 
     def __init__(self) -> None:
         self._pkce_verifier: str = ""
@@ -537,6 +555,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 contract_number=c.contract_number,
                 account_number=c.account_number,
                 title=c.address,
+                address=c.address,
             )
 
         if user_input is not None:
@@ -549,6 +568,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 contract_number=contract.contract_number,
                 account_number=contract.account_number,
                 title=contract.address,
+                address=contract.address,
             )
 
         options = {
@@ -631,7 +651,8 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             if self.source == SOURCE_REAUTH
             else self._get_reconfigure_entry()
         )
-        if _match_existing_contract(entry.data, self._contracts) is None:
+        matched = _match_existing_contract(entry.data, self._contracts)
+        if matched is None:
             # Nothing written, no reload, no notification dismissed. No
             # placeholders: the abort text names no contract or account.
             return self.async_abort(reason="contract_not_found")
@@ -639,14 +660,25 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         pin_updates, repinned = _pin_updates(
             self.source, entry.data, self._auth_spki, self._bff_spki
         )
+        # Both repair flows refresh the contract zone from the matched
+        # contract's (authoritative, non-security) address — this is also how
+        # a pre-1.2 entry whose title was renamed gets its zone without
+        # waiting for an overview cycle. An address that does not parse
+        # leaves the stored value alone rather than blanking a good one.
+        tz_updates: dict[str, str] = {}
+        if (tz_key := _local_tz_key(matched.address)) and tz_key != entry.data.get(
+            CONF_LOCAL_TZ, ""
+        ):
+            tz_updates[CONF_LOCAL_TZ] = tz_key
         contract_number: str = entry.data[CONF_CONTRACT_NUMBER]
         _LOGGER.info(
-            "haggle %s: contract=%s pin_auth=%s pin_bff=%s",
+            "haggle %s: contract=%s pin_auth=%s pin_bff=%s local_tz=%s",
             self.source,
             # Class B identifier (docs/threat-model.md §2): log last-4 only.
             f"…{contract_number[-4:]}",
             "updated" if CONF_PINNED_SPKI_AUTH in pin_updates else "kept",
             "updated" if CONF_PINNED_SPKI_BFF in pin_updates else "kept",
+            "updated" if tz_updates else "kept",
         )
 
         # A Reconfigure whose capture came back empty for either host kept
@@ -662,7 +694,11 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         # token is a credential on disk; the access token never is.
         result = self.async_update_reload_and_abort(
             entry,
-            data_updates={CONF_REFRESH_TOKEN: self._refresh_token, **pin_updates},
+            data_updates={
+                CONF_REFRESH_TOKEN: self._refresh_token,
+                **pin_updates,
+                **tz_updates,
+            },
             reason=reason,
         )
         self._dismiss_resolved_pin_notices(pin_updates, repinned)
@@ -701,11 +737,16 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         contract_number: str,
         account_number: str,
         title: str | None = None,
+        address: str = "",
     ) -> ConfigFlowResult:
         """Create a NEW entry — SOURCE_USER only.
 
         Reauth and Reconfigure finish in `_async_update_existing_entry`;
         async_create_entry raises HomeAssistantError in those sources.
+
+        `address` is the selected contract's service address; its state and
+        postcode give CONF_LOCAL_TZ ("" when it does not parse — the
+        empty-discovery path has no contract at all).
         """
         # Fall back to a SHA-256 hash of the refresh token (one-way) so the
         # entity registry — written as plaintext JSON — never sees raw token
@@ -739,6 +780,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ACCOUNT_NUMBER: account_number,
                 CONF_PINNED_SPKI_AUTH: self._auth_spki,
                 CONF_PINNED_SPKI_BFF: self._bff_spki,
+                CONF_LOCAL_TZ: _local_tz_key(address),
             },
         )
 

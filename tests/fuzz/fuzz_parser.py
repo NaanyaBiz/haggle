@@ -62,6 +62,7 @@ _FUZZ_TZ_WINDOW = (
 for _fn_name in (
     "parse_overview",
     "parse_interval_readings",
+    "relocalise_agl_timestamp",
     "parse_daily_readings",
     "parse_bill_period",
     "parse_plan",
@@ -84,6 +85,50 @@ def _check_amount(value: float) -> None:
         raise AssertionError(f"unbounded value escaped a parser: {value!r}")
 
 
+def _check_window(reading: Any, lo: datetime, hi: datetime, what: str) -> None:
+    if not (lo <= reading.dt < hi):
+        raise AssertionError(f"{what} escaped the window: {reading.dt!r}")
+    _check_amount(reading.kwh)
+    _check_amount(reading.cost_aud)
+
+
+def _check_interval_passes(obj: Any, source_field: str) -> None:
+    for reading in parser.parse_interval_readings(obj, source_field=source_field):
+        _check_amount(reading.kwh)
+        _check_amount(reading.cost_aud)
+    # Windowed passes (#242 / T-4): with expected_day set, every RETURNED
+    # reading must lie inside the window — a crafted timestamp escaping
+    # it is exactly the baseline-cutoff attack the guard exists to stop.
+    # Fallback (tz-less) pass: coarse ±1-DATE window.
+    for reading in parser.parse_interval_readings(
+        obj, source_field=source_field, expected_day=_FUZZ_EXPECTED_DAY
+    ):
+        if not (_FUZZ_WINDOW[0] <= reading.dt.date() <= _FUZZ_WINDOW[1]):
+            raise AssertionError(
+                f"out-of-window timestamp escaped the guard: {reading.dt!r}"
+            )
+        _check_amount(reading.kwh)
+        _check_amount(reading.cost_aud)
+    # tz-derived pass: the tight local-day window (Codex P1, PR #266).
+    for reading in parser.parse_interval_readings(
+        obj, source_field=source_field, expected_day=_FUZZ_EXPECTED_DAY, tz=UTC
+    ):
+        _check_window(reading, *_FUZZ_TZ_WINDOW, "tz-derived timestamp")
+    # Contract-zone pass (#292): the Sydney-conversion inverse runs on every
+    # timestamp BEFORE the window check, keyed on the response's own
+    # (attacker-influenceable) `timeZone`. Whatever zone the input names —
+    # hostile, over-long, negative-offset — the corrected instant must still
+    # be inside the same strict window, and the parser must stay total.
+    for reading in parser.parse_interval_readings(
+        obj,
+        source_field=source_field,
+        expected_day=_FUZZ_EXPECTED_DAY,
+        tz=UTC,
+        tz_is_contract=True,
+    ):
+        _check_window(reading, *_FUZZ_TZ_WINDOW, "re-localised timestamp")
+
+
 def test_one_input(data: bytes) -> None:
     try:
         obj: Any = json.loads(data)
@@ -91,35 +136,7 @@ def test_one_input(data: bytes) -> None:
         return
 
     for source_field in ("consumption", "feedIn"):
-        for reading in parser.parse_interval_readings(obj, source_field=source_field):
-            _check_amount(reading.kwh)
-            _check_amount(reading.cost_aud)
-        # Windowed passes (#242 / T-4): with expected_day set, every RETURNED
-        # reading must lie inside the window — a crafted timestamp escaping
-        # it is exactly the baseline-cutoff attack the guard exists to stop.
-        # Fallback (tz-less) pass: coarse ±1-DATE window.
-        for reading in parser.parse_interval_readings(
-            obj, source_field=source_field, expected_day=_FUZZ_EXPECTED_DAY
-        ):
-            if not (_FUZZ_WINDOW[0] <= reading.dt.date() <= _FUZZ_WINDOW[1]):
-                raise AssertionError(
-                    f"out-of-window timestamp escaped the guard: {reading.dt!r}"
-                )
-            _check_amount(reading.kwh)
-            _check_amount(reading.cost_aud)
-        # tz-derived pass: the tight local-day window (Codex P1, PR #266).
-        for reading in parser.parse_interval_readings(
-            obj,
-            source_field=source_field,
-            expected_day=_FUZZ_EXPECTED_DAY,
-            tz=UTC,
-        ):
-            if not (_FUZZ_TZ_WINDOW[0] <= reading.dt < _FUZZ_TZ_WINDOW[1]):
-                raise AssertionError(
-                    f"timestamp escaped the tz-derived window: {reading.dt!r}"
-                )
-            _check_amount(reading.kwh)
-            _check_amount(reading.cost_aud)
+        _check_interval_passes(obj, source_field)
 
     for daily in parser.parse_daily_readings(obj):
         _check_amount(daily.kwh)

@@ -88,6 +88,34 @@ total over all imported history and will never match a billing-period figure.
 On quarterly billing the period sensors under-read once the billing period is
 older than the 30-day backfill window (see the glossary above).
 
+**Hourly bars are 30 minutes (SA / Broken Hill) or one hour (Queensland,
+October–April) early — or, on v0.5.0-beta.1/beta.2, the first half-hour (SA /
+Broken Hill) or first hour (Queensland) of every day is missing.**
+AGL's API converts every meter's local slot labels to UTC through Sydney
+time, wherever the meter actually is
+([#292](https://github.com/NaanyaBiz/haggle/issues/292)). Fixed in the
+release that carries #292 (see the CHANGELOG): slots are re-localised to
+your contract's zone before import.
+What self-heals: the trailing 7 days are rewritten correctly on the first
+poll after upgrading (rows are overwritten in place — no doubled bars; one
+small upward step where the new rows meet the old ones). What does not,
+yet: history older than that week stays shifted — 30 min for SA all year,
+1 h for Queensland across the October–April span — until the follow-up
+release, which re-aligns the 30 days before your upgrade in place and
+raises a Repairs notice for anything older. **Do not delete the `haggle:*`
+statistics to force a rebuild**: rows older than ~30 days cannot be
+re-fetched from AGL, and your daily totals were always right — only the
+hour each slot sat in was off. NSW, Victoria, Tasmania and the ACT were
+never affected. Two side effects of correct alignment are expected: on a
+time-of-use plan the hours spanning a tariff boundary (e.g. 00:00, 06:00,
+10:00, 15:00 local) now show a mixed cost per kWh — right, half the hour is
+on each rate — and on an SA / Broken Hill / NT contract the bar at local
+midnight belongs half to each day (the hour straddles the day boundary).
+The tariff *labels* AGL attaches to each slot are a separate matter
+([#141](https://github.com/NaanyaBiz/haggle/issues/141)). To check
+alignment, compare the hourly bars against the AGL portal's CSV export read
+as **your** local time, not against the per-period sensors.
+
 **Recent days are missing.**
 Expected — 24–48 h feed lag. If a day is still missing after 3 days, check
 `home-assistant.log` for `custom_components.haggle` warnings and open an

@@ -544,3 +544,329 @@ async def test_earliest_stat_date_no_rows_returns_none(
 
     since = datetime(2026, 1, 1, tzinfo=UTC)
     assert await coord._earliest_stat_date(stat_id_gen, since) is None
+
+
+async def test_half_hour_zone_straddle_23_30_slot_survives_re_import(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#292 A4: the day-boundary straddle bucket survives an overlap re-import.
+
+    For Adelaide (ACST = UTC+9:30), local midnight falls at :30 past the UTC
+    hour. The UTC bucket that straddles the day boundary is half-owned by each
+    adjacent local day. _straddle_trim_before detects a batch starting at :30
+    and trims the first (partial) UTC bucket so the prior day's fully-written
+    row is never overwritten.
+
+    Mutation: _straddle_trim_before returns None → the second import includes
+    the partial 14:00Z bucket in hour_cons; its baseline is computed including
+    that bucket (partial overlap), and the re-emitted chain steps down at
+    14:00Z — a #114-class defect.
+
+    Scenario (Adelaide ACST winter 2026-05-31):
+    - PRIOR DAY import: 4 half-hour slots starting at 13:00Z (minute=0 →
+      no straddle trim). Establishes the 14:00Z bucket with 2.0 kWh (the
+      two half-hour slots at 14:00 and 14:30).
+    - OVERLAP BATCH import: starts at 14:30Z (minute=30 → _straddle_trim_before
+      returns 15:00Z). The 14:00Z bucket is trimmed; only 15:00Z onward is
+      written. The stored 14:00Z row (2.0 kWh sum) must remain unchanged.
+    """
+    from zoneinfo import ZoneInfo
+
+    coord = _make_coordinator(hass)
+    coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+    coord.client.tz_is_contract = True
+
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+
+    def _ts(dt: datetime) -> float:
+        return dt.timestamp()
+
+    straddle_hour = datetime(2026, 5, 31, 14, 0, tzinfo=UTC)
+
+    # --- PRIOR DAY import: slots starting at 13:00Z (minute=0 → no trim) ---
+    # 4 half-hour slots: 13:00, 13:30 → bucket 13:00Z; 14:00, 14:30 → bucket 14:00Z.
+    prior_slots: list[IntervalReading] = [
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 13, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 13, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 14, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 14, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+    ]
+    await coord._import_intervals(prior_slots)
+    await async_wait_recording_done(hass)
+
+    rows_prior = await _read_series(hass, stat_id)
+    # row["start"] is a Unix timestamp float.
+    straddle_ts = _ts(straddle_hour)
+    straddle_after_prior = next(
+        (r for r in rows_prior if abs(r["start"] - straddle_ts) < 1), None
+    )
+    assert straddle_after_prior is not None, (
+        "Straddle bucket at 14:00Z must be written on prior import"
+    )
+    # Both 14:00Z and 14:30Z slots land in the 14:00Z bucket → sum = 2.0.
+    # (Cumulative sum: 13:00Z bucket = 2.0 kWh, 14:00Z bucket = 4.0 kWh total)
+    straddle_sum_after_prior = straddle_after_prior["sum"]
+
+    # --- OVERLAP BATCH: starts at 14:30Z (minute=30 → straddle trim = 15:00Z) ---
+    # _straddle_trim_before returns 15:00Z; the 14:00Z bucket is dropped.
+    overlap_slots: list[IntervalReading] = [
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 14, 30, tzinfo=UTC),  # minute=30 → triggers trim
+            kwh=0.5,
+            cost_aud=0.15,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 15, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 15, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 16, 0, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+        IntervalReading(
+            dt=datetime(2026, 5, 31, 16, 30, tzinfo=UTC),
+            kwh=1.0,
+            cost_aud=0.30,
+            rate_type="normal",
+        ),
+    ]
+    await coord._import_intervals(overlap_slots)
+    await async_wait_recording_done(hass)
+
+    rows_after = await _read_series(hass, stat_id)
+
+    # Straddle bucket at 14:00Z must be unchanged.
+    straddle_after_overlap = next(
+        (r for r in rows_after if abs(r["start"] - straddle_ts) < 1), None
+    )
+    assert straddle_after_overlap is not None, "Straddle bucket must still exist"
+    assert straddle_after_overlap["sum"] == pytest.approx(straddle_sum_after_prior), (
+        f"Straddle sum changed from {straddle_sum_after_prior} to "
+        f"{straddle_after_overlap['sum']}: "
+        "_straddle_trim_before failed to protect the straddle bucket"
+    )
+
+    # Monotonicity check: no downward steps anywhere in the chain.
+    sums = [r["sum"] for r in sorted(rows_after, key=lambda r: r["start"])]
+    for earlier, later in pairwise(sums):
+        assert later >= earlier - 1e-9, (
+            f"Sum chain is not monotone: {earlier} → {later} (downward step)"
+        )
+
+
+def _slot(
+    dt: datetime, kwh: float, rate_type: str = "normal", cost: float = 0.30
+) -> IntervalReading:
+    return IntervalReading(dt=dt, kwh=kwh, cost_aud=cost, rate_type=rate_type)
+
+
+async def _row_sum_at(hass: HomeAssistant, stat_id: str, hour: datetime) -> float:
+    """Stored cumulative sum of the `hour` row, or fail if the row is absent."""
+    rows = await _read_series(hass, stat_id)
+    row = next((r for r in rows if abs(r["start"] - hour.timestamp()) < 1), None)
+    assert row is not None, f"{stat_id}: no row at {hour.isoformat()}"
+    return float(row["sum"])
+
+
+async def _assert_monotone(hass: HomeAssistant, stat_id: str) -> None:
+    rows = sorted(await _read_series(hass, stat_id), key=lambda r: r["start"])
+    for earlier, later in pairwise(r["sum"] for r in rows):
+        assert later >= earlier - 1e-9, f"{stat_id}: downward step {earlier} → {later}"
+
+
+async def test_half_hour_zone_straddle_trim_protects_every_tou_band(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#292 A4(b): the straddle trim covers the per-tariff series, not only the
+    aggregate — the rows a ToU user's Energy dashboard actually reads.
+
+    Same Adelaide shape as test_half_hour_zone_straddle_23_30_slot_survives_re_import
+    but every slot carries a ToU band, so haggle:consumption_<band>_* and
+    haggle:cost_<band>_* are emitted.
+
+    Mutation: skip `_drop_bands_before` (trim the aggregate only) → the band
+    batch still holds the half-full 14:00Z bucket while its baseline is read
+    at the aggregate's trimmed cutoff (15:00Z, i.e. the stored FULL 14:00Z
+    row), so the band's 14:00Z row is rewritten as full + half: an UPWARD
+    double-count (2.0 → 2.5 kWh on offpeak) that a monotonicity check alone
+    would never catch, repeated on every rewindow while the day is inside it.
+    """
+    from zoneinfo import ZoneInfo
+
+    coord = _make_coordinator(hass)
+    coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+    coord.client.tz_is_contract = True
+    bands = frozenset({"peak", "offpeak"})
+    straddle_hour = datetime(2026, 5, 31, 14, 0, tzinfo=UTC)  # Adelaide 23:30/00:00
+    band_ids = [
+        *coord._tariff_stat_ids("peak"),
+        *coord._tariff_stat_ids("offpeak"),
+    ]
+
+    # PRIOR import: 13:00Z..14:30Z, alternating peak/offpeak, 1.0 kWh each.
+    # The 14:00Z bucket ends up holding 1.0 peak (14:00) + 1.0 offpeak (14:30).
+    prior = [
+        _slot(datetime(2026, 5, 31, 13, 0, tzinfo=UTC), 1.0, "peak"),
+        _slot(datetime(2026, 5, 31, 13, 30, tzinfo=UTC), 1.0, "offpeak"),
+        _slot(datetime(2026, 5, 31, 14, 0, tzinfo=UTC), 1.0, "peak"),
+        _slot(datetime(2026, 5, 31, 14, 30, tzinfo=UTC), 1.0, "offpeak"),
+    ]
+    await coord._import_intervals(prior, known_bands=bands)
+    await async_wait_recording_done(hass)
+    straddle_before = {
+        sid: await _row_sum_at(hass, sid, straddle_hour) for sid in band_ids
+    }
+
+    # OVERLAP batch: opens on the Adelaide-midnight slot (14:30Z, offpeak, re-fetched
+    # at a different value) → trim to 15:00Z in EVERY series.
+    overlap = [
+        _slot(datetime(2026, 5, 31, 14, 30, tzinfo=UTC), 0.5, "offpeak"),
+        _slot(datetime(2026, 5, 31, 15, 0, tzinfo=UTC), 1.0, "peak"),
+        _slot(datetime(2026, 5, 31, 15, 30, tzinfo=UTC), 1.0, "offpeak"),
+        _slot(datetime(2026, 5, 31, 16, 0, tzinfo=UTC), 1.0, "peak"),
+        _slot(datetime(2026, 5, 31, 16, 30, tzinfo=UTC), 1.0, "offpeak"),
+    ]
+    await coord._import_intervals(overlap, known_bands=bands)
+    await async_wait_recording_done(hass)
+
+    for sid in band_ids:
+        # Load-bearing: the straddle row is untouched in every band series.
+        assert await _row_sum_at(hass, sid, straddle_hour) == pytest.approx(
+            straddle_before[sid]
+        ), f"{sid}: straddle row rewritten"
+        # The rows after the trim exist (an over-aggressive trim that dropped
+        # the whole band would leave the series at its prior length).
+        for hour in (
+            datetime(2026, 5, 31, 15, 0, tzinfo=UTC),
+            datetime(2026, 5, 31, 16, 0, tzinfo=UTC),
+        ):
+            await _row_sum_at(hass, sid, hour)
+        await _assert_monotone(hass, sid)
+
+    # Expected chains: each band had 2.0 kWh (two 1.0 slots) stored by the prior
+    # import and gains 1.0 per hour from 15:00Z — 3.0 then 4.0.
+    peak_cons, _ = coord._tariff_stat_ids("peak")
+    offpeak_cons, _ = coord._tariff_stat_ids("offpeak")
+    for sid in (peak_cons, offpeak_cons):
+        assert await _row_sum_at(
+            hass, sid, datetime(2026, 5, 31, 15, 0, tzinfo=UTC)
+        ) == pytest.approx(3.0)
+        assert await _row_sum_at(
+            hass, sid, datetime(2026, 5, 31, 16, 0, tzinfo=UTC)
+        ) == pytest.approx(4.0)
+
+
+def _adelaide_day_slots(day: date, day_idx: int) -> list[IntervalReading]:
+    """48 distinct-valued half-hour slots of one Adelaide local day."""
+    from zoneinfo import ZoneInfo
+
+    start = datetime(
+        day.year, day.month, day.day, tzinfo=ZoneInfo("Australia/Adelaide")
+    ).astimezone(UTC)
+    return [
+        _slot(start + timedelta(minutes=30 * j), (day_idx + 1) + j / 100)
+        for j in range(48)
+    ]
+
+
+async def _bucket_deltas(hass: HomeAssistant, stat_id: str) -> dict[datetime, float]:
+    """{hour: kWh written for that hour} from the stored cumulative chain."""
+    rows = sorted(await _read_series(hass, stat_id), key=lambda r: r["start"])
+    deltas: dict[datetime, float] = {}
+    prev = 0.0
+    for r in rows:
+        assert r["sum"] >= prev - 1e-9, f"{stat_id}: downward step at {r['start']}"
+        deltas[datetime.fromtimestamp(r["start"], tz=UTC)] = r["sum"] - prev
+        prev = r["sum"]
+    return deltas
+
+
+async def test_half_hour_zone_overlap_day_error_residual_is_one_half_slot(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#292 A4(c): pins the documented failure-path residual at its TRUE size.
+
+    Cycle 1 imports days A+B (A at the floor: no overlap). Cycle 2 imports C
+    ALONE — its overlap day B errored. Cycle 3 imports C (now the overlap /
+    context day) + D. Cycle 1 wrote the B/C boundary bucket (14:00Z) with
+    B's 23:30 only, C not being in that batch. Cycle 2 opens on C's 00:00 —
+    the straddle slot — so the content trim drops that bucket and the stored
+    row is left as is. Cycle 3 opens on the same slot again (C is the
+    batch's first day) and trims it again. C's 00:00 half-slot is therefore
+    never written: the residual is one 30-min slot, permanently — NOT
+    "restored by the next cycle's overlap". Every other bucket, including the
+    C/D boundary that cycle 3's healthy overlap fills whole, must equal the
+    true slot total; A's own 00:00 bucket (the accepted floor residual) is
+    trimmed in cycle 1 and has no row at all; the chain must stay monotone
+    (a missing slot is never a downward step).
+    """
+    from zoneinfo import ZoneInfo
+
+    coord = _make_coordinator(hass)
+    coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+    coord.client.tz_is_contract = True
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    day_a = _adelaide_day_slots(date(2026, 5, 30), 0)
+    day_b = _adelaide_day_slots(date(2026, 5, 31), 1)
+    day_c = _adelaide_day_slots(date(2026, 6, 1), 2)
+    day_d = _adelaide_day_slots(date(2026, 6, 2), 3)
+
+    await coord._import_intervals(day_a + day_b)
+    await async_wait_recording_done(hass)
+    await coord._import_intervals(day_c)  # overlap day B errored
+    await async_wait_recording_done(hass)
+    await coord._import_intervals(day_c + day_d)  # C is the overlap day now
+    await async_wait_recording_done(hass)
+
+    got = await _bucket_deltas(hass, stat_id)
+    expected: dict[datetime, float] = {}
+    for s in day_a + day_b + day_c + day_d:
+        h = s.dt.replace(minute=0)
+        expected[h] = expected.get(h, 0.0) + s.kwh
+    floor_bucket = day_a[0].dt.replace(minute=0)  # A 00:00 (no overlap at floor)
+    bc_boundary = day_c[0].dt.replace(minute=0)  # B 23:30 + C 00:00
+    cd_boundary = day_d[0].dt.replace(minute=0)  # C 23:30 + D 00:00
+
+    # The accepted floor residual: A's 00:00 bucket was trimmed, no row at all.
+    assert floor_bucket not in got
+    # The failure-path residual: C's 00:00 half-slot is absent, permanently.
+    assert got[bc_boundary] == pytest.approx(day_b[-1].kwh)
+    assert got[bc_boundary] != pytest.approx(day_b[-1].kwh + day_c[0].kwh)
+    # The healthy overlap in cycle 3 wrote the C/D boundary whole.
+    assert got[cd_boundary] == pytest.approx(expected[cd_boundary])
+    # Everything else is exact.
+    for hour, kwh in expected.items():
+        if hour in (floor_bucket, bc_boundary):
+            continue
+        assert got[hour] == pytest.approx(kwh), hour.isoformat()

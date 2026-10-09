@@ -12,12 +12,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.haggle.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
+    CONF_LOCAL_TZ,
     CONF_REFRESH_TOKEN,
     DOMAIN,
 )
 from custom_components.haggle.coordinator import HaggleData
 
 if TYPE_CHECKING:
+    import pytest
     from homeassistant.core import HomeAssistant
 
 _ENTRY_DATA = {
@@ -654,6 +656,139 @@ async def test_check_pin_reads_stored_pins_live(hass: HomeAssistant) -> None:
     assert "c" * 64 not in message
 
 
+# ---------------------------------------------------------------------------
+# #292 — _resolve_local_tz and AglClient construction
+# ---------------------------------------------------------------------------
+
+_MOCK_SESSION = MagicMock()
+_MOCK_SESSION.close = AsyncMock()
+
+
+def _setup_patches(*, return_data: object = None):
+    """Context manager stack for a minimal successful setup."""
+    from contextlib import ExitStack
+
+    stack = ExitStack()
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.aiohttp.ClientSession",
+            return_value=_MOCK_SESSION,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.agl.client.AglAuth.async_ensure_valid_token",
+            new_callable=AsyncMock,
+            return_value="access_token",
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_setup",
+            new_callable=AsyncMock,
+        )
+    )
+    stack.enter_context(
+        patch(
+            "custom_components.haggle.coordinator.HaggleCoordinator._async_update_data",
+            new_callable=AsyncMock,
+            return_value=return_data or _COORDINATOR_DATA,
+        )
+    )
+    return stack
+
+
+async def test_setup_with_stored_tz_sets_tz_is_contract_true(
+    hass: HomeAssistant,
+) -> None:
+    """Setup with a stored CONF_LOCAL_TZ key gives AglClient tz_is_contract=True.
+
+    Mutation: _resolve_local_tz always returns (tz, False) → tz_is_contract is
+    False for address-derived zones; the Sydney-correction is never applied even
+    when the zone is known (A3 violated); all SA/QLD slots stay shifted.
+    """
+    from zoneinfo import ZoneInfo
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: "Australia/Adelaide"},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with _setup_patches():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    client = entry.runtime_data.client
+    assert isinstance(client.local_tz, ZoneInfo)
+    assert client.local_tz.key == "Australia/Adelaide"
+    assert client.tz_is_contract is True
+
+
+async def test_setup_with_empty_tz_falls_back_to_ha_zone(
+    hass: HomeAssistant,
+) -> None:
+    """Setup with CONF_LOCAL_TZ='' gives AglClient tz_is_contract=False.
+
+    Mutation: _resolve_local_tz returns (tz, True) for empty key →
+    tz_is_contract is True but the zone is HA-derived; the correction would
+    be applied against the wrong zone, shifting all slots by HA offset.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: ""},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with _setup_patches():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    client = entry.runtime_data.client
+    assert client.tz_is_contract is False
+
+
+async def test_setup_with_hostile_tz_key_falls_back_logs_warning(
+    hass: HomeAssistant,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hand-edited invalid CONF_LOCAL_TZ degrades to HA fallback + 1 WARNING.
+
+    Mutation: _resolve_local_tz re-raises ZoneInfo exceptions → setup aborts
+    with a ConfigEntryError on a hand-edited entry; user must use Developer
+    Tools to fix it; effectively bricks the integration.
+    The key must be bounded in the log — no raw user input > 64 chars.
+    """
+    hostile_key = "Not/AZone/With/A/Really/Long/Name/" + "x" * 100
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: hostile_key},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with _setup_patches():
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    client = entry.runtime_data.client
+    assert client.tz_is_contract is False
+    # The WARNING must mention the bad key, but only up to 64 chars.
+    warnings = [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "local_tz" in r.message
+    ]
+    assert warnings, "Expected a WARNING about the invalid local_tz key"
+    # Raw hostile key must not appear beyond the 64-char bound.
+    assert hostile_key not in warnings[0].message
+
+
 async def test_pin_mismatch_is_reported_once_per_distinct_certificate(
     hass: HomeAssistant, caplog
 ) -> None:
@@ -762,3 +897,91 @@ async def test_pin_mismatch_is_reported_once_per_distinct_certificate(
             pin_check(AGL_AUTH_HOST_NAME, "f" * 64)
         assert mock_notify.call_count == 1, "reload must reset the dedupe memory"
         assert warnings() == 4
+
+
+async def test_contract_zone_is_resolved_off_the_event_loop(
+    hass: HomeAssistant,
+) -> None:
+    """ZoneInfo(key) reads a tzdata file on a cache miss; setup runs the
+    resolver in the executor and pre-warms AGL's conversion zone there too.
+
+    Mutation: call _resolve_local_tz inline / drop the pre-warm → the
+    resolver runs on the loop thread (HA's blocking-call detector flags it
+    on tzdata-package hosts) and the parser's first parse loads
+    Australia/Sydney on the loop.
+    """
+    import threading
+
+    from custom_components import haggle as haggle_init
+
+    seen: dict[str, int] = {}
+    real_resolve = haggle_init._resolve_local_tz
+
+    def _spy(entry: MockConfigEntry) -> tuple[object, bool]:
+        seen["ident"] = threading.get_ident()
+        return real_resolve(entry)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, CONF_LOCAL_TZ: "Australia/Adelaide"},
+        unique_id="1234567890_9999999999",
+        minor_version=2,
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        _setup_patches(),
+        # A plain function, not a Mock: the test harness runs Mock targets
+        # inline instead of in the executor.
+        patch("custom_components.haggle._resolve_local_tz", new=_spy),
+        patch(
+            "custom_components.haggle.dt_util.async_get_time_zone",
+            new_callable=AsyncMock,
+            return_value=None,
+        ) as mock_prewarm,
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert seen["ident"] != hass.loop_thread_id, "resolver ran on the event loop"
+    mock_prewarm.assert_awaited_once_with("Australia/Sydney")
+    assert entry.runtime_data.client.local_tz.key == "Australia/Adelaide"
+
+
+async def test_migration_derives_zone_off_the_event_loop(
+    hass: HomeAssistant,
+) -> None:
+    """The 1.1 → 1.2 migration's tz_for_address (ZoneInfo inside) runs in the
+    executor. Mutation: call it inline → runs on the loop thread."""
+    import threading
+
+    from custom_components.haggle.agl.parser import tz_for_address
+
+    seen: dict[str, int] = {}
+
+    def _spy(address: str) -> object:
+        seen["ident"] = threading.get_ident()
+        return tz_for_address(address)
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="1 Sample Street SUBURB SA 5000",
+        data=_ENTRY_DATA,
+        unique_id="1234567890_9999999999",
+        version=1,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
+    with (
+        patch("custom_components.haggle.tz_for_address", new=_spy),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert seen["ident"] != hass.loop_thread_id, "tz_for_address ran on the loop"
+    assert entry.data[CONF_LOCAL_TZ] == "Australia/Adelaide"

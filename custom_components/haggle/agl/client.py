@@ -420,20 +420,45 @@ class AglClient:
         auth: AglAuth,
         session: aiohttp.ClientSession,
         local_tz: tzinfo | None = None,
+        *,
+        tz_is_contract: bool = False,
     ) -> None:
-        """``local_tz`` is the contract's local timezone — callers assert it
-        is the HA instance's configured one, the same assumption every
-        local-midnight computation in the coordinator makes. It tightens the
+        """``local_tz`` is the contract's local timezone. It tightens the
         interval-timestamp window to the true UTC shape of one local day
         (Codex P1 on PR #266); ``None`` falls back to the ±1-date window.
-        Public and mutable: the coordinator refines it each overview cycle
-        from the contract's service-address state (pass 3 — the CONTRACT's
+        Setup resolves it from the persisted CONF_LOCAL_TZ (address-derived)
+        and only falls back to the HA instance's zone when that is unknown;
+        the coordinator refines it each overview cycle from the contract's
+        service-address state via set_contract_tz (pass 3 — the CONTRACT's
         local day is the correct window, and it can differ from the HA
         instance's timezone).
+
+        ``tz_is_contract`` says whether ``local_tz`` is the contract's OWN
+        zone (address-derived) rather than the HA fallback. Only then does
+        the parser undo AGL's Sydney conversion of interval timestamps
+        (#292) — under the fallback a mis-zoned entry must stay loud
+        (dropped slots + WARNING) rather than be shifted silently, so the
+        fallback is announced ONCE per setup here. Both attributes are
+        public and mutable; keep them in step through set_contract_tz.
         """
         self._auth = auth
         self._session = session
         self.local_tz = local_tz
+        self.tz_is_contract = tz_is_contract
+        if local_tz is not None and not tz_is_contract:
+            _LOGGER.warning(
+                "Contract timezone not yet known; using the Home Assistant "
+                "timezone %s for the interval window and leaving AGL's "
+                "Sydney-converted timestamps uncorrected (#292). It is derived "
+                "from the service address on the next successful overview "
+                "fetch, or by re-running Reconfigure",
+                getattr(local_tz, "key", local_tz),
+            )
+
+    def set_contract_tz(self, tz: tzinfo) -> None:
+        """Adopt an address-derived zone: window AND correction follow it."""
+        self.local_tz = tz
+        self.tz_is_contract = True
 
     @property
     def _default_headers(self) -> dict[str, str]:
@@ -531,17 +556,26 @@ class AglClient:
         Use `day == yesterday` for reliable data; today will be empty.
         Field to use: consumption.quantity (outer) for kWh, NOT
         consumption.values.quantity (inner DPI/chart-scaled helper).
-        dateTime is slot-start in UTC, but the `period=` parameter is
-        interpreted in the contract's LOCAL timezone, so a single-day query
-        returns intervals from local midnight that day to local midnight the
-        next day (spanning two UTC dates). The statistics importer relies on
-        this: it cuts the cumulative-sum baseline at the earliest returned
-        interval hour rather than a UTC-midnight derived from `day`.
+        The `period=` parameter is interpreted in the contract's LOCAL
+        timezone, so a single-day query returns intervals from local midnight
+        that day to local midnight the next day (spanning two UTC dates).
+        dateTime is NOT that instant in true UTC, though: AGL converts the
+        meter's local slot label to UTC through the response's `timeZone` —
+        Australia/Sydney for every contract (#292) — so the parser
+        re-localises it into `local_tz` (relocalise_agl_timestamp) when
+        `tz_is_contract`. The statistics importer relies on the corrected
+        instants: it cuts the cumulative-sum baseline at the earliest
+        returned interval hour rather than a UTC-midnight derived from `day`.
         """
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Current/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data, expected_day=day, tz=self.local_tz)
+        return parse_interval_readings(
+            data,
+            expected_day=day,
+            tz=self.local_tz,
+            tz_is_contract=self.tz_is_contract,
+        )
 
     async def async_get_usage_hourly_previous(
         self, contract_number: str, day: date
@@ -550,7 +584,12 @@ class AglClient:
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/Electricity/{contract_number}/Previous/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
-        return parse_interval_readings(data, expected_day=day, tz=self.local_tz)
+        return parse_interval_readings(
+            data,
+            expected_day=day,
+            tz=self.local_tz,
+            tz_is_contract=self.tz_is_contract,
+        )
 
     # --- Solar (feed-in) ---
 
@@ -565,13 +604,19 @@ class AglClient:
         #128). Returns the feedIn side only: kwh = exported kWh, cost_aud =
         AUD feed-in credit for the slot. `previous=True` selects the
         Previous/Hourly variant for days before the current bill period.
+        feedIn slots carry the same Sydney-converted dateTime as consumption
+        (#292) and go through the same re-localisation.
         """
         period_segment = "Previous" if previous else "Current"
         period = f"{day}_{day}"
         url = f"{self.BASE_URL}/api/v2/usage/smart/ElectricitySolar/{contract_number}/{period_segment}/Hourly?period={period}&scaling={AGL_SCALING}"
         data = await self._get(url)
         return parse_interval_readings(
-            data, source_field="feedIn", expected_day=day, tz=self.local_tz
+            data,
+            source_field="feedIn",
+            expected_day=day,
+            tz=self.local_tz,
+            tz_is_contract=self.tz_is_contract,
         )
 
     # --- Plan ---
