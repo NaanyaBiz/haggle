@@ -4176,3 +4176,225 @@ class TestHalfHourZoneRequestCeiling:
         # 3 fixed + (REWINDOW_DAYS+1) consumption + (REWINDOW_DAYS+1) solar.
         expected = 3 + 2 * (REWINDOW_DAYS + 1)
         assert total == expected
+
+
+# ---------------------------------------------------------------------------
+# #292 A4(c)/(d)/(e) + A5 — the overlap day is context only, and every
+# local-midnight site runs in the CONTRACT zone. Each test pins one mechanism
+# the A10 mutation table found uncovered (verify stage): the HA zone is set to
+# UTC so an HA-tz regression lands on a different instant from Adelaide's.
+# ---------------------------------------------------------------------------
+
+
+class TestOverlapDayAndContractMidnightSites:
+    """Adelaide contract (ACDT in December: local midnight = D-1T13:30Z) on a
+    Home Assistant instance whose own zone is UTC.
+
+    Mutation targets (A10):
+    - context_only=solar_overlap → False: the overlap day lands in
+      fetched_solar_days (marker written, stall `progressed` True)
+    - `and not solar_overlap` dropped: an overlap-day per-day error flags the
+      sweep incomplete and `skipped` True
+    - marker floored instead of ceiled: zero-export row at 13:00Z (the
+      straddle bucket) instead of 14:00Z
+    - _import_generation / _generation_heal_triggers / _earliest_stat_date /
+      _get_generation_period_totals on dt_util (HA zone) instead of
+      _local_midnight_utc / _contract_tz: instants move to UTC midnight
+    """
+
+    @staticmethod
+    def _adelaide(coord: HaggleCoordinator) -> None:
+        from zoneinfo import ZoneInfo
+
+        coord.client.local_tz = ZoneInfo("Australia/Adelaide")
+        coord.client.tz_is_contract = True
+
+    async def test_overlap_day_never_counts_as_fetched_or_progress(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A4(d): the overlap day fetching clean while the real day errors is
+        NOT progress — no marker for it, `progressed` False, sweep incomplete."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        day = datetime.now(UTC).date() - timedelta(days=10)
+        overlap = day - timedelta(days=1)
+
+        async def _solar(d: date, previous: bool) -> list[IntervalReading] | None:
+            return [] if d == overlap else None  # None = per-day skip
+
+        with (
+            patch.object(
+                coord, "_fetch_day_solar", new_callable=AsyncMock, side_effect=_solar
+            ) as mock_fetch,
+            patch.object(
+                coord, "_import_generation", new_callable=AsyncMock
+            ) as mock_import,
+            patch.object(
+                coord, "_track_solar_stall", new_callable=AsyncMock
+            ) as mock_track,
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            complete = await coord._fetch_range(
+                None, (day, day), None, track_stall=True
+            )
+
+        assert [c.args[0] for c in mock_fetch.await_args_list] == [overlap, day]
+        assert complete is False  # the real day was skipped
+        mock_import.assert_not_awaited()  # no zero-export marker for the overlap day
+        mock_track.assert_awaited_once_with((day, day), False, True)
+
+    async def test_overlap_day_error_is_non_fatal(self, hass: HomeAssistant) -> None:
+        """A4(c): a per-day error on the overlap day neither flags the sweep
+        incomplete nor counts as a skip; the real day still imports."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        day = datetime.now(UTC).date() - timedelta(days=10)
+        overlap = day - timedelta(days=1)
+
+        async def _solar(d: date, previous: bool) -> list[IntervalReading] | None:
+            return None if d == overlap else []
+
+        with (
+            patch.object(
+                coord, "_fetch_day_solar", new_callable=AsyncMock, side_effect=_solar
+            ),
+            patch.object(
+                coord, "_import_generation", new_callable=AsyncMock
+            ) as mock_import,
+            patch.object(
+                coord, "_track_solar_stall", new_callable=AsyncMock
+            ) as mock_track,
+            patch(
+                "custom_components.haggle.coordinator.asyncio.sleep",
+                new=AsyncMock(),
+            ),
+        ):
+            complete = await coord._fetch_range(
+                None, (day, day), None, track_stall=True
+            )
+
+        assert complete is True
+        mock_import.assert_awaited_once()
+        assert mock_import.await_args.kwargs["fetched_days"] == [day]
+        mock_track.assert_awaited_once_with((day, day), True, False)
+
+    async def test_zero_export_marker_ceils_to_contract_first_full_hour(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A4(e)/A5: the marker for an ACDT day sits at 14:00Z — the ceiling
+        of Adelaide midnight 13:30Z — not the floored straddle bucket 13:00Z
+        and not the HA zone's midnight (00:00Z here)."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord, "_get_baseline_sums", new=AsyncMock(return_value=(10.0, 1.0))
+            ),
+        ):
+            await coord._import_generation([], fetched_days=[date(2026, 12, 1)])
+
+        gen_stats = mock_add.call_args_list[0][0][2]
+        assert [r["start"] for r in gen_stats] == [
+            datetime(2026, 11, 30, 14, 0, tzinfo=UTC)
+        ]
+        assert gen_stats[0]["sum"] == pytest.approx(10.0)
+
+    async def test_day_coverage_check_uses_contract_day_bounds(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A5: a slot at 14:30Z is INSIDE Adelaide's 2026-12-01 (01:00 ACDT)
+        though outside the HA zone's UTC date, so no marker is added."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        slots = [
+            _make_interval(datetime(2026, 11, 30, 14, 30, tzinfo=UTC), kwh=0.5),
+            _make_interval(datetime(2026, 11, 30, 15, 0, tzinfo=UTC), kwh=0.7),
+        ]
+        with (
+            patch(_PATCH_ADD_STATS) as mock_add,
+            patch.object(
+                coord, "_get_baseline_sums", new=AsyncMock(return_value=(0.0, 0.0))
+            ),
+        ):
+            await coord._import_generation(slots, fetched_days=[date(2026, 12, 1)])
+
+        gen_stats = mock_add.call_args_list[0][0][2]
+        # The 14:00Z straddle bucket is trimmed (batch starts at :30); the
+        # 15:00Z row remains and NO marker row appears anywhere.
+        assert [r["start"] for r in gen_stats] == [
+            datetime(2026, 11, 30, 15, 0, tzinfo=UTC)
+        ]
+
+    async def test_heal_floor_is_contract_local_midnight(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A5: the heal-trigger window opens at Adelaide midnight (:30 past the
+        UTC hour), not at the HA zone's midnight."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        stat_id_gen = coord._generation_stat_ids()[0]
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=BACKFILL_DAYS)
+        mock_get_inst = _mock_get_instance({})
+        with patch(_PATCH_GET_INSTANCE, mock_get_inst):
+            await coord._generation_heal_triggers(stat_id_gen, floor, today)
+
+        executor_args = (
+            mock_get_inst.return_value.async_add_executor_job.await_args.args
+        )
+        floor_dt = executor_args[2]
+        assert floor_dt == coord._local_midnight_utc(floor)
+        assert floor_dt.astimezone(UTC).minute == 30
+
+    async def test_earliest_stat_date_is_contract_local_date(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A5: a row at 2026-11-30T14:00Z is 00:30 ACDT on 2026-12-01 in
+        Adelaide — reported as 12-01, not the HA zone's (UTC) 11-30."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        stat_id_gen = coord._generation_stat_ids()[0]
+        row_start = datetime(2026, 11, 30, 14, 0, tzinfo=UTC)
+        rows = {stat_id_gen: [{"start": row_start.timestamp()}]}
+        with patch(_PATCH_GET_INSTANCE, _mock_get_instance(rows)):
+            earliest = await coord._earliest_stat_date(
+                stat_id_gen, row_start - timedelta(days=1)
+            )
+        assert earliest == date(2026, 12, 1)
+
+    async def test_period_totals_cutoff_is_contract_local_midnight(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A5: the bill-period baseline is read at Adelaide midnight of
+        bill_start, not the HA zone's."""
+        await hass.config.async_set_time_zone("UTC")
+        coord = _make_coordinator(hass)
+        self._adelaide(coord)
+        coord._latest_generation_kwh = 5.0
+        coord._latest_generation_credit = 0.5
+        today = datetime.now(UTC).date()
+        bill_start = today - timedelta(days=12)
+        with (
+            patch.object(
+                coord, "_get_baseline_sums", new=AsyncMock(return_value=(1.0, 0.1))
+            ) as mock_base,
+            patch.object(
+                coord, "_earliest_stat_date", new_callable=AsyncMock, return_value=None
+            ),
+        ):
+            await coord._get_generation_period_totals(
+                bill_start, today - timedelta(days=1), today
+            )
+        cutoff = mock_base.call_args[0][2]
+        assert cutoff == coord._local_midnight_utc(bill_start)
+        assert cutoff.astimezone(UTC).minute == 30
