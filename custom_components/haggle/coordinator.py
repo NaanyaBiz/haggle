@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any
@@ -80,7 +81,7 @@ from .const import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Collection, Iterable, Mapping
 
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
@@ -95,6 +96,17 @@ _LOGGER = logging.getLogger(__name__)
 # look-back window is still found. Bounded ABOVE at the fetch cutoff by the
 # caller, so it never reads a sum from inside the rewindow being rewritten.
 _EARLIEST_HISTORY = datetime(1970, 1, 1, tzinfo=UTC)
+
+# One AGL interval. An hourly statistics key holds the slots starting at
+# `key` and `key + _SLOT`; in a half-hour zone those can be different
+# contract-local days (the local-midnight straddle bucket, #292 A4).
+_SLOT = timedelta(minutes=30)
+
+# Float slack for the stale-key fill's per-day energy-conservation guard
+# (#300). Batch and stored totals are sums of the same AGL floats, so a
+# genuine convention re-key matches to ~1e-12; anything past this is lost
+# energy, not rounding.
+_CONSERVATION_SLACK_KWH = 1e-6
 
 
 def _money(label: str | None) -> str:
@@ -1431,6 +1443,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         all_intervals: list[IntervalReading] = []
         solar_intervals: list[IntervalReading] = []
         fetched_solar_days: list[date] = []
+        # Provenance for the stale-key fill (#300): a day is authoritative
+        # for its stored keys only if ITS OWN fetch returned >= 1 reading —
+        # never because a neighbour's trailing-slack row is dated into it.
+        cons_reading_days: set[date] = set()
+        solar_reading_days: set[date] = set()
         current = min(r[0] for r in ranges)
         loop_end = max(r[1] for r in ranges)
         first = True
@@ -1446,6 +1463,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 all_intervals=all_intervals,
                 solar_intervals=solar_intervals,
                 fetched_solar_days=fetched_solar_days,
+                cons_reading_days=cons_reading_days,
+                solar_reading_days=solar_reading_days,
                 solar_overlap=solar_range is not None and current < solar_range[0],
             )
             solar_skipped = solar_skipped or day_skipped
@@ -1455,7 +1474,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             current += timedelta(days=1)
 
         await self._import_sweep_batches(
-            all_intervals, solar_intervals, fetched_solar_days, known_bands
+            all_intervals,
+            solar_intervals,
+            fetched_solar_days,
+            known_bands,
+            cons_reading_days=cons_reading_days,
+            solar_reading_days=solar_reading_days,
         )
         # Normal-path give-up (#154): only non-heal, non-rate-limited sweeps
         # count toward the stall detector — a 429 halts before days are even
@@ -1484,17 +1508,30 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         solar_intervals: list[IntervalReading],
         fetched_solar_days: list[date],
         known_bands: frozenset[str],
+        *,
+        cons_reading_days: Collection[date],
+        solar_reading_days: Collection[date],
     ) -> None:
-        """Import what a sweep collected (extracted from _fetch_range, #187)."""
+        """Import what a sweep collected (extracted from _fetch_range, #187).
+
+        The ``*_reading_days`` sets are each family's fetch provenance for the
+        stale-key fill's per-day gate (#300) — see _stale_key_fill.
+        """
         if all_intervals:
-            await self._import_intervals(all_intervals, known_bands=known_bands)
+            await self._import_intervals(
+                all_intervals,
+                known_bands=known_bands,
+                reading_days=cons_reading_days,
+            )
         # Partial solar batches import too — idempotent, and the trailing
         # rewindow re-fetches the last REWINDOW_DAYS so short gaps self-heal.
         # fetched_solar_days matters even with zero intervals: an all-zero
         # export day must still advance the generation resume point.
         if solar_intervals or fetched_solar_days:
             await self._import_generation(
-                solar_intervals, fetched_days=fetched_solar_days
+                solar_intervals,
+                fetched_days=fetched_solar_days,
+                reading_days=solar_reading_days,
             )
 
     async def _fetch_sweep_day(
@@ -1508,6 +1545,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         all_intervals: list[IntervalReading],
         solar_intervals: list[IntervalReading],
         fetched_solar_days: list[date],
+        cons_reading_days: set[date],
+        solar_reading_days: set[date],
         solar_overlap: bool = False,
     ) -> tuple[bool, bool, bool]:
         """Fetch one sweep day for whichever series cover it, into the batches.
@@ -1528,6 +1567,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         429/transport halt still halts — those are endpoint-wide and would
         hit the next day regardless. The consumption overlap day needs no
         special case: its per-day error is already the non-fatal `[]` skip.
+
+        ``cons_reading_days`` / ``solar_reading_days`` collect the days whose
+        OWN fetch returned at least one reading — the stale-key fill's
+        provenance gate (#300). The overlap day counts when it returned
+        readings: its response is authoritative for its own slots.
         """
         fetch_cons = cons_range is not None and (
             cons_range[0] <= current <= cons_range[1]
@@ -1544,6 +1588,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             if readings is None:  # rate-limited — halt without touching solar
                 return first, True, False
             all_intervals.extend(readings)
+            if readings:
+                cons_reading_days.add(current)
         if fetch_solar:
             if not first:
                 await asyncio.sleep(BACKFILL_INTER_REQUEST_DELAY)
@@ -1553,6 +1599,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 previous,
                 solar_intervals,
                 fetched_solar_days,
+                solar_reading_days,
                 context_only=solar_overlap,
             )
             if status == "halt":
@@ -1608,7 +1655,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             span[-1],
             count,
         )
-        await self._import_generation([], fetched_days=span)
+        # No reading vouches for any day here, so the stale-key fill never
+        # zeroes a stored row on this marker-only import (#300).
+        await self._import_generation([], fetched_days=span, reading_days=())
         self._record_stall_give_up(span[0], span[-1], count)
         self._solar_stall = None
 
@@ -1730,6 +1779,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         previous: bool,
         solar_intervals: list[IntervalReading],
         fetched_solar_days: list[date],
+        reading_days: set[date],
         *,
         context_only: bool = False,
     ) -> str:
@@ -1743,6 +1793,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         day (the half-hour-zone overlap day, #292 A4) contributes its slots
         but is never marked covered: it was covered by an earlier cycle, and
         a zero-export marker for it could only overwrite real stored rows.
+        A day that returned >= 1 reading (context-only included) also joins
+        `reading_days`, the stale-key fill's provenance set (#300); an
+        all-zero export day does not — it has no reading to vouch for it.
         """
         try:
             readings = await self._fetch_day_solar(day, previous)
@@ -1759,6 +1812,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if readings is None:
             return "skip"
         solar_intervals.extend(readings)
+        if readings:
+            reading_days.add(day)
         if not context_only:
             fetched_solar_days.append(day)
         return "ok"
@@ -1795,11 +1850,218 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 bands_this_batch.add(r.rate_type)
         return hour_cons, hour_cost, band_cons, band_cost, bands_this_batch
 
+    def _fill_active(self) -> bool:
+        """Whether the stale-key fill may run this import (#300).
+
+        Only on the contract's OWN zone. On HA's fallback zone the parser
+        neither corrects AGL's Sydney conversion nor windows the contract's
+        real local day (it drops the day's first slots with a counted
+        WARNING, deliberately loud — parser._IntervalTimestamps), so local
+        dates are untrustworthy and a fill would zero corrected rows written
+        on an earlier, correctly-zoned cycle. Identity check: a client mock's
+        truthy attribute must not arm it.
+        """
+        return self.client.tz_is_contract is True
+
+    async def _stored_hourly_states(
+        self, stat_ids: Iterable[str], since: datetime
+    ) -> dict[str, dict[datetime, float]]:
+        """Stored hourly ``state`` per series, every row at/after ``since``.
+
+        ONE batched executor read for the whole family (#300). Unbounded
+        above on purpose: a stored row AFTER the batch's last key (a last
+        day that errored this cycle) must be re-chained too, or it keeps a
+        sum from the old chain. No read at all when the fill is inactive.
+        A non-finite or negative stored state (never written by this
+        integration) carries forward as 0.0, so the rebuilt chain can only
+        rise.
+        """
+        if not self._fill_active():
+            return {}
+        from homeassistant.components.recorder.statistics import (
+            statistics_during_period,
+        )
+        from homeassistant.helpers.recorder import get_instance
+
+        ids = set(stat_ids)
+        result = await get_instance(self.hass).async_add_executor_job(
+            statistics_during_period,
+            self.hass,
+            since,
+            None,
+            ids,
+            "hour",
+            None,
+            {"state"},
+        )
+        stored: dict[str, dict[datetime, float]] = {}
+        for stat_id in ids:
+            rows: dict[datetime, float] = {}
+            for row in result.get(stat_id) or []:
+                start, state = row.get("start"), row.get("state")
+                if start is None or state is None:
+                    continue
+                key = datetime.fromtimestamp(float(start), tz=UTC)
+                value = float(state)
+                if key >= since:
+                    rows[key] = value if math.isfinite(value) and value > 0 else 0.0
+            stored[stat_id] = rows
+        return stored
+
+    def _key_days(self, key: datetime) -> set[date]:
+        """Every contract-local date whose slots an hourly key holds (#300).
+
+        The key holds the slots starting at ``key`` and ``key + 30 min``.
+        In a whole-hour zone both share a date; in a half-hour zone the
+        local-midnight straddle bucket holds two days, and a fill may only
+        zero it when BOTH are authoritative.
+        """
+        tz = self._contract_tz()
+        return {key.astimezone(tz).date(), (key + _SLOT).astimezone(tz).date()}
+
+    def _stale_key_fill(
+        self,
+        series: dict[str, dict[datetime, float]],
+        stored: Mapping[str, Mapping[datetime, float]],
+        *,
+        kwh_id: str,
+        readings: list[IntervalReading],
+        reading_days: Collection[date] | None,
+        since: datetime,
+    ) -> dict[str, dict[datetime, float]]:
+        """Rewrite every stored key at/after ``since`` the batch has no value for.
+
+        A convention change that moves slots between hourly keys (#292's
+        timestamp correction, a downgrade and re-upgrade) leaves stored rows
+        at keys the corrected batch never writes — the parser drops
+        zero-on-zero slots, so "no batch data at a key" does not mean "key
+        untouched". Such a row keeps its OLD running sum while every later
+        row moves to the new chain: a downward step (#300, #114 class). A
+        per-day AGL error mid-window does the same with the day's own kWh.
+
+        So every stored key k >= ``since`` without a batch value is emitted:
+        - 0.0 when every local day it holds (_key_days) is AUTHORITATIVE —
+          the batch carries a reading dated that day AND, given
+          ``reading_days``, that day's own fetch returned readings (a
+          neighbour's trailing-slack row never vouches for a day);
+        - otherwise its STORED state, carried forward unchanged, so a day
+          the batch says nothing about keeps its hourly values exactly.
+        Either way its sum is re-chained, so every row from ``since`` on is
+        baseline + non-negative deltas — monotone without assuming every
+        day was fetched. Fill only rewrites keys already stored; it never
+        creates one. Baselines are untouched (strictly before ``since``).
+
+        Conservation guard: a day whose stored energy would be zeroed is
+        authoritative only if the batch has at least the day's stored kWh,
+        less what the tail hour may legitimately hold of the next day's
+        first slots (_non_conserving_days). Otherwise it carries forward, with
+        one WARNING per import: a delivery regression stays visible rather
+        than becoming silent kWh loss.
+        """
+        if not stored:
+            return series
+        gate = self._authoritative_days(readings, reading_days)
+        failed = self._non_conserving_days(
+            readings, since, series[kwh_id], stored.get(kwh_id, {}), gate
+        )
+        if failed:
+            _LOGGER.warning(
+                "AGL returned less energy than is stored for %d day(s) "
+                "%s..%s; keeping their stored hourly values (#300)",
+                len(failed),
+                min(failed),
+                max(failed),
+            )
+            gate -= failed
+        stored_keys: set[datetime] = set().union(*stored.values())
+        zero_ok = {key for key in stored_keys if self._key_days(key) <= gate}
+        return {
+            stat_id: self._fill_series(hourly, stored.get(stat_id, {}), zero_ok)
+            for stat_id, hourly in series.items()
+        }
+
+    def _authoritative_days(
+        self,
+        readings: list[IntervalReading],
+        reading_days: Collection[date] | None,
+    ) -> set[date]:
+        """Local dates the batch speaks for: dated by >= 1 READING (markers
+        and buckets never count) and, given provenance, fetched as that day.
+        Evaluated on the deduped readings before markers and the trim."""
+        tz = self._contract_tz()
+        days = {r.dt.astimezone(tz).date() for r in readings}
+        return days if reading_days is None else days & set(reading_days)
+
+    def _non_conserving_days(
+        self,
+        readings: list[IntervalReading],
+        since: datetime,
+        batch_kwh: Mapping[datetime, float],
+        stored_kwh: Mapping[datetime, float],
+        gate: set[date],
+    ) -> set[date]:
+        """Authoritative days that would lose stored kWh to a zero fill.
+
+        Only days holding a would-be-zeroed key with stored energy are
+        checked, so the steady state (no stale keys) costs nothing.
+
+        The correction only ever moves a reading LATER (#292), so a pure
+        re-key can shift into a day's keys at most the next day's opening
+        slots, which land in its last hour. A day passes when its batch kWh
+        >= the stored kWh at keys dated that day, minus the stored kWh at
+        those keys in the hour before the next local midnight. Both sides
+        count only slots/keys at/after ``since`` (the batch's own window).
+        """
+        at_risk: set[date] = set()
+        for key, state in stored_kwh.items():
+            if state > 0 and key not in batch_kwh:
+                days = self._key_days(key)
+                if days <= gate:
+                    at_risk |= days
+        if not at_risk:
+            return set()
+        tz = self._contract_tz()
+        batch: dict[date, float] = dict.fromkeys(at_risk, 0.0)
+        for r in readings:
+            day = r.dt.astimezone(tz).date()
+            if r.dt >= since and day in batch:
+                batch[day] += r.kwh
+        # Stored kWh per day, less the tail-hour allowance: keys from one
+        # hour before the next local midnight on are not owed.
+        tails = {
+            day: self._local_midnight_utc(day + timedelta(days=1)) - timedelta(hours=1)
+            for day in at_risk
+        }
+        owed: dict[date, float] = dict.fromkeys(at_risk, 0.0)
+        for key, state in stored_kwh.items():
+            day = key.astimezone(tz).date()
+            if day in owed and key < tails[day]:
+                owed[day] += state
+        return {
+            day for day in at_risk if batch[day] < owed[day] - _CONSERVATION_SLACK_KWH
+        }
+
+    @staticmethod
+    def _fill_series(
+        hourly: dict[datetime, float],
+        stored: Mapping[datetime, float],
+        zero_ok: set[datetime],
+    ) -> dict[datetime, float]:
+        """One series' hourly values with its stale stored keys filled in:
+        0.0 on an authoritative key, else the stored state carried forward.
+        Batch values always win; no key outside ``stored`` is added."""
+        filled = dict(hourly)
+        for key, state in stored.items():
+            if key not in filled:
+                filled[key] = 0.0 if key in zero_ok else state
+        return filled
+
     async def _import_intervals(
         self,
         intervals: list[IntervalReading],
         *,
         known_bands: frozenset[str] = frozenset(),
+        reading_days: Collection[date] | None = None,
     ) -> None:
         """Aggregate 30-min intervals to hourly and push to recorder statistics.
 
@@ -1826,6 +2088,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         band) before the baseline cutoff is taken — the stored full row keeps
         the other half and the chain continues from the next hour. See
         _straddle_trim_before.
+
+        Stale-key fill (#300): every import also rewrites the stored hourly
+        rows at/after the batch's first key that the batch has no value for
+        — zeroed on a day the batch is authoritative for, carried forward
+        otherwise — so no stored row keeps a sum from an older chain. See
+        _stale_key_fill. ``reading_days`` is the fetch provenance for that
+        gate (the days whose own fetch returned readings); None trusts every
+        local date the batch's readings fall on, for callers importing a
+        self-contained batch.
         """
         from homeassistant.const import UnitOfEnergy
 
@@ -1855,75 +2126,105 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # to-be-overwritten rewindow rows are excluded regardless of timezone/DST.
         cutoff = min(hour_cons)
 
-        # Per-tariff series to emit (and therefore to baseline-look-up).
+        # Every series this import may emit, keyed by statistic id. Per-tariff
+        # series join only on a ToU contract; a band absent from this batch
+        # enters EMPTY so the stale-key fill can still rewrite its stored
+        # rows (#300) — an empty band that has none is never emitted.
         tou_seen = (set(known_bands) | bands_this_batch) & set(TOU_BANDS)
+        series = {stat_id_cons: hour_cons, stat_id_cost: hour_cost}
         band_ids: set[str] = set()
         if tou_seen:
             for tariff in TOU_SERIES_TARIFFS:
-                band_ids.update(self._tariff_stat_ids(tariff))
+                cons_id, cost_id = self._tariff_stat_ids(tariff)
+                series[cons_id] = band_cons.get(tariff, {})
+                series[cost_id] = band_cost.get(tariff, {})
+                band_ids.update((cons_id, cost_id))
 
-        # Resolve aggregate + per-tariff baselines, overlapped on the executor.
-        # _get_tariff_baseline_sums short-circuits to {} for an empty band set
-        # (flat-rate contract), so no extra recorder round-trip is incurred.
-        (initial_cons_sum, initial_cost_sum), band_sums = await asyncio.gather(
+        # Aggregate + per-tariff baselines and the stored rows for the fill,
+        # overlapped on the executor. _get_tariff_baseline_sums short-circuits
+        # to {} for an empty band set (flat-rate contract), so no extra
+        # recorder round-trip is incurred there.
+        (initial_cons_sum, initial_cost_sum), band_sums, stored = await asyncio.gather(
             self._get_baseline_sums(stat_id_cons, stat_id_cost, cutoff),
             self._get_tariff_baseline_sums(band_ids, cutoff),
+            self._stored_hourly_states(series, cutoff),
         )
-
-        _emit_series = self._emit_series
+        series = self._stale_key_fill(
+            series,
+            stored,
+            kwh_id=stat_id_cons,
+            readings=intervals,
+            reading_days=reading_days,
+            since=cutoff,
+        )
 
         kwh = UnitOfEnergy.KILO_WATT_HOUR
         contract = self.contract_number
 
         # Aggregate series (always; consumption first, then cost).
-        cons_sum = _emit_series(
-            stat_id=f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}",
+        cons_sum = self._emit_series(
+            stat_id=stat_id_cons,
             name=f"AGL Electricity Consumption ({contract})",
             unit=kwh,
             unit_class="energy",
-            hourly=hour_cons,
+            hourly=series[stat_id_cons],
             initial_sum=initial_cons_sum,
         )
-        _emit_series(
-            stat_id=f"{DOMAIN}:{STAT_COST}_{contract}",
+        self._emit_series(
+            stat_id=stat_id_cost,
             name=f"AGL Electricity Cost ({contract})",
             unit="AUD",
             unit_class=None,
-            hourly=hour_cost,
+            hourly=series[stat_id_cost],
             initial_sum=initial_cost_sum,
         )
 
-        # Per-tariff series (ToU contracts only). tou_seen / band_ids were
-        # resolved above so the baselines could be looked up in one round-trip.
+        # Per-tariff series (ToU contracts only).
         if tou_seen:
             self._active_tou_bands |= tou_seen
-            for tariff in TOU_SERIES_TARIFFS:
-                if tariff not in band_cons:
-                    continue
-                cons_id, cost_id = self._tariff_stat_ids(tariff)
-                base_cons = band_sums.get(cons_id, 0.0)
-                base_cost = band_sums.get(cost_id, 0.0)
-                label = TARIFF_LABELS.get(tariff, tariff.title())
-                _emit_series(
-                    stat_id=cons_id,
-                    name=f"AGL Electricity Consumption {label} ({contract})",
-                    unit=kwh,
-                    unit_class="energy",
-                    hourly=band_cons[tariff],
-                    initial_sum=base_cons,
-                )
-                _emit_series(
-                    stat_id=cost_id,
-                    name=f"AGL Electricity Cost {label} ({contract})",
-                    unit="AUD",
-                    unit_class=None,
-                    hourly=band_cost[tariff],
-                    initial_sum=base_cost,
-                )
+            self._emit_tariff_series(series, band_sums)
 
         # Update the in-memory cumulative for the TOTAL_INCREASING sensor.
         # hour_cons is non-empty here (we returned early otherwise).
         self._latest_cumulative_kwh = cons_sum
+
+    def _emit_tariff_series(
+        self,
+        series: Mapping[str, dict[datetime, float]],
+        band_sums: Mapping[str, float],
+    ) -> None:
+        """Emit each per-tariff consumption/cost series that has rows to write.
+
+        A series is emitted when the batch OR the stale-key fill gave it
+        rows (#300); an empty one is skipped, so a band with neither batch
+        data nor stored rows is never created.
+        """
+        from homeassistant.const import UnitOfEnergy
+
+        contract = self.contract_number
+        for tariff in TOU_SERIES_TARIFFS:
+            cons_id, cost_id = self._tariff_stat_ids(tariff)
+            label = TARIFF_LABELS.get(tariff, tariff.title())
+            for stat_id, name, unit, unit_class in (
+                (
+                    cons_id,
+                    f"AGL Electricity Consumption {label} ({contract})",
+                    UnitOfEnergy.KILO_WATT_HOUR,
+                    "energy",
+                ),
+                (cost_id, f"AGL Electricity Cost {label} ({contract})", "AUD", None),
+            ):
+                hourly = series.get(stat_id)
+                if not hourly:
+                    continue
+                self._emit_series(
+                    stat_id=stat_id,
+                    name=name,
+                    unit=unit,
+                    unit_class=unit_class,
+                    hourly=hourly,
+                    initial_sum=band_sums.get(stat_id, 0.0),
+                )
 
     def _emit_series(
         self,
@@ -1975,6 +2276,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         intervals: list[IntervalReading],
         *,
         fetched_days: Iterable[date] = (),
+        reading_days: Collection[date] | None = None,
     ) -> None:
         """Aggregate solar feed-in intervals to hourly and push to statistics.
 
@@ -2000,6 +2302,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         23:30 export, and a zero marker there would overwrite it. The same
         straddle trim as _import_intervals drops the batch's shared first
         bucket (markers included) before the baseline cutoff is taken.
+
+        Stale-key fill (#300): same rule as _import_intervals, over the
+        generation and credit series, gated on feedIn READINGS — an all-zero
+        export day is not a reading day, so its stored rows (an old floored
+        marker included) are carried forward, never zeroed. Markers are
+        added after the gate is fixed and keep their #292 A4(e) key.
         """
         from homeassistant.const import UnitOfEnergy
 
@@ -2031,8 +2339,17 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         stat_id_gen, stat_id_credit = self._generation_stat_ids()
         cutoff = min(hour_kwh)
-        base_gen, base_credit = await self._get_baseline_sums(
-            stat_id_gen, stat_id_credit, cutoff
+        (base_gen, base_credit), stored = await asyncio.gather(
+            self._get_baseline_sums(stat_id_gen, stat_id_credit, cutoff),
+            self._stored_hourly_states((stat_id_gen, stat_id_credit), cutoff),
+        )
+        series = self._stale_key_fill(
+            {stat_id_gen: hour_kwh, stat_id_credit: hour_credit},
+            stored,
+            kwh_id=stat_id_gen,
+            readings=intervals,
+            reading_days=reading_days,
+            since=cutoff,
         )
 
         contract = self.contract_number
@@ -2041,7 +2358,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             name=f"AGL Solar Generation ({contract})",
             unit=UnitOfEnergy.KILO_WATT_HOUR,
             unit_class="energy",
-            hourly=hour_kwh,
+            hourly=series[stat_id_gen],
             initial_sum=base_gen,
         )
         credit_sum = self._emit_series(
@@ -2049,7 +2366,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             name=f"AGL Solar Feed-in Credit ({contract})",
             unit="AUD",
             unit_class=None,
-            hourly=hour_credit,
+            hourly=series[stat_id_credit],
             initial_sum=base_credit,
         )
         self._latest_generation_kwh = gen_sum
