@@ -1768,14 +1768,16 @@ async def test_migration_11_to_12_sa_address_stores_adelaide_zone(
 
 
 async def test_migration_11_to_12_unknown_title_stores_empty_key(
-    hass: HomeAssistant,
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Migration stores '' when tz_for_address can't map the title (#292 A6).
 
     Mutation: async_migrate_entry raises on unknown title instead of "" →
     HA refuses to load the entry (MIGRATION_FAILED) and the integration
     is dead until the user reconfigures.
-    The WARNING must be logged so the user knows the fallback is active.
+    The migration logs the outcome at INFO (the once-per-setup fallback
+    WARNING is AglClient's, which this test patches away with setup);
+    the title itself must never be logged — it is the service address.
     """
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -1790,6 +1792,44 @@ async def test_migration_11_to_12_unknown_title_stores_empty_key(
         minor_version=1,
     )
     entry.add_to_hass(hass)
+    with (
+        caplog.at_level(logging.INFO, logger="custom_components.haggle"),
+        patch(
+            "custom_components.haggle.async_setup_entry",
+            new_callable=AsyncMock,
+            return_value=True,
+        ),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.data[CONF_LOCAL_TZ] == ""
+    assert entry.minor_version == 2
+    assert "Migrated haggle entry to 1.2: local_tz=unknown (HA tz)" in caplog.text
+    assert "Renamed by user" not in caplog.text
+
+
+async def test_migration_11_to_12_keeps_prestored_key(hass: HomeAssistant) -> None:
+    """A CONF_LOCAL_TZ already on a 1.1 entry survives migration (#292).
+
+    The title-derived zone is only a fallback for an entry that has none
+    (e.g. hand-edited storage). Mutation: `if not key:` → `if True:` at the
+    migration → the SA title overwrites the stored Brisbane key with
+    Australia/Adelaide.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="1 Sample Street SUBURB SA 5000",
+        unique_id="1234567890_9999999999",
+        data={
+            CONF_REFRESH_TOKEN: "v1.testtoken",
+            CONF_CONTRACT_NUMBER: "9999999999",
+            CONF_ACCOUNT_NUMBER: "1234567890",
+            CONF_LOCAL_TZ: "Australia/Brisbane",
+        },
+        version=1,
+        minor_version=1,
+    )
+    entry.add_to_hass(hass)
     with patch(
         "custom_components.haggle.async_setup_entry",
         new_callable=AsyncMock,
@@ -1797,7 +1837,7 @@ async def test_migration_11_to_12_unknown_title_stores_empty_key(
     ):
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
-    assert entry.data[CONF_LOCAL_TZ] == ""
+    assert entry.data[CONF_LOCAL_TZ] == "Australia/Brisbane"
     assert entry.minor_version == 2
 
 

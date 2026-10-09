@@ -1398,32 +1398,31 @@ class TestRelocaliseAglTimestamp:
         assert got == datetime(2026, 6, 1, 14, 30, tzinfo=UTC)
 
     def test_adelaide_dst_start_2026_10_04(self) -> None:
-        """SA DST starts 2026-10-04 02:00 local (first Sunday Oct).
+        """SA DST starts 2026-10-04 02:00 local (first Sunday of October) —
+        the same morning Sydney springs forward (02:00 AEST → 03:00 AEDT).
 
-        Before 02:00 SA local on 2026-10-04: still ACST (UTC+9:30) →
-        AGL stores as AEDT (UTC+11) → 1h30m early.
-        After 02:00 SA local: now ACDT (UTC+10:30) → AGL still AEDT →
-        30m early.  Specifically: 01:30 ACST = 16:00Z prior day;
-        AGL would stamp it at 14:30Z (AEDT midnight is 13:00Z). The slot
-        that matters for the acceptance test: the first slot of the new DST
-        day at 03:00 ACDT = 16:30Z; AGL stamps it as 13:30Z (AEDT 00:30).
+        AGL labels every slot with its Sydney wall-clock time, so the inverse
+        reads that label in Adelaide. Both zones skip 02:00-02:59 together,
+        so the shift is +30 min on BOTH sides of the transition (ACST +9:30
+        vs AEST +10 before, ACDT +10:30 vs AEDT +11 after); only the labels
+        inside the skipped hour do not exist. Exact instants, not a
+        monotonicity bound (`got >= dt` is satisfied by the identity).
+
+        Mutation: transform removed (`return dt`) → every vector fails.
         """
-        api_tz = _SYD
-        # 2026-10-04T13:00Z is Sydney/AEDT midnight = 00:00 AEDT.
-        # Adelaide is still ACST at 13:00Z (13:00 UTC = 22:30 ACST Oct 3
-        # = Oct 3 still). After correction: 22:30 ACST Oct 3 = 13:00Z.
-        # So identity on this side. Let us test the first post-DST slot:
-        # 13:30Z = 00:30 AEDT = 00:30+0:00 ACDT wait ...
-        # Simpler: test that the corrected instant is always >= raw, since
-        # all AU correction zones are ahead of or equal to Sydney.
-        for dt_str in [
-            "2026-10-04T13:00:00Z",  # Sydney AEDT midnight
-            "2026-10-04T13:30:00Z",  # AEDT 00:30
-            "2026-10-04T14:00:00Z",  # AEDT 01:00
+        for raw, want in [
+            # 01:30 AEST label → 01:30 ACST, the last pre-transition slot
+            ("2026-10-03T15:30:00Z", "2026-10-03T16:00:00Z"),
+            # 03:00 AEDT label → 03:00 ACDT, the first post-transition slot
+            ("2026-10-03T16:00:00Z", "2026-10-03T16:30:00Z"),
+            # next-day midnight: 00:00 AEDT label → 00:00 ACDT
+            ("2026-10-04T13:00:00Z", "2026-10-04T13:30:00Z"),
+            ("2026-10-04T13:30:00Z", "2026-10-04T14:00:00Z"),
         ]:
-            dt = datetime.fromisoformat(dt_str)
-            got = relocalise_agl_timestamp(dt, api_tz=api_tz, contract_tz=_ADL)
-            assert got >= dt, f"Corrected instant must be >= raw for AU zones: {dt_str}"
+            got = relocalise_agl_timestamp(
+                datetime.fromisoformat(raw), api_tz=_SYD, contract_tz=_ADL
+            )
+            assert got == datetime.fromisoformat(want), raw
 
     def test_adelaide_dst_end_2027_04_04_fold_0(self) -> None:
         """SA clocks fall back 2027-04-04 02:00 ACDT → 01:30 ACST.
@@ -1622,26 +1621,25 @@ class TestParseIntervalReadingsTzCorrection:
     def test_api_tz_read_from_response_timezome_field(self) -> None:
         """api_tz comes from the response's timeZone, not from a hardcoded key.
 
-        Build a payload whose timeZone=Australia/Brisbane (no DST): a slot
-        at 14:00Z with contract_tz=_BNE should be identity (Brisbane +10
-        through Brisbane +10 is a no-op). If api_tz were hardcoded to Sydney
-        the correction would be identity only in winter — this confirms the
-        response field is honoured.
+        A payload declaring timeZone=Australia/Adelaide for an Adelaide
+        contract: the inverse is Adelaide-through-Adelaide, an identity, so
+        the 00:00 ACST slot (2026-10-02T14:30Z) must come back unchanged.
+        The instant is chosen so that Sydney would disagree: via Sydney the
+        same label is 00:30 AEST → relabelled to 15:00Z.
 
-        Mutation: ignore response timeZone, always use Sydney → no-op in
-        summer when both should be no-op, and a wrong correction in winter.
+        Mutation: ignore the response timeZone, always use Sydney → the slot
+        moves to 15:00Z and the assert fails. (A Brisbane-in-June vector
+        could not tell the two apart — Sydney is also +10 then.)
         """
-        # Build payload with timeZone=Australia/Brisbane
-        payload = _payload("2026-06-01T14:00:00Z", tz_field="Australia/Brisbane")
+        payload = _payload("2026-10-02T14:30:00Z", tz_field="Australia/Adelaide")
         result = parse_interval_readings(
             payload,
-            expected_day=date(2026, 6, 1),
-            tz=_BNE,
+            expected_day=date(2026, 10, 3),
+            tz=_ADL,
             tz_is_contract=True,
         )
-        # Brisbane via Brisbane is always identity.
         assert len(result) == 1
-        assert result[0].dt == datetime(2026, 6, 1, 14, 0, tzinfo=UTC)
+        assert result[0].dt == datetime(2026, 10, 2, 14, 30, tzinfo=UTC)
 
     def test_missing_timezome_falls_back_to_sydney(self) -> None:
         """timeZone absent from response: fall back to AGL_API_TZ_KEY.

@@ -4091,10 +4091,12 @@ class TestPersistContractTz:
     async def test_overview_does_not_persist_when_unchanged(
         self, hass: HomeAssistant
     ) -> None:
-        """Entry.data is not modified when the zone matches what is already stored.
+        """Entry.data is not written when the zone matches what is already stored.
 
-        Mutation: always write → spurious async_update_entry calls on every
-        overview cycle, each of which updates the entry's modified_at timestamp.
+        Mutation: `if key and ...data.get(CONF_LOCAL_TZ) != key` → `if key`
+        (always write) → an async_update_entry call on every overview cycle.
+        HA's async_update_entry returns before touching modified_at when the
+        data is unchanged, so the call itself is spied on, not a timestamp.
         """
         from custom_components.haggle.agl.models import Contract
         from custom_components.haggle.const import CONF_LOCAL_TZ
@@ -4117,14 +4119,14 @@ class TestPersistContractTz:
             coord.config_entry,
             data={**coord.config_entry.data, CONF_LOCAL_TZ: "Australia/Brisbane"},
         )
-        version_before = (
-            coord.config_entry.modified_at
-            if hasattr(coord.config_entry, "modified_at")
-            else None
-        )
-        await coord._refresh_from_overview()
-        if version_before is not None:
-            assert coord.config_entry.modified_at == version_before
+        with patch.object(
+            hass.config_entries,
+            "async_update_entry",
+            wraps=hass.config_entries.async_update_entry,
+        ) as spy:
+            await coord._refresh_from_overview()
+        spy.assert_not_called()
+        assert coord.config_entry.data[CONF_LOCAL_TZ] == "Australia/Brisbane"
 
     async def test_persist_contract_tz_writes_key(self, hass: HomeAssistant) -> None:
         """_persist_contract_tz writes the IANA key when different from stored."""
