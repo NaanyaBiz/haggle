@@ -63,7 +63,7 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData; _check_pin reads pins live from entry.data
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys, data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth (token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle)
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth via its own `reauth_confirm` step (#284; token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle)
 ├── diagnostics.py       # anonymized config-entry diagnostics (schema v2) — public-safe; parsed by the triage routine (docs/diagnostics.md)
 ├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals
 ├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
