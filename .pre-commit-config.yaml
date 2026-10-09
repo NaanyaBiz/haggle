@@ -10,6 +10,12 @@
 default_language_version:
   python: python3.14
 
+# A bare `pre-commit install` wires the commit-msg stage too (Conventional
+# Commits + the provenance trailer), so the hooks CONTRIBUTING.md says are
+# checked locally actually run on a contributor's machine. pre-push is
+# deliberately NOT here — the codex-security hook below stays opt-in.
+default_install_hook_types: [pre-commit, commit-msg]
+
 repos:
   # Whitespace + EOL hygiene
   - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -55,7 +61,7 @@ repos:
     hooks:
       - id: gitleaks
 
-  # Shell scripts — scripts/check_claude_coauthor.sh, scripts/wt (shebang-
+  # Shell scripts — scripts/check_provenance_trailer.sh, scripts/wt (shebang-
   # detected), .claude/hooks/*.sh. Several implement repo controls (the
   # provenance trailer, the branch guard), so they get linted like code.
   - repo: https://github.com/shellcheck-py/shellcheck-py
@@ -91,14 +97,18 @@ repos:
         stages: [commit-msg]
         args: ["--strict"]
 
-  # Local: every commit must carry a Co-Authored-By: Claude trailer.
-  # The repo is purely AI-generated; provenance is mandatory.
+  # Local: every commit declares its provenance — a `Co-Authored-By: <AI tool>`
+  # trailer (any vendor) or an explicit `AI-Assisted: none` (#283). Merge
+  # commits are skipped. Most of the repo is AI-generated and human-reviewed
+  # (AGENTS.md § Provenance); the trailer is how that is recorded per commit.
+  # See scripts/check_provenance_trailer.sh and CONTRIBUTING.md § Commit
+  # conventions.
   - repo: local
     hooks:
-      - id: require-claude-coauthor
-        name: Require Co-Authored-By Claude trailer
+      - id: require-provenance-trailer
+        name: Require provenance trailer (Co-Authored-By <AI tool> or AI-Assisted none)
         language: script
-        entry: scripts/check_claude_coauthor.sh
+        entry: scripts/check_provenance_trailer.sh
         stages: [commit-msg]
 
   # Codex Security (@openai/codex-security) — LLM-based vulnerability scan,

@@ -17,8 +17,9 @@
 
 ## AI generation disclosure
 
-- [ ] This PR was generated or co-authored by Claude (Anthropic).
-      All commits carry `Co-Authored-By: Claude <noreply@anthropic.com>`.
+- [ ] AI tool(s) that generated or co-authored this PR: ______ (or "none").
+      Every commit carries a matching `Co-Authored-By: <tool> <email>`
+      trailer, or `AI-Assisted: none` (`CONTRIBUTING.md → Commit conventions`).
 - [ ] The human maintainer has reviewed and understands every change.
 
 <!--
