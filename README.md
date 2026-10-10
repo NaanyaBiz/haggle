@@ -16,6 +16,13 @@ dashboard.
 >
 > **Australia only.** Requires an AGL Energy electricity account with a smart
 > meter (most Australian metropolitan installations).
+>
+> Known limitation (recorded risk RA-19 in `SECURITY.md`): on Northern
+> Territory and Western Australia contracts, hourly history stored before
+> the [#292](https://github.com/NaanyaBiz/haggle/issues/292) timestamp fix
+> is not re-aligned and stays early (WA always; NT when first checked during
+> Sydney daylight saving). Nothing is missing or double-counted. See
+> [docs/energy-dashboard.md](https://github.com/NaanyaBiz/haggle/blob/main/docs/energy-dashboard.md).
 
 > **Status** (current version: see the badge above or the
 > [releases page](https://github.com/NaanyaBiz/haggle/releases)): the
@@ -73,7 +80,8 @@ Any prior release (except yanked ones) can be reinstalled:
 
 - **Config entries are downgrade-safe.** Newer versions only *add* keys
   to the stored entry (e.g. the solar-heal record, TLS-pin hashes, the
-  contract timezone); older versions ignore keys they don't know. The
+  contract timezone, the one-off timezone history re-alignment record);
+  older versions ignore keys they don't know. The
   entry's *major* schema version has never changed — only a major bump
   could block a downgrade. Its *minor* version was bumped to 2 in v0.5.0
   (adds `local_tz`), which older versions load unchanged. No re-setup

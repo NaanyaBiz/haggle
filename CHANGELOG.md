@@ -545,6 +545,180 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
 ## [Unreleased]
 
+### Added
+
+- **Diagnostics schema v4**: a top-level `tz_realign` block carries the
+  record of the one-off history re-alignment described under Fixed. It
+  shows the state, stage, frozen start date, attempt and halt counters,
+  outcome, and whether the history notice was raised. It holds only dates,
+  counts, fixed status words and the contract's IANA zone key (already in
+  schema v3), so it adds no identifiers. See `docs/diagnostics.md`.
+
+### Fixed
+
+- **History written before the #292 timestamp correction is re-aligned
+  once, in place, for the last 30 days** (#292; escaped, sev:high, closes
+  with this release). v0.5.0-beta.3 and beta.4 corrected new data and
+  rewrote the trailing week. Older rows still sat 30 minutes early (South
+  Australia and Broken Hill, all year) or one hour early (Queensland, from
+  2026-10-04 while Sydney is on daylight saving). On the first poll after
+  upgrading, an affected entry fetches the 30 days before today again and
+  imports them at the corrected hours, overwriting the rows in place.
+  - **Which entries run it.** An entry runs it only when the largest gap
+    between its address-derived contract zone and Sydney time over the
+    30-day window is more than zero and at most one hour. That means
+    SA and Broken Hill always, and Queensland whenever the window includes
+    Sydney daylight-saving days. These entries do nothing:
+    - NSW, Victoria, Tasmania and the ACT, which were never shifted.
+    - Queensland entries whose window falls wholly in Sydney standard time.
+      These can still get the history notice below if they hold older rows
+      from a Sydney daylight-saving period.
+    - New installs with no stored history.
+
+    An entry still on the Home Assistant-timezone fallback (no
+    address-derived zone yet) waits, untouched, until the zone is known.
+    An entry still catching up a backfill gap waits until its stored
+    history reaches the window.
+    The re-alignment runs once per contract zone. A real change of the
+    contract's zone evaluates it once more.
+  - **Northern Territory and Western Australia contracts get no history
+    re-alignment. This is a recorded risk (`SECURITY.md` RA-19).** Their
+    shift is larger than the one hour the repair is built and tested for:
+    NT is 90 minutes while Sydney is on daylight saving, and WA is 2–3 hours.
+    For these entries Haggle:
+    - records `tz_realign.reason: "unsupported_shift"`;
+    - logs one INFO line;
+    - makes no extra requests;
+    - raises no Repairs notice.
+
+    Their history from before the correction stays at the old times (NT
+    30 or 90 minutes early, WA 2 or 3 hours early). Data from
+    v0.5.0-beta.3 onward is still corrected. The trailing week that the
+    first corrected poll rewrote can also keep some old-timing rows next to
+    the corrected ones, logged as a WARNING, so a few hours there may be
+    counted twice. The sum never steps down. AGL does not retail
+    electricity in either territory, so no affected customer is known.
+    The manual remedy, and what it costs, is in `docs/energy-dashboard.md`.
+    The exclusion is decided once, on the first evaluation, from the
+    largest shift anywhere in the 30-day window. WA is always excluded.
+    An NT entry is excluded whenever the window contains a Sydney
+    daylight-saving day, which is true of every NT entry upgrading in
+    October 2026. An NT entry first evaluated while its whole window is in
+    Sydney standard time (roughly 5 May to 4 October in a given year) has a
+    30-minute shift and *is* re-aligned like SA. A brand-new NT/WA install
+    records `"fresh_install"` instead, because it has no old rows.
+  - **Two stages, one poll each.** Consumption goes first: kWh, cost and
+    every time-of-use band series. On a solar contract, generation and
+    feed-in credit follow on the next poll. While one stage runs, the other
+    family keeps its normal 7-day refresh.
+  - **Request cost.** A stage poll makes at most 3 + 30 + 8 = 41 AGL
+    requests. That is 40 in a whole-hour zone, and 33 for the consumption
+    stage of a non-solar contract. A normal poll makes 3 + 7 + 7 (8 + 8
+    in a half-hour zone). Each attempt sweeps from the later of the frozen
+    start date and today − 30 up to yesterday. A long poll interval or a
+    delayed stage therefore never makes the burst bigger. Days that drop
+    out of the window before a sweep completes keep their old timing,
+    like older history.
+  - **Only a complete sweep rewrites the window.** These sweeps write
+    exactly what a normal poll would (the trailing week) and leave the
+    rest of the window untouched:
+    - a sweep that hits a rate limit (HTTP 429) or a connection failure;
+    - a sweep where AGL errors on any day from the window start through
+      today − 7.
+
+    The untouched rows keep their old timing and no step in the sum:
+    nothing is missing or double-counted, though a reading near midnight
+    can still show on the previous day. Errors on the six most recent days (today − 6 to
+    yesterday) never count against the re-alignment, because the normal
+    refresh re-fetches those days anyway. Retries work like this:
+    - A failed sweep is not fast-retried. It waits for the next scheduled
+      poll, and the third failed sweep ends the stage. An unexpected error
+      that aborts the poll also counts as one failed sweep; an HA restart
+      does not.
+    - A rate-limited or interrupted sweep uses the usual 30-minute retry,
+      but at most one such halt counts per poll interval. The third
+      counted halt counts as one failed sweep and returns the entry to its
+      normal poll cadence. Under a persistent rate limit, the 30-minute
+      retries therefore last at most about two poll intervals per failed
+      sweep.
+  - **A give-up keeps totals consistent.** A stage gives up after 3 failed
+    sweeps. A consumption give-up still runs the generation stage. The
+    window that gave up keeps its old timing: nothing is missing or
+    double-counted (a reading near midnight can show on the previous day),
+    and there are no negative bars.
+    One WARNING Repairs issue, raised once, names the stage(s) that gave
+    up.
+  - **The junction with older history is exact.** At the start of the
+    window the new rows meet older rows that still have the old timing.
+    Slots those older rows already counted are not counted again:
+    - SA: the first day's 00:30 slot;
+    - Queensland during Sydney daylight saving: the first day's first hour;
+    - solar: the first export slot after dawn.
+
+    The first day of the window therefore totals exactly, with no upward
+    bump. Haggle drops those slots only after checking that the stored
+    hour before the window really holds them in the old timing.
+    The consumption stage also removes the one-slot (SA) or one-hour
+    (Queensland) bump that beta.3/beta.4 left at the edge of their
+    trailing week. It also re-chains any beta.3 or downgrade step still
+    inside the window.
+  - **Known residual (solar).** The generation stage does *not* remove the
+    matching bump that the first corrected poll left in the generation and
+    feed-in credit series. That bump is one dawn export slot (Queensland:
+    up to one hour) on the day the trailing week started. Generation stays
+    high by that slot, and the "this period" solar sensors include it
+    while the bill period started on or before that day. During the
+    generation stage, Haggle logs one existing #300 WARNING ("AGL returned
+    less energy than is stored …") for that day. The sum still never steps
+    down.
+  - **What you see.**
+    - In the first poll after upgrading (two on a solar contract), the
+      last 30 days of hourly bars move 30 minutes (SA) or one hour
+      (Queensland) later.
+    - During the generation-stage poll, the "this period" solar sensors
+      read `unknown` until the stage finishes and the recorder catches up,
+      the same as during a solar heal.
+    - Afterwards, if rows older than the window may still have the old
+      timing, Haggle raises one WARNING Repairs notice. It appears once and
+      is never raised again. Those rows stay as they are; read the notice
+      and dismiss it.
+    - Diagnostics `tz_realign` shows the progress.
+    - **Do not delete the `haggle:*` statistics.** Haggle backfills only
+      30 days, so a rebuild restores one month and loses everything older
+      for good.
+  - **Entries set up on 0.5.0-beta.3 or beta.4** already have correct
+    history. The gate goes by zone, though, so an SA, Broken Hill or
+    Queensland-in-daylight-saving entry still runs the sweep once (one
+    poll of about 40 requests). The junction check sees that the stored
+    rows already have the new timing and leaves them alone, so nothing
+    changes. Such an entry may still get the history notice, whose text
+    tells entries set up on 0.5.0-beta.3 or later that they can dismiss
+    it. This is accepted rather than guessed around.
+
+    There is one accepted, unlikely exception. The junction check compares
+    energy, not timestamps. If, on such an entry, the stored hour just
+    before the window happens to hold the same energy as the slots being
+    checked (to within 0.000001 kWh, as a flat overnight load can produce),
+    then one 30-minute slot (SA) or one hour (Queensland) on the window's
+    first day is not counted. The sum still never steps down. Solar export
+    is not affected, because the stored hour before the first export
+    hour exports nothing.
+  - **Queensland timing.** If you upgrade by 3 November 2026, the window
+    starts on or before 4 October, so all Queensland history since Sydney's
+    daylight saving began is re-aligned. If you upgrade later, the days
+    from 4 October to the window's start keep the old timing, and the
+    history notice covers them.
+  - **Edge cases.**
+    - If solar statistics writes are turned off in Options when the
+      generation stage is due, that stage is skipped for good (INFO log).
+      Turning writes back on does not re-run it.
+    - A pending solar leading-hole heal always runs first.
+    - Generation days inside a recorded #154 give-up span never count as
+      failures.
+    - Progress survives restarts, reauth and Reconfigure.
+    - Downgrading to beta.4 is safe: the extra entry key is ignored. On
+      re-upgrade the re-alignment resumes where it stopped.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from

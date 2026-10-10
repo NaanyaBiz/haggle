@@ -7,6 +7,13 @@ not publicly documented and may change at any time.
 **Australia only.** Requires an AGL Energy electricity account with a smart
 meter (most Australian metropolitan installations).
 
+Known limitation (recorded risk RA-19 in `SECURITY.md`): on Northern
+Territory and Western Australia contracts, hourly history stored before
+the [#292](https://github.com/NaanyaBiz/haggle/issues/292) timestamp fix
+is not re-aligned and stays early (WA always; NT when first checked during
+Sydney daylight saving). Nothing is missing or double-counted. See
+[docs/energy-dashboard.md](https://github.com/NaanyaBiz/haggle/blob/main/docs/energy-dashboard.md).
+
 Pulls smart-meter usage from AGL Australia and feeds it into the Home
 Assistant Energy dashboard using AGL's authenticated mobile API.
 
