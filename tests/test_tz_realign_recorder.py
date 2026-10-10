@@ -1,25 +1,26 @@
 """Real-recorder tests for the #292 PR2b timezone history re-alignment machine.
 
-These tests use phcc's real in-memory SQLite recorder to verify that
-the junction-drop logic produces a monotone, conservation-correct sum chain
-at the floor boundary (M1 exact junction).
+These tests use phcc's real in-memory SQLite recorder and drive the
+production cycle, so the M1 junction drop is exercised at its real call
+sites against genuinely stored old-convention rows (no patched reads).
 
 Must be a separate module from test_tz_realign.py: phcc's recorder_db_url
 asserts the recorder fixtures are initialised BEFORE the hass fixture; the
 module-level autouse fixture override is the only clean way to guarantee that
 ordering without affecting non-recorder tests.
 
-C11 unique-per-slot profile: kwh = 0.10 + 0.01 * slot_index.
-
 The end-to-end classes drive the production cycle (_async_update_data) on
 the real recorder with frozen dates and pin signed residuals: M1 for
 consumption (SA, and QLD with the floor in Sydney DST) and generation,
 stage order plus the per-cycle request budget, C1 halt / per-day-skip
-degradation, HTTP-OK empty days, the exception attempt, and C10.
+degradation (pinned against a plain normal poll), the give-up residual,
+HTTP-OK empty days, the exception attempt, C10, the per-day floor
+attribution, and the M4 NT/WA exclusion residual (RA-19).
 """
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, date, datetime, timedelta
 from itertools import pairwise
 from typing import TYPE_CHECKING
@@ -35,7 +36,6 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 from custom_components.haggle.agl.client import AGLError, AGLRateLimitError
 from custom_components.haggle.agl.models import BillPeriod, IntervalReading, PlanRates
 from custom_components.haggle.agl.parser import (
-    agl_api_tz,
     agl_reported_timestamp,
 )
 from custom_components.haggle.const import (
@@ -46,6 +46,8 @@ from custom_components.haggle.const import (
     CONF_TZ_REALIGN,
     DOMAIN,
     ISSUE_TZ_HISTORY_BEFORE_REALIGN,
+    ISSUE_TZ_REALIGN_GAVE_UP,
+    MAX_TZ_REALIGN_ATTEMPTS,
     RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
     STAT_CONSUMPTION,
@@ -54,8 +56,10 @@ from custom_components.haggle.const import (
     TZ_REALIGN_COMPLETE,
     TZ_REALIGN_DAYS,
     TZ_REALIGN_DONE,
+    TZ_REALIGN_GAVE_UP,
     TZ_REALIGN_GENERATION,
     TZ_REALIGN_PENDING,
+    TZ_REALIGN_REASON_UNSUPPORTED_SHIFT,
     TZ_REALIGN_SKIPPED,
 )
 from custom_components.haggle.coordinator import HaggleCoordinator
@@ -106,79 +110,6 @@ _CONTRACT = "9999999999"
 _ACCOUNT = "1234567890"
 
 
-def _make_interval(dt: datetime, kwh: float, cost: float = 0.05) -> IntervalReading:
-    return IntervalReading(dt=dt, kwh=kwh, cost_aud=cost, rate_type="normal")
-
-
-def _make_coordinator(hass: HomeAssistant, zone_name: str) -> HaggleCoordinator:
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={
-            CONF_REFRESH_TOKEN: "v1.testtoken",
-            CONF_CONTRACT_NUMBER: _CONTRACT,
-            CONF_ACCOUNT_NUMBER: _ACCOUNT,
-            CONF_LOCAL_TZ: zone_name,
-        },
-        unique_id=f"{_ACCOUNT}_{_CONTRACT}",
-    )
-    entry.add_to_hass(hass)
-
-    client = AsyncMock()
-    client.tz_is_contract = True
-    client.local_tz = ZoneInfo(zone_name)
-    client.async_get_overview = AsyncMock(return_value=[])
-    client.async_get_usage_summary = AsyncMock(
-        return_value=BillPeriod(
-            start=date.today(),
-            end=date.today(),
-            consumption_kwh=0.0,
-            cost_label="$0.00",
-            projection_label="",
-        )
-    )
-    client.async_get_plan = AsyncMock(
-        return_value=PlanRates(
-            product_name="",
-            unit_rates=[],
-            supply_charge_cents_per_day=0.0,
-        )
-    )
-    client.async_get_hourly_usage = AsyncMock(return_value=[])
-    return HaggleCoordinator(hass, entry, client, _CONTRACT)
-
-
-def _slots_for_day_sa(
-    day: date,
-    *,
-    old_convention: bool,
-) -> list[IntervalReading]:
-    """Unique-per-slot SA intervals (48 x 30 min) in either convention.
-
-    C11 profile: kwh = 0.10 + 0.01 * slot_index.
-    July (non-DST): ACST = UTC+9:30, Sydney AEST = UTC+10.
-    """
-    sa_tz = ZoneInfo("Australia/Adelaide")
-    api_tz = agl_api_tz()
-    if api_tz is None:
-        return []
-
-    readings: list[IntervalReading] = []
-    for i in range(48):
-        kwh = round(0.10 + 0.01 * i, 3)
-        local_start = datetime(day.year, day.month, day.day, tzinfo=sa_tz) + timedelta(
-            minutes=30 * i
-        )
-        correct_utc = local_start.astimezone(UTC)
-        if old_convention:
-            reported = agl_reported_timestamp(
-                correct_utc, api_tz=api_tz, contract_tz=sa_tz
-            )
-            readings.append(_make_interval(reported, kwh=kwh, cost=kwh * 0.30))
-        else:
-            readings.append(_make_interval(correct_utc, kwh=kwh, cost=kwh * 0.30))
-    return readings
-
-
 async def _read_series(hass: HomeAssistant, stat_id: str) -> list[dict]:
     from homeassistant.components.recorder import get_instance
     from homeassistant.components.recorder.statistics import statistics_during_period
@@ -194,145 +125,6 @@ async def _read_series(hass: HomeAssistant, stat_id: str) -> list[dict]:
         {"start", "state", "sum"},
     )
     return list(result.get(stat_id) or [])
-
-
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-class TestRealRecorderSARealign:
-    """Real recorder: SA complete realign — M1 exact junction, monotone, conserved."""
-
-    async def test_sa_complete_realign_monotone(self, hass: HomeAssistant) -> None:
-        """After junction-drop re-import, the cumulative-sum chain is monotone.
-
-        The junction drop may reduce the final sum vs the seeded value
-        (it prevents double-counting), so we assert the NEW chain is
-        non-decreasing — not that the absolute sum grew.
-        """
-        if agl_api_tz() is None:
-            pytest.skip("Australia/Sydney tzdata unavailable")
-
-        sa_tz = ZoneInfo("Australia/Adelaide")
-        coord = _make_coordinator(hass, "Australia/Adelaide")
-        stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
-
-        # July: non-DST, SA ACST = UTC+9:30.
-        floor = date(2026, 7, 10)
-        for day in [floor - timedelta(days=1), floor, floor + timedelta(days=1)]:
-            await coord._import_intervals(_slots_for_day_sa(day, old_convention=True))
-            await async_wait_recording_done(hass)
-
-        rows_before = await _read_series(hass, stat_id)
-        assert len(rows_before) > 0
-
-        floor_slots = _slots_for_day_sa(floor, old_convention=False)
-        floor_midnight_utc = datetime(
-            floor.year, floor.month, floor.day, tzinfo=sa_tz
-        ).astimezone(UTC)
-        cutoff = coord._first_full_hour(floor_midnight_utc)
-
-        api_tz = agl_api_tz()
-        prev = cutoff - timedelta(hours=1)
-        old_bucket_kwh = sum(
-            s.kwh
-            for s in floor_slots
-            if prev
-            <= agl_reported_timestamp(s.dt, api_tz=api_tz, contract_tz=sa_tz)
-            < cutoff
-        )
-
-        with patch.object(
-            coord,
-            "_stored_state_at",
-            new=AsyncMock(return_value=old_bucket_kwh),
-        ):
-            dropped = await coord._realign_junction_drop(
-                floor_slots, cutoff, kwh_id=stat_id
-            )
-
-        await coord._import_intervals(dropped)
-        await async_wait_recording_done(hass)
-
-        rows_after = await _read_series(hass, stat_id)
-        sums = [row["sum"] for row in rows_after]
-
-        # Chain must be monotone.
-        assert all(b >= a - 1e-9 for a, b in pairwise(sums)), (
-            f"Non-monotone: {[(a, b) for a, b in pairwise(sums) if b < a - 1e-9]}"
-        )
-
-    async def test_sa_junction_no_phantom_double_count(
-        self, hass: HomeAssistant
-    ) -> None:
-        """M1 signed residual (C11): junction drop zeroes exactly old_bucket_kwh.
-
-        Setup:
-          1. Seed floor-1 day in old convention.
-          2. Import floor day (correct convention) with junction drop.
-             Net kWh imported = floor_kwh - old_bucket_kwh.
-          3. Assert final_sum - seed_sum == net_kwh ± 1e-6.
-
-        Without the drop the same boundary slots would be imported a second
-        time (+old_bucket_kwh phantom). With the drop they are zero — phantom = 0.
-        """
-        if agl_api_tz() is None:
-            pytest.skip("Australia/Sydney tzdata unavailable")
-
-        sa_tz = ZoneInfo("Australia/Adelaide")
-        coord = _make_coordinator(hass, "Australia/Adelaide")
-        stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
-
-        floor = date(2026, 7, 10)
-        pre_floor = _slots_for_day_sa(floor - timedelta(days=1), old_convention=True)
-        await coord._import_intervals(pre_floor)
-        await async_wait_recording_done(hass)
-
-        seed_sum = (await _read_series(hass, stat_id))[-1]["sum"]
-
-        floor_slots = _slots_for_day_sa(floor, old_convention=False)
-        floor_kwh = sum(s.kwh for s in floor_slots)
-        floor_midnight_utc = datetime(
-            floor.year, floor.month, floor.day, tzinfo=sa_tz
-        ).astimezone(UTC)
-        cutoff = coord._first_full_hour(floor_midnight_utc)
-
-        api_tz = agl_api_tz()
-        prev = cutoff - timedelta(hours=1)
-        old_bucket_kwh = sum(
-            s.kwh
-            for s in floor_slots
-            if prev
-            <= agl_reported_timestamp(s.dt, api_tz=api_tz, contract_tz=sa_tz)
-            < cutoff
-        )
-        net_kwh = floor_kwh - old_bucket_kwh
-
-        with patch.object(
-            coord,
-            "_stored_state_at",
-            new=AsyncMock(return_value=old_bucket_kwh),
-        ):
-            dropped = await coord._realign_junction_drop(
-                floor_slots, cutoff, kwh_id=stat_id
-            )
-
-        # Verify the drop zeroed exactly old_bucket_kwh.
-        dropped_kwh = sum(s.kwh for s in dropped)
-        assert abs(dropped_kwh - net_kwh) < 1e-9, (
-            f"drop kwh={dropped_kwh:.4f} != net={net_kwh:.4f}"
-        )
-
-        await coord._import_intervals(dropped)
-        await async_wait_recording_done(hass)
-
-        final_sum = (await _read_series(hass, stat_id))[-1]["sum"]
-        phantom = (final_sum - seed_sum) - net_kwh
-        assert abs(phantom) < 1e-6, (
-            f"Phantom kWh: {phantom:+.6f} "
-            f"(final={final_sum:.4f}, seed={seed_sum:.4f}, net={net_kwh:.4f})"
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -353,6 +145,9 @@ _BNE = ZoneInfo("Australia/Brisbane")
 _GEN = f"{DOMAIN}:{STAT_GENERATION}_{_CONTRACT}"
 _CREDIT = f"{DOMAIN}:{STAT_GENERATION_CREDIT}_{_CONTRACT}"
 _CONS = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+# A second entry for the plain-normal-poll reference run in the same recorder.
+_REF_CONTRACT = "8888888888"
+_REF_CONS = f"{DOMAIN}:{STAT_CONSUMPTION}_{_REF_CONTRACT}"
 _HISTORY_DAYS = 45
 
 
@@ -441,17 +236,28 @@ class _Agl:
 
 
 def _e2e_coordinator(
-    hass: HomeAssistant, tz: ZoneInfo, *, solar: bool = False
+    hass: HomeAssistant,
+    tz: ZoneInfo,
+    *,
+    solar: bool = False,
+    contract: str = _CONTRACT,
+    realign: dict | None = None,
 ) -> tuple[HaggleCoordinator, _Agl]:
+    """An entry + coordinator on the AGL double. ``contract`` gives a second
+    entry its own statistic ids in the same recorder; ``realign`` seeds the
+    persisted record (a done record makes every cycle a plain normal poll)."""
+    data = {
+        CONF_REFRESH_TOKEN: "v1.testtoken",
+        CONF_CONTRACT_NUMBER: contract,
+        CONF_ACCOUNT_NUMBER: _ACCOUNT,
+        CONF_LOCAL_TZ: tz.key,
+    }
+    if realign is not None:
+        data[CONF_TZ_REALIGN] = realign
     entry = MockConfigEntry(
         domain=DOMAIN,
-        data={
-            CONF_REFRESH_TOKEN: "v1.testtoken",
-            CONF_CONTRACT_NUMBER: _CONTRACT,
-            CONF_ACCOUNT_NUMBER: _ACCOUNT,
-            CONF_LOCAL_TZ: tz.key,
-        },
-        unique_id=f"{_ACCOUNT}_{_CONTRACT}",
+        data=data,
+        unique_id=f"{_ACCOUNT}_{contract}",
         title="Home",
     )
     entry.add_to_hass(hass)
@@ -478,7 +284,7 @@ def _e2e_coordinator(
     client.async_get_usage_hourly = AsyncMock(side_effect=agl.hourly)
     client.async_get_usage_hourly_previous = AsyncMock(side_effect=agl.hourly)
     client.async_get_solar_hourly = AsyncMock(side_effect=agl.solar)
-    coord = HaggleCoordinator(hass, entry, client, _CONTRACT)
+    coord = HaggleCoordinator(hass, entry, client, contract)
     coord._has_solar = solar
     return coord, agl
 
@@ -528,6 +334,37 @@ def _hour_totals(readings: list[IntervalReading]) -> dict[float, float]:
         key = r.dt.replace(minute=0).timestamp()
         out[key] = out.get(key, 0.0) + r.kwh
     return out
+
+
+def _dash_days(rows: list[dict], tz: ZoneInfo) -> dict[date, float]:
+    """Per-local-day totals as the Energy dashboard bars them: each stored
+    hourly row counts on the local date of its start."""
+    out: dict[date, float] = {}
+    for r in rows:
+        day = datetime.fromtimestamp(r["start"], tz=UTC).astimezone(tz).date()
+        out[day] = out.get(day, 0.0) + r["state"]
+    return out
+
+
+def _world_days(days: list[date], tz: ZoneInfo, profile=_cons_kwh) -> dict[date, float]:
+    """The same per-day bars for a fully corrected history."""
+    out: dict[date, float] = {}
+    for d in days:
+        for key, kwh in _hour_totals(
+            _day_readings(d, tz, old=False, profile=profile)
+        ).items():
+            day = datetime.fromtimestamp(key, tz=UTC).astimezone(tz).date()
+            out[day] = out.get(day, 0.0) + kwh
+    return out
+
+
+def _haggle_warnings(caplog: pytest.LogCaptureFixture) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelno >= logging.WARNING
+        and r.name.startswith("custom_components.haggle")
+    ]
 
 
 class TestEndToEndConsumptionStage:
@@ -589,6 +426,20 @@ class TestEndToEndConsumptionStage:
         )
         for key in keys[keys.index(junction) + 1 : -1]:
             assert got[key] == pytest.approx(expected[key], abs=1e-9)
+        # Per-day bars: "exact" is SUM-exact, not day-exact. The zeroed
+        # junction slot(s) stay counted in the stored old row below the
+        # cutoff, which the dashboard dates to the day BEFORE the floor —
+        # so the floor day's bar is short by exactly phantom(floor) and
+        # floor-1 carries it (on top of its own old-timing shift, like all
+        # older history). The day after the floor is exact.
+        dash = _dash_days(rows, tz)
+        world = _world_days(days, tz)
+        prev, nxt = floor - timedelta(days=1), floor + timedelta(days=1)
+        assert dash[floor] == pytest.approx(world[floor] - phantom(floor), abs=1e-9)
+        assert dash[prev] == pytest.approx(
+            world[prev] + phantom(floor) - phantom(prev), abs=1e-9
+        )
+        assert dash[nxt] == pytest.approx(world[nxt], abs=1e-9)
         record = _record(coord)
         assert record["state"] == TZ_REALIGN_DONE
         assert record["reason"] == TZ_REALIGN_COMPLETE
@@ -671,6 +522,15 @@ class TestEndToEndGenerationStage:
         expected = _hour_totals(_day_readings(floor, tz, old=False, profile=_gen_kwh))
         for key in sorted(expected)[1:]:
             assert got[key] == pytest.approx(expected[key], abs=1e-9)
+        # Per-day bars: the zeroed dawn slot stays counted in the old row one
+        # hour below the cutoff, which is still dated the floor day (export
+        # is zero around midnight), so the floor day's export bar is exact.
+        dash = _dash_days(gen_rows, tz)
+        world = _world_days(days, tz, _gen_kwh)
+        assert dash[floor] == pytest.approx(world[floor], abs=1e-9)
+        assert dash[floor + timedelta(days=1)] == pytest.approx(
+            world[floor + timedelta(days=1)], abs=1e-9
+        )
         record = _record(coord)
         assert record["state"] == TZ_REALIGN_DONE
         assert record["reason"] == TZ_REALIGN_COMPLETE
@@ -678,7 +538,7 @@ class TestEndToEndGenerationStage:
 
 
 class TestEndToEndIncompleteStage:
-    """C1: an incomplete stage writes exactly what a normal poll would."""
+    """C1: an incomplete stage writes no more than a normal poll would."""
 
     @pytest.mark.parametrize("fault", ["halt", "fail"])
     async def test_incomplete_sweep_degrades_then_completes(
@@ -686,9 +546,13 @@ class TestEndToEndIncompleteStage:
     ) -> None:
         """Adelaide, a 429 (halt) or an AGL 500 (per-day skip) on floor+10.
 
-        Cycle 1: no stored row before the normal rewindow changes, zero
-        steps; the halt counts one HALT (fast retry), the skip one ATTEMPT
-        (configured cadence). Cycle 2, fault gone: complete and exact.
+        Cycle 1, skip: the stored rows are IDENTICAL to a plain normal poll
+        on the same seed (a second entry whose record is already done), so
+        the degraded import is a normal import — overlap-day context
+        included. Halt: the ascending sweep stops at floor+10, before any
+        normal-range day, so nothing at all is written. Zero steps; the
+        halt counts one HALT (fast retry), the skip one ATTEMPT (configured
+        cadence). Cycle 2, fault gone: complete and exact.
         """
         freezer.move_to("2026-10-10T03:00:00+00:00")
         coord, agl = _e2e_coordinator(hass, _ADL)
@@ -697,30 +561,36 @@ class TestEndToEndIncompleteStage:
         setattr(agl, fault, floor + timedelta(days=10))
         days = _history(today)
         await _seed_old(hass, coord, _ADL, days)
-        before = {r["start"]: r["state"] for r in await _rows(hass, _CONS)}
+        before = await _rows(hass, _CONS)
 
         await _cycle(hass, coord)
 
         rows = await _rows(hass, _CONS)
-        # The normal SA rewindow fetches today-8 (overlap) .. yesterday; its
-        # straddle bucket reaches back to 23:00 local of today-9.
-        horizon = datetime.combine(
-            today - timedelta(days=9), datetime.min.time(), UTC
-        ).timestamp()
-        changed = [
-            r["start"]
-            for r in rows
-            if r["start"] < horizon and abs(before[r["start"]] - r["state"]) > 1e-12
-        ]
-        assert changed == []
         assert _steps(rows) == []
         record = _record(coord)
         assert record["state"] == TZ_REALIGN_PENDING
         assert record["series"] == "consumption"
         if fault == "halt":
+            assert rows == before
             assert (record["attempts"], record["halts"]) == (0, 1)
             assert coord.update_interval == RETRY_INTERVAL_ON_ERROR
         else:
+            ref, _ref_agl = _e2e_coordinator(
+                hass,
+                _ADL,
+                contract=_REF_CONTRACT,
+                realign={
+                    "state": TZ_REALIGN_DONE,
+                    "zone": _ADL.key,
+                    "reason": TZ_REALIGN_COMPLETE,
+                },
+            )
+            await _seed_old(hass, ref, _ADL, days)
+            await _cycle(hass, ref)
+            normal = await _rows(hass, _REF_CONS)
+            assert [(r["start"], r["state"], r["sum"]) for r in rows] == [
+                (r["start"], r["state"], r["sum"]) for r in normal
+            ]
             assert (record["attempts"], record["halts"]) == (1, 0)
             assert coord.update_interval == timedelta(hours=24)
 
@@ -732,6 +602,48 @@ class TestEndToEndIncompleteStage:
         assert _steps(rows) == []
         assert rows[-1]["sum"] - _total(days, _ADL) == pytest.approx(0.0, abs=1e-6)
         assert _record(coord)["reason"] == TZ_REALIGN_COMPLETE
+
+    @pytest.mark.parametrize(
+        ("tz", "now", "junction_day", "slots"),
+        [
+            # The first corrected poll's normal rewindow junction: SA (with
+            # its overlap day) on today-8, slot 1; QLD on today-7, the whole
+            # first hour.
+            (_ADL, "2026-10-10T03:00:00+00:00", 8, (1,)),
+            (_BNE, "2026-11-20T03:00:00+00:00", 7, (0, 1)),
+        ],
+        ids=["SA", "QLD"],
+    )
+    async def test_give_up_keeps_the_rewindow_junction_double_count(
+        self, hass: HomeAssistant, freezer, tz, now, junction_day, slots
+    ) -> None:
+        """A give-up leaves the window in its old timing, monotone, nothing
+        missing — but the one slot (SA) / hour (QLD) the first corrected
+        poll's trailing-week junction counted twice STAYS counted twice:
+        only a complete stage's M1 drop removes it. Signed residual ==
+        exactly those named slots of the junction day."""
+        from homeassistant.helpers import issue_registry as ir
+
+        freezer.move_to(now)
+        coord, agl = _e2e_coordinator(hass, tz)
+        today = datetime.now(UTC).date()
+        agl.fail = today - timedelta(days=TZ_REALIGN_DAYS - 10)
+        days = _history(today)
+        await _seed_old(hass, coord, tz, days)
+
+        for _ in range(MAX_TZ_REALIGN_ATTEMPTS):
+            await _cycle(hass, coord)
+
+        record = _record(coord)
+        assert record["reason"] == TZ_REALIGN_GAVE_UP
+        assert record["consumption"] == TZ_REALIGN_GAVE_UP
+        rows = await _rows(hass, _CONS)
+        assert _steps(rows) == []
+        junction = today - timedelta(days=junction_day)
+        bump = sum(_cons_kwh(junction, i) for i in slots)
+        assert rows[-1]["sum"] - _total(days, tz) == pytest.approx(bump, abs=1e-6)
+        issue_id = f"{ISSUE_TZ_REALIGN_GAVE_UP}_{coord.config_entry.entry_id}"
+        assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
 
     async def test_http_ok_empty_day_is_not_a_failure(
         self, hass: HomeAssistant, freezer
@@ -812,3 +724,77 @@ class TestEndToEndAllNewConvention:
         assert record["notice"] is True
         issue_id = f"{ISSUE_TZ_HISTORY_BEFORE_REALIGN}_{coord.config_entry.entry_id}"
         assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is not None
+
+
+class TestEndToEndUnsupportedShift:
+    """M4 / RA-19: NT and WA are never re-aligned — pin what that costs."""
+
+    @pytest.mark.parametrize(
+        ("zone", "junction_day", "cons_slots", "gen_slots"),
+        [
+            # WA, Sydney DST: 3 h shift. The first local 3 h of consumption
+            # and the first 2.5 h of export (06:30-09:00) of the junction day.
+            ("Australia/Perth", 7, range(6), range(13, 18)),
+            # NT, Sydney DST: 90 min shift; half-hour zone, so the junction
+            # is the overlap day, after its straddle-trimmed first slot.
+            ("Australia/Darwin", 8, range(1, 4), range(13, 16)),
+        ],
+        ids=["WA", "NT"],
+    )
+    async def test_ntwa_first_corrected_poll_double_counts_silently(
+        self,
+        hass: HomeAssistant,
+        freezer,
+        caplog: pytest.LogCaptureFixture,
+        zone: str,
+        junction_day: int,
+        cons_slots: range,
+        gen_slots: range,
+    ) -> None:
+        """Old-convention NT/WA history, frozen in Sydney DST, one cycle.
+
+        done(unsupported_shift) with no realign window fetched and NO
+        Repairs issue even though shifted rows predate the floor. The first
+        corrected poll's trailing-week junction re-imports the junction
+        day's leading shift-width of old-timing slots: consumption AND
+        generation end permanently high by exactly those named slots, with
+        no downward step and NO haggle WARNING — the RA-19 residual.
+        """
+        from homeassistant.helpers import issue_registry as ir
+
+        tz = ZoneInfo(zone)
+        freezer.move_to("2026-11-20T03:00:00+00:00")
+        coord, agl = _e2e_coordinator(hass, tz, solar=True)
+        today = datetime.now(UTC).date()
+        days = _history(today)
+        await _seed_old(hass, coord, tz, days)
+        await _seed_old(hass, coord, tz, days, generation=True)
+        caplog.clear()
+
+        await _cycle(hass, coord)
+
+        assert _record(coord) == {
+            "state": TZ_REALIGN_DONE,
+            "zone": zone,
+            "reason": TZ_REALIGN_REASON_UNSUPPORTED_SHIFT,
+        }
+        # Normal ranges only: no 30-day realign window on either series.
+        horizon = today - timedelta(days=REWINDOW_DAYS + 1)
+        assert min(agl.cons_days) >= horizon
+        assert min(agl.solar_days) >= horizon
+        registry = ir.async_get(hass)
+        for kind in (ISSUE_TZ_HISTORY_BEFORE_REALIGN, ISSUE_TZ_REALIGN_GAVE_UP):
+            issue_id = f"{kind}_{coord.config_entry.entry_id}"
+            assert registry.async_get_issue(DOMAIN, issue_id) is None
+        junction = today - timedelta(days=junction_day)
+        cons = await _rows(hass, _CONS)
+        gen = await _rows(hass, _GEN)
+        assert _steps(cons) == []
+        assert _steps(gen) == []
+        assert cons[-1]["sum"] - _total(days, tz) == pytest.approx(
+            sum(_cons_kwh(junction, i) for i in cons_slots), abs=1e-6
+        )
+        assert gen[-1]["sum"] - _total(days, tz, _gen_kwh) == pytest.approx(
+            sum(_gen_kwh(junction, i) for i in gen_slots), abs=1e-6
+        )
+        assert _haggle_warnings(caplog) == []

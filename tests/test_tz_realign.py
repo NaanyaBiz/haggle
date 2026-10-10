@@ -14,12 +14,14 @@ Every section maps to the spec test grid (design292pr2b.json + amendments292pr2b
 - Period-sensor gate: suppressed during generation stage, published after.
 - diagnostics v4: tz_realign surfaced top-level, not in entry.data, leak-safe.
 - strings: both issue keys, placeholder sets, "Do not delete" sentinel.
-- Config-flow preservation: CONF_TZ_REALIGN survives reauth/reconfigure (C8).
-- Real-recorder tests: SA complete realign (M1 exact junction, monotone, conserved),
-  C1 halt geometry.
+- Config-flow preservation (C8): pinned through the real flows in
+  tests/test_config_flow.py (reauth, reconfigure, mid-flow coordinator write).
+- Real-recorder tests: tests/test_tz_realign_recorder.py (M1 junction end to
+  end, C1 degradation, give-up and NT/WA residuals).
 - TestComposedRequestCeiling: request-count ceiling for both stages (C6).
 
-Unique-per-slot profile everywhere (C11): kwh = 0.1 + 0.01*slot_index + 0.001*day_index
+Unique-per-slot profile in the real-recorder tests (C11):
+kwh = 0.1 + 0.01*slot_index + 0.001*day_index
 """
 
 from __future__ import annotations
@@ -275,69 +277,49 @@ class TestTzRealignGates:
         assert rec["state"] == TZ_REALIGN_DONE
         assert rec["reason"] == TZ_REALIGN_REASON_NOT_AFFECTED
 
-    async def test_unsupported_shift_perth(self, hass: HomeAssistant) -> None:
-        """M4: Perth (WA, UTC+8/9) shift > 1 h → done(unsupported_shift), zero realign requests."""
-        entry, coord = _make_entry(hass, zone_name="Australia/Perth")
-        coord.client.local_tz = ZoneInfo("Australia/Perth")
+    @pytest.mark.parametrize(
+        "zone",
+        [
+            # WA, UTC+8: 2 h behind Sydney standard time, 3 h in Sydney DST.
+            "Australia/Perth",
+            # NT, UTC+9:30 always: 90 min behind during Sydney DST (November).
+            "Australia/Darwin",
+        ],
+    )
+    async def test_unsupported_shift_ntwa(self, hass: HomeAssistant, zone: str) -> None:
+        """M4: shift > 1 h → done(unsupported_shift) and nothing else.
 
+        No stage is planned (zero realign requests), and NO Repairs issue
+        even though shifted rows predate the floor: the history notice is
+        forced due here, so routing this branch through the clean-done
+        publish path would raise it.
+        """
+        import homeassistant.helpers.issue_registry as ir
+
+        entry, coord = _make_entry(hass, zone_name=zone)
+        coord.client.local_tz = ZoneInfo(zone)
         today = date(2026, 11, 5)
         yesterday = today - timedelta(days=1)
-
-        fetch_calls: list = []
-
-        async def _fake_fetch(day, previous, **kwargs):
-            fetch_calls.append(day)
-            return []
+        history = AsyncMock(return_value=(True, "2026-06-01"))
 
         with (
             patch(_PATCH_ADD_STATS),
             patch(_PATCH_GET_INSTANCE, _mock_get_instance()),
-            patch.object(coord, "_fetch_day_consumption", side_effect=_fake_fetch),
+            patch.object(coord, "_shifted_history_before", new=history),
+            patch.object(ir, "async_create_issue") as mock_issue,
         ):
             result = await coord._plan_tz_realign(
-                today,
-                yesterday,
-                yesterday,
-                None,
-                None,
-                normal=(None, None),
+                today, yesterday, yesterday, None, None, normal=(None, None)
             )
 
-        assert result is None
-        rec = entry.data.get(CONF_TZ_REALIGN)
-        assert rec is not None
-        assert rec["state"] == TZ_REALIGN_DONE
-        assert rec["reason"] == TZ_REALIGN_REASON_UNSUPPORTED_SHIFT
-        # No realign-specific fetch should have occurred.
-        assert fetch_calls == []
-
-    async def test_unsupported_shift_darwin(self, hass: HomeAssistant) -> None:
-        """M4: Darwin (NT, UTC+9:30 always) in Sydney-DST window → unsupported_shift."""
-        entry, coord = _make_entry(hass, zone_name="Australia/Darwin")
-        coord.client.local_tz = ZoneInfo("Australia/Darwin")
-
-        # During Sydney DST (November) NT offset vs Sydney = 1h30m > 1h.
-        today = date(2026, 11, 5)
-        yesterday = today - timedelta(days=1)
-
-        with (
-            patch(_PATCH_ADD_STATS),
-            patch(_PATCH_GET_INSTANCE, _mock_get_instance()),
-        ):
-            result = await coord._plan_tz_realign(
-                today,
-                yesterday,
-                yesterday,
-                None,
-                None,
-                normal=(None, None),
-            )
-
-        rec = entry.data.get(CONF_TZ_REALIGN)
-        assert rec is not None
-        assert rec["state"] == TZ_REALIGN_DONE
-        assert rec["reason"] == TZ_REALIGN_REASON_UNSUPPORTED_SHIFT
-        assert result is None
+        assert result is None  # no stage sweep handed to the fetch
+        assert entry.data.get(CONF_TZ_REALIGN) == {
+            "state": TZ_REALIGN_DONE,
+            "zone": zone,
+            "reason": TZ_REALIGN_REASON_UNSUPPORTED_SHIFT,
+        }
+        history.assert_not_awaited()
+        mock_issue.assert_not_called()
 
     async def test_deferred_while_backfill_catching_up(
         self, hass: HomeAssistant
@@ -529,26 +511,6 @@ class TestZoneMismatch:
         assert rec is not None
         # Adelaide was re-evaluated: should now be for Adelaide.
         assert rec["zone"] == "Australia/Adelaide"
-
-    async def test_conf_tz_realign_survives_reauth(self, hass: HomeAssistant) -> None:
-        """CONF_TZ_REALIGN is preserved through a reauth data_updates merge."""
-        entry, _ = _make_entry(hass, zone_name="Australia/Adelaide")
-        realign_record = {
-            "state": TZ_REALIGN_DONE,
-            "zone": "Australia/Adelaide",
-            "reason": TZ_REALIGN_COMPLETE,
-            "floor": "2026-10-10",
-        }
-        hass.config_entries.async_update_entry(
-            entry,
-            data={**entry.data, CONF_TZ_REALIGN: realign_record},
-        )
-        # Simulate a reauth update (merge, not replace).
-        hass.config_entries.async_update_entry(
-            entry,
-            data={**entry.data, CONF_REFRESH_TOKEN: "v1.newtoken"},
-        )
-        assert entry.data.get(CONF_TZ_REALIGN) == realign_record
 
 
 # ---------------------------------------------------------------------------
@@ -945,6 +907,29 @@ class TestCompletionRule:
             today=today,
         )
         assert result is False
+
+    def test_sweep_incomplete_for_skip_on_horizon_day(
+        self, hass: HomeAssistant
+    ) -> None:
+        """The horizon day itself (today - REWINDOW_DAYS) still counts: the
+        documented range [start, today - REWINDOW_DAYS] is inclusive."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        from custom_components.haggle.coordinator import _RealignSweep
+
+        today = date(2026, 11, 5)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        horizon = today - timedelta(days=REWINDOW_DAYS)
+        for series, skipped in (
+            (TZ_REALIGN_CONSUMPTION, (frozenset({horizon}), frozenset())),
+            (TZ_REALIGN_GENERATION, (frozenset(), frozenset({horizon}))),
+        ):
+            realign = _RealignSweep(series, floor, (floor, today - timedelta(days=1)))
+            assert (
+                coord._realign_sweep_complete(
+                    realign, halted=False, skipped=skipped, today=today
+                )
+                is False
+            )
 
     def test_sweep_incomplete_when_halted(self, hass: HomeAssistant) -> None:
         """Any halt makes the sweep incomplete regardless of skips."""
@@ -2347,3 +2332,58 @@ class TestStageEdges:
                     is None
                 )
         mock_issue.assert_not_called()
+
+    async def test_notice_names_the_swept_start_not_an_aged_floor(
+        self, hass: HomeAssistant
+    ) -> None:
+        """An aged frozen floor (heal / contiguity wait / long poll interval)
+        sweeps from today - TZ_REALIGN_DAYS (C6). The clean-done history
+        notice must scan from, and name, that swept start: the days between
+        the frozen floor and it were never re-aligned."""
+        import homeassistant.helpers.issue_registry as ir
+
+        from custom_components.haggle.coordinator import _RealignSweep
+
+        entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        today = date(2026, 11, 5)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS + 10)
+        start = today - timedelta(days=TZ_REALIGN_DAYS)
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_TZ_REALIGN: {
+                    "state": TZ_REALIGN_PENDING,
+                    "zone": "Australia/Adelaide",
+                    "floor": floor.isoformat(),
+                    "series": TZ_REALIGN_GENERATION,
+                    "attempts": 0,
+                    "halts": 0,
+                    "consumption": TZ_REALIGN_COMPLETE,
+                },
+            },
+        )
+        realign = _RealignSweep(
+            TZ_REALIGN_GENERATION, start, (today - timedelta(days=REWINDOW_DAYS), today)
+        )
+        coord._sweep_halted = False
+        coord._sweep_skipped_days = (frozenset(), frozenset())
+        history = AsyncMock(return_value=(True, None))
+
+        with (
+            patch.object(coord, "_shifted_history_before", new=history),
+            patch.object(ir, "async_create_issue") as mock_issue,
+        ):
+            completed = await coord._settle_tz_realign(
+                realign, today, today - timedelta(days=1)
+            )
+
+        assert completed is True
+        history.assert_awaited_once_with(start)
+        mock_issue.assert_called_once()
+        placeholders = mock_issue.call_args.kwargs["translation_placeholders"]
+        assert placeholders["floor"] == start.isoformat()
+        rec = entry.data[CONF_TZ_REALIGN]
+        assert rec["state"] == TZ_REALIGN_DONE
+        assert rec["floor"] == floor.isoformat()
+        assert rec["swept_from"] == start.isoformat()
