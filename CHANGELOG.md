@@ -486,15 +486,17 @@ step the cumulative sum down (#300); fixed under [Unreleased].
   re-authenticate, reloading the entry brings that prompt back — an open
   Reconfigure flow suppresses it (#280).
 
-## [Unreleased]
+## [0.5.0-beta.4] - 2026-10-10
 
 **v0.5.0-beta.3 was withdrawn** about 75 minutes after publication, before
 any install outside the project (the release was converted back to a draft).
-The next beta (v0.5.0-beta.4) carries everything listed under
-[0.5.0-beta.3] above plus the fix below. Anyone who did install beta.3
-should upgrade: each beta.4 poll repairs the beta.3 rows inside its own
-trailing week; any older ones (if beta.3 ran for more than a day before
-the upgrade) are fixed by the coming 30-day re-alignment.
+This release carries everything listed under [0.5.0-beta.3] above plus the
+fix below. Anyone who did install beta.3 should upgrade: each beta.4 poll
+repairs the beta.3 rows inside its own trailing week; any older ones (if
+beta.3 ran for more than a day before the upgrade) are fixed by the coming
+30-day re-alignment.
+
+**Escaped defects closed this release:** 1 (1 sev:high) — #300. (#292, sev:high, stays open until the 30-day history re-alignment release.)
 
 ### Fixed
 
@@ -540,6 +542,8 @@ the upgrade) are fixed by the coming 30-day re-alignment.
     after beta.3's last poll, and rows a downgrade left outside the
     re-upgrade's week. History older than the trailing week also keeps
     the #292 shift until that release, as described under [0.5.0-beta.3].
+
+## [Unreleased]
 
 ### Targets for next sprint
 
