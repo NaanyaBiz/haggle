@@ -1179,12 +1179,15 @@ class TestPeriodSensorGate:
             TZ_REALIGN_GENERATION, floor, (floor, today - timedelta(days=1))
         )
 
-        result = await coord._publish_period_gate(
-            heal_ctx=None,
-            fetch_complete=True,
-            realign=realign,
-            realign_complete=False,  # not yet complete
-        )
+        # Drained recorder and a complete fetch: only the incomplete STAGE
+        # may keep the totals suppressed.
+        with patch.object(coord, "_recorder_drained", new=AsyncMock(return_value=True)):
+            result = await coord._publish_period_gate(
+                heal_ctx=None,
+                fetch_complete=True,
+                realign=realign,
+                realign_complete=False,  # not yet complete
+            )
         assert result is False
 
     async def test_period_sensors_published_after_generation_complete(
@@ -2167,3 +2170,180 @@ class TestReadTzRealign:
     def test_returns_none_when_absent(self, hass: HomeAssistant) -> None:
         _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
         assert coord._read_tz_realign() is None
+
+
+# ---------------------------------------------------------------------------
+# Stage planning, completion and gate edges (mutation-table follow-ups)
+# ---------------------------------------------------------------------------
+
+
+class TestStageEdges:
+    async def test_retry_sweeps_the_whole_window_again(
+        self, hass: HomeAssistant
+    ) -> None:
+        """After a failed attempt the retry re-sweeps the FULL frozen window
+        from max(floor, today - TZ_REALIGN_DAYS) — never only the days after
+        the failure (a partial window would re-time only some days)."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        today = date(2026, 11, 5)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        normal = ((today - timedelta(days=REWINDOW_DAYS), today), None)
+        record = {
+            "state": TZ_REALIGN_PENDING,
+            "zone": "Australia/Adelaide",
+            "floor": floor.isoformat(),
+            "series": TZ_REALIGN_CONSUMPTION,
+            "attempts": MAX_TZ_REALIGN_ATTEMPTS - 1,
+            "halts": 0,
+        }
+        sweep = await coord._plan_tz_realign_stage(record, today, None, normal)
+        assert sweep is not None
+        assert sweep.start == floor
+        assert sweep.normal == normal[0]
+
+    def test_other_series_skip_is_not_counted(self, hass: HomeAssistant) -> None:
+        """C2: only the STAGE series' skips count — a solar skip before the
+        horizon does not fail a consumption stage, and vice versa."""
+        from custom_components.haggle.coordinator import _RealignSweep
+
+        today = date(2026, 11, 5)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        old_day = floor + timedelta(days=3)
+        cons_stage = _RealignSweep(TZ_REALIGN_CONSUMPTION, floor, None)
+        gen_stage = _RealignSweep(TZ_REALIGN_GENERATION, floor, None)
+        solar_skip = (frozenset(), frozenset({old_day}))
+        cons_skip = (frozenset({old_day}), frozenset())
+
+        assert HaggleCoordinator._realign_sweep_complete(
+            cons_stage, halted=False, skipped=solar_skip, today=today
+        )
+        assert HaggleCoordinator._realign_sweep_complete(
+            gen_stage, halted=False, skipped=cons_skip, today=today
+        )
+        assert not HaggleCoordinator._realign_sweep_complete(
+            gen_stage, halted=False, skipped=solar_skip, today=today
+        )
+
+    def test_stall_span_day_skip_is_not_counted(self, hass: HomeAssistant) -> None:
+        """A generation-stage skip on a persisted #154 stall-span day (the
+        sweep's ``ignore`` set) never fails the stage; the same day outside
+        the span does."""
+        from custom_components.haggle.coordinator import _RealignSweep
+
+        today = date(2026, 11, 5)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        span_day = floor + timedelta(days=4)
+        skipped = (frozenset(), frozenset({span_day}))
+        tolerant = _RealignSweep(
+            TZ_REALIGN_GENERATION, floor, None, frozenset({span_day})
+        )
+        strict = _RealignSweep(TZ_REALIGN_GENERATION, floor, None)
+
+        assert HaggleCoordinator._realign_sweep_complete(
+            tolerant, halted=False, skipped=skipped, today=today
+        )
+        assert not HaggleCoordinator._realign_sweep_complete(
+            strict, halted=False, skipped=skipped, today=today
+        )
+
+    def test_truthy_non_true_tz_is_contract_does_not_arm(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Gate (b) is the _fill_active identity check: a client mock's truthy
+        attribute (or any non-True value) must not arm the re-alignment."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        coord.client.tz_is_contract = MagicMock()
+        assert coord._tz_realign_zone() is None
+        coord.client.tz_is_contract = True
+        assert coord._tz_realign_zone() == "Australia/Adelaide"
+
+    async def test_generation_waits_until_contiguous(self, hass: HomeAssistant) -> None:
+        """A generation series still behind the window (last row before
+        start - 1) waits for the normal chunks; contiguous → run."""
+        from custom_components.haggle.coordinator import _GATE_RUN, _GATE_WAIT
+
+        _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        coord._has_solar = True
+        start = date(2026, 10, 6)
+        assert (
+            await coord._generation_stage_gate(start - timedelta(days=2), start)
+            == _GATE_WAIT
+        )
+        assert (
+            await coord._generation_stage_gate(start - timedelta(days=1), start)
+            == _GATE_RUN
+        )
+
+    def test_degrade_generation_stage_trims_readings_and_markers(
+        self, hass: HomeAssistant
+    ) -> None:
+        """C1 for the generation stage: readings, reading days AND the
+        fetched (zero-export marker) days outside the normal range go —
+        a marker on an old window day would land part of the window."""
+        from custom_components.haggle.coordinator import _RealignSweep, _SweepBatches
+
+        _entry, coord = _make_entry(hass, zone_name="Australia/Brisbane")
+        today = date(2026, 11, 5)
+        yesterday = today - timedelta(days=1)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        normal_start = today - timedelta(days=REWINDOW_DAYS)
+        realign = _RealignSweep(TZ_REALIGN_GENERATION, floor, (normal_start, yesterday))
+        old_day, dark_day = floor + timedelta(days=2), floor + timedelta(days=3)
+        normal_day = normal_start + timedelta(days=1)
+        acc = _SweepBatches()
+        acc.marks.append((old_day, 0, 0))
+        acc.solar.append(
+            _make_interval(datetime(2026, 10, 8, 0, 0, tzinfo=UTC), kwh=0.4)
+        )
+        acc.marks.append((dark_day, 0, 1))
+        acc.marks.append((normal_day, 0, 1))
+        acc.solar.append(
+            _make_interval(datetime(2026, 10, 31, 0, 0, tzinfo=UTC), kwh=0.5)
+        )
+        acc.solar_reading_days |= {old_day, normal_day}
+        acc.fetched_solar_days.extend([old_day, dark_day, normal_day])
+
+        coord._degrade_realign_batches(realign, acc, today)
+
+        assert [r.kwh for r in acc.solar] == [0.5]
+        assert acc.solar_reading_days == {normal_day}
+        assert acc.fetched_solar_days == [normal_day]
+
+    async def test_history_notice_not_reraised_after_done(
+        self, hass: HomeAssistant
+    ) -> None:
+        """A done record with notice=True never raises the notice again —
+        the user's dismissal sticks (raised once, at the terminal
+        transition only)."""
+        import homeassistant.helpers.issue_registry as ir
+
+        entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        today = date(2026, 11, 5)
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        hass.config_entries.async_update_entry(
+            entry,
+            data={
+                **entry.data,
+                CONF_TZ_REALIGN: {
+                    "state": TZ_REALIGN_DONE,
+                    "zone": "Australia/Adelaide",
+                    "reason": TZ_REALIGN_COMPLETE,
+                    "floor": floor.isoformat(),
+                    "consumption": TZ_REALIGN_COMPLETE,
+                    "generation": TZ_REALIGN_SKIPPED,
+                    "swept_from": floor.isoformat(),
+                    "notice": True,
+                    "history_from": (floor - timedelta(days=60)).isoformat(),
+                },
+            },
+        )
+        yesterday = today - timedelta(days=1)
+        with patch.object(ir, "async_create_issue") as mock_issue:
+            for _ in range(2):
+                assert (
+                    await coord._plan_tz_realign(
+                        today, yesterday, yesterday, None, None, normal=(None, None)
+                    )
+                    is None
+                )
+        mock_issue.assert_not_called()
