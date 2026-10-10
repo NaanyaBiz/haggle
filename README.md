@@ -21,7 +21,10 @@ dashboard.
 > Territory and Western Australia contracts, hourly history stored before
 > the [#292](https://github.com/NaanyaBiz/haggle/issues/292) timestamp fix
 > is not re-aligned and stays early (WA always; NT when first checked during
-> Sydney daylight saving). Nothing is missing or double-counted. See
+> Sydney daylight saving). No reading is lost, but the first poll with the
+> fix counted the start of one day twice (up to 90 minutes in NT, up to
+> 3 hours in WA, for consumption and solar export alike), so the running
+> total stays slightly high. No warning is logged for it. See
 > [docs/energy-dashboard.md](https://github.com/NaanyaBiz/haggle/blob/main/docs/energy-dashboard.md).
 
 > **Status** (current version: see the badge above or the

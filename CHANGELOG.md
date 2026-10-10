@@ -593,11 +593,22 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
     Their history from before the correction stays at the old times (NT
     30 or 90 minutes early, WA 2 or 3 hours early). Data from
-    v0.5.0-beta.3 onward is still corrected. The trailing week that the
-    first corrected poll rewrote can also keep some old-timing rows next to
-    the corrected ones, logged as a WARNING, so a few hours there may be
-    counted twice. The sum never steps down. AGL does not retail
-    electricity in either territory, so no affected customer is known.
+    v0.5.0-beta.3 onward is still corrected. **The first corrected poll
+    also counted the start of one day twice, silently.** That poll
+    (beta.3/beta.4, or the first beta.5 poll on a direct upgrade) rewrote
+    the trailing week from the junction day's first corrected hour, but
+    the old-timing rows just before that hour already held the junction
+    day's first slots, so they were imported again. Consumption, cost and
+    solar export stay high by up to the shift width: measured in Sydney
+    daylight saving, WA the first 3 hours of consumption and the first
+    2.5 hours of export after dawn, NT 90 minutes of each. No WARNING is
+    logged and the sum never steps down. On SA and Queensland the
+    re-alignment removes the same bump; NT and WA never run it. At shifts
+    over one hour the #300 fill's conservation guard can also keep some
+    old-timing rows next to the corrected ones in that trailing week
+    (that one *is* logged as a WARNING), so a few more hours may be counted
+    twice. AGL does not retail electricity in either territory, so no
+    affected customer is known.
     The manual remedy, and what it costs, is in `docs/energy-dashboard.md`.
     The exclusion is decided once, on the first evaluation, from the
     largest shift anywhere in the 30-day window. WA is always excluded.
@@ -619,18 +630,25 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
     delayed stage therefore never makes the burst bigger. Days that drop
     out of the window before a sweep completes keep their old timing,
     like older history.
-  - **Only a complete sweep rewrites the window.** These sweeps write
-    exactly what a normal poll would (the trailing week) and leave the
-    rest of the window untouched:
-    - a sweep that hits a rate limit (HTTP 429) or a connection failure;
+  - **Only a complete sweep rewrites the window.** An incomplete sweep
+    writes no more than a normal poll would and never touches the rest of
+    the window:
     - a sweep where AGL errors on any day from the window start through
-      today − 7.
+      today − 7 (inclusive) still refreshes the normal trailing week,
+      exactly as a normal poll would;
+    - a sweep that hits a rate limit (HTTP 429) or a connection failure
+      stops where it was interrupted. The sweep runs oldest day first, so
+      a halt inside the window usually comes before the trailing week and
+      that poll writes nothing at all; the 30-minute retry picks it up.
 
-    The untouched rows keep their old timing and no step in the sum:
-    nothing is missing or double-counted, though a reading near midnight
-    can still show on the previous day. Errors on the six most recent days (today − 6 to
-    yesterday) never count against the re-alignment, because the normal
-    refresh re-fetches those days anyway. Retries work like this:
+    The untouched rows keep their old timing and no step in the sum.
+    Nothing is missing, though a reading near midnight can still show on
+    the previous day, and until a sweep completes the one-slot (SA) or
+    one-hour (Queensland) bump at the first corrected trailing week's
+    junction stays counted twice (see the give-up bullet). Errors on the
+    six most recent days (today − 6 to yesterday) never count against the
+    re-alignment, because the normal refresh re-fetches those days anyway.
+    Retries work like this:
     - A failed sweep is not fast-retried. It waits for the next scheduled
       poll, and the third failed sweep ends the stage. An unexpected error
       that aborts the poll also counts as one failed sweep; an HA restart
@@ -641,27 +659,40 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
       normal poll cadence. Under a persistent rate limit, the 30-minute
       retries therefore last at most about two poll intervals per failed
       sweep.
-  - **A give-up keeps totals consistent.** A stage gives up after 3 failed
-    sweeps. A consumption give-up still runs the generation stage. The
-    window that gave up keeps its old timing: nothing is missing or
-    double-counted (a reading near midnight can show on the previous day),
-    and there are no negative bars.
+  - **A give-up keeps the old timing and one double-counted reading.** A
+    stage gives up after 3 failed sweeps. A consumption give-up still runs
+    the generation stage. The window that gave up keeps its old timing (a
+    reading near midnight can show on the previous day), nothing is
+    missing and there are no negative bars. But the first corrected poll
+    (beta.3/beta.4, or the first beta.5 poll on a direct upgrade) counted
+    one 30-minute slot (SA) or one hour (Queensland) twice where its
+    trailing week met the older rows. Only a complete stage removes that,
+    so after a give-up the consumption total stays high by that one
+    reading (pinned by a real-recorder test).
     One WARNING Repairs issue, raised once, names the stage(s) that gave
     up.
-  - **The junction with older history is exact.** At the start of the
-    window the new rows meet older rows that still have the old timing.
-    Slots those older rows already counted are not counted again:
+  - **The junction with older history counts nothing twice.** At the
+    start of the window the new rows meet older rows that still have the
+    old timing. Slots those older rows already counted are not counted
+    again:
     - SA: the first day's 00:30 slot;
     - Queensland during Sydney daylight saving: the first day's first hour;
     - solar: the first export slot after dawn.
 
-    The first day of the window therefore totals exactly, with no upward
-    bump. Haggle drops those slots only after checking that the stored
-    hour before the window really holds them in the old timing.
+    The running total is therefore exact, with no upward bump. The
+    dropped consumption slot stays in the older row it was already
+    counted in, which the dashboard dates to the day before the window,
+    so the window's first day reads short by that slot (SA) or hour
+    (Queensland) and the day before carries it, like the older history.
+    Solar's first-day bar is exact (export is zero around midnight).
+    Haggle drops those slots only after checking that the stored hour
+    before the window really holds them in the old timing.
     The consumption stage also removes the one-slot (SA) or one-hour
     (Queensland) bump that beta.3/beta.4 left at the edge of their
-    trailing week. It also re-chains any beta.3 or downgrade step still
-    inside the window.
+    trailing week, when that edge is inside the window (an upgrade within
+    about three weeks of the first beta.3/beta.4 poll; an older bump sits
+    below the window's baseline and stays). It also re-chains any beta.3
+    or downgrade step still inside the window.
   - **Known residual (solar).** The generation stage does *not* remove the
     matching bump that the first corrected poll left in the generation and
     feed-in credit series. That bump is one dawn export slot (Queensland:

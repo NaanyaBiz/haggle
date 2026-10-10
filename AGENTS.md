@@ -98,7 +98,9 @@ tests/
 ├── fuzz/
 │   ├── fuzz_parser.py               # atheris harness — parser totality + numeric guards (run by fuzz.yml)
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
-├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards, half-hour-zone overlap/trim + contract-local midnight sites (#292) + timezone history re-alignment state machine (gates, NT/WA unsupported_shift, stages, halts vs attempts, give-up, zone change, request ceiling)
+├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards, half-hour-zone overlap/trim + contract-local midnight sites (#292)
+├── test_tz_realign.py               # #292 timezone history re-alignment state machine (gates incl. NT/WA unsupported_shift with no Repairs issue, floor freeze, stages, halts vs attempts, C2 inclusive horizon, give-up, zone change, notice floor = swept start, Repairs issues, period gate, diagnostics v4, request ceiling)
+├── test_tz_realign_recorder.py      # re-alignment end to end vs the REAL recorder — M1 junction (sum-exact + per-day floor attribution), stage order/budget, C1 degrade == plain normal poll, give-up and NT/WA (RA-19) junction residuals, C10
 ├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST/generation convention re-key with stale keys asserted 0, per-day gate incl. generation error day, wholly-absent ToU band, provenance gate, straddle both-days, conservation guard, read budget on the real recorder read) + #292 re-alignment (exact floor junction SA/QLD-in-DST consumption + generation, already-correct entry unchanged, halted/skipped sweep writes only the normal window)
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 ├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
@@ -778,10 +780,16 @@ recorded #154 stall span.
 BEFORE `_import_sweep_batches`. The stage series' readings and
 `reading_days` are trimmed to the days a normal cycle would have fetched:
 its normal range plus the half-hour overlap day, by FETCH day. The import
-is then byte-for-byte a normal import. The window's old rows stay
-untouched: monotone, nothing missing or doubled (old timing, so a
-near-midnight slot still sits on the previous local day). Only a complete sweep imports the
-window.
+is then a normal import of whatever normal-range days the sweep fetched:
+for a per-day skip, exactly the rows a plain normal poll writes (pinned
+against a second, already-done entry in
+`TestEndToEndIncompleteStage`); for a halt, only the normal-range days
+fetched before it — the sweep runs oldest day first, so a mid-window 429
+writes nothing. The window's old rows stay untouched: monotone, nothing
+missing (old timing, so a near-midnight slot still sits on the previous
+local day). The first corrected poll's rewindow-junction bump (one slot
+SA / one hour QLD) stays until a sweep completes. Only a complete sweep
+imports the window.
 
 **Exact floor junction** (M1, `_realign_junction_drop`). It runs on the
 complete stage's import only, `junction=True`, for the consumption family
@@ -803,9 +811,15 @@ complete stage's import only, `junction=True`, for the consumption family
 - With the shift bounded at 1 h, every such slot reports inside that one
   hour. That is a second reason for M4.
 
-Result: the floor day totals exactly. The complete consumption stage also
-removes the beta.3/beta.4 rewindow-junction bump and re-chains any step
-inside the window.
+Result: the cumulative sum is exact (nothing counted twice), not each
+day's bar: the zeroed consumption slot stays in floor − 1's last old row,
+so the floor day reads short by it and floor − 1 carries it (pinned per
+day in `TestEndToEndConsumptionStage`). The generation floor-day bar is
+exact (its dropped dawn slot's old row is dated the floor day). The
+complete consumption stage also
+removes the beta.3/beta.4 rewindow-junction bump when that junction day is
+at or after the floor (a bump below the floor is inside the baseline and
+stays), and re-chains any step inside the window.
 
 **Settle** (`_settle_tz_realign`, after the fetch):
 - **Complete.** Record `swept_from` (the effective start) and end the stage.
@@ -875,13 +889,20 @@ requests; pacing is unchanged.
 
 **Accepted residuals.**
 - **(a) NT/WA** (RA-19): history from before the correction stays shifted,
-  with no notice. At shifts over 1 h, the #300 conservation guard can carry
+  with no notice. The first corrected poll's rewindow junction double-counts
+  the junction day's leading shift-width of slots — SILENTLY (no WARNING,
+  no step) — and nothing ever removes it: WA 6 consumption slots / 5 export
+  slots, NT 3 / 3, in Sydney DST (`TestEndToEndUnsupportedShift`). At
+  shifts over 1 h, the #300 conservation guard can additionally carry
   old-timing rows forward in their trailing week (WARNING, over-count,
   monotone).
 - **(b) Rows older than the effective floor** stay shifted; the notice
   covers them.
 - **(c) A stage that gave up** keeps its window at the old timing,
-  monotone, nothing missing or doubled.
+  monotone, nothing missing — but keeps the first corrected poll's
+  rewindow-junction bump (one slot SA / one hour QLD) double-counted, since
+  only a complete stage's junction drop removes it
+  (`test_give_up_keeps_the_rewindow_junction_double_count`).
 - **(d) Generation dawn slot.** The generation stage does NOT remove the
   dawn export slot that the first corrected poll double-counted at its
   rewindow junction. The old dawn key has no batch value in the window, and

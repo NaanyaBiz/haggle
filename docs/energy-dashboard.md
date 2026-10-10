@@ -118,8 +118,9 @@ What gets repaired:
 
 **Do not delete the `haggle:*` statistics to force a rebuild.** Haggle
 backfills only 30 days, so a rebuild restores one month and loses
-everything older for good. Nothing was ever missing or counted twice;
-only the hour each slot sat in was off, so a reading near midnight could
+everything older for good. Nothing was ever missing, and apart from one
+reading where the first corrected trailing week met the older rows (next
+entry), nothing was counted twice; only the hour each slot sat in was off, so a reading near midnight could
 show on the previous day. NSW, Victoria, Tasmania and the ACT were
 never affected. Northern Territory and Western Australia are a separate
 case; see the NT/WA entry below.
@@ -141,8 +142,12 @@ as **your** local time, not against the per-period sensors.
 (SA, Broken Hill, Queensland): the one-off timezone history re-alignment.**
 This is expected and happens once. On the first poll after upgrading,
 Haggle fetches the 30 days before today again and writes them back at the
-correct hours. Rows are overwritten in place, and the month's total does
-not change (a reading near midnight may move to its correct day).
+correct hours. Rows are overwritten in place. Nothing is lost or counted
+twice (a reading near midnight may move to its correct day). If you ran
+beta.3 or beta.4, the total also drops by the one half-hour (SA) or hour
+(Queensland) those betas counted twice at the edge of their trailing week,
+as long as that edge is still inside the 30 days (an upgrade within about
+three weeks of your first beta.3/beta.4 poll); an older one stays.
 
 - **Who gets it.** Your contract runs it only if its zone (from your
   service address) differs from Sydney time somewhere in those 30 days,
@@ -156,8 +161,13 @@ not change (a reading near midnight may move to its correct day).
   credit. Each of these polls makes up to about 40 requests to AGL instead of
   the usual 10–19. During the solar poll, the "Solar sold this period" and "Solar
   feed-in credit this period" sensors may show `unknown` until it finishes.
-- **Where the moved rows meet older rows**, nothing is counted twice. The
-  first day of the re-aligned month totals exactly, with no extra bump.
+- **Where the moved rows meet older rows**, nothing is counted twice and
+  the running total is exact, with no extra bump. The first 30 minutes
+  (SA) or first hour (Queensland during Sydney daylight saving) of the
+  month's first day stays in the previous day's last bar, where the older
+  rows already counted it, like the older history. So that first day
+  reads short by that slot and the day before reads high by it. Solar
+  export bars are exact on that day.
   - *Known exception on solar contracts:* the solar export series may stay
     high by one early-morning export slot (up to an hour in Queensland). The
     slot is on the day your first beta.3/beta.4 poll's trailing week began,
@@ -166,15 +176,25 @@ not change (a reading near midnight may move to its correct day).
   - Haggle logs one WARNING, "AGL returned less energy than is stored",
     for that day during the solar poll. This is expected; there are no
     negative bars.
-- **If AGL errors or rate-limits.** An interrupted or failed attempt writes
-  only the normal trailing week and leaves the rest of the month as it
-  was. Nothing is half-moved, missing or counted twice. An AGL error on
+- **If AGL errors or rate-limits.** An interrupted or failed attempt never
+  writes more than a normal poll would and leaves the rest of the month as
+  it was. An AGL error on an older day still lets the normal trailing week
+  refresh. A rate limit or connection failure usually stops the attempt
+  before it reaches the trailing week, so that attempt writes nothing and
+  the 30-minute retry picks it up. Nothing is half-moved or missing, but
+  the half-hour (SA) or hour (Queensland) that the first corrected poll
+  counted twice where its trailing week met the older rows (a beta.3/beta.4
+  poll, or a failed attempt itself if you upgraded straight from an older
+  release) stays counted twice until an attempt completes. An AGL error on
   an older day is retried at the next scheduled poll; errors on the six
   most recent days do not count, because the normal refresh fetches those
   days again anyway. A rate limit retries after 30 minutes, but only one
   rate-limited attempt counts per poll interval, and the third one counts
   as a failed attempt. After 3 failed attempts a stage gives up and keeps
-  the old timing for that month. If consumption gave up, the solar stage
+  the old timing for that month, and the one half-hour (SA) or hour
+  (Queensland) counted twice where the first corrected poll's trailing week
+  met the older rows stays counted twice, so the consumption total stays
+  high by that one reading. If consumption gave up, the solar stage
   still runs. Haggle then raises one Repairs issue that names what gave up.
   It is safe to dismiss. Do not delete statistics.
 - **The history notice.** If rows *older* than the re-aligned month may
@@ -207,7 +227,7 @@ not change (a reading near midnight may move to its correct day).
   | `attempts` above 0 | Failed attempts so far for this stage, out of 3. |
   | `halts` above 0 | Rate-limited or interrupted attempts counted so far (at most one per poll interval). The third counts as one failed attempt. |
   | `state: "done"`, `reason: "complete"` | Finished. `notice: true` means the older-history notice was raised. `generation: "skipped"` means solar had nothing to move, or solar writes were off. |
-  | `reason: "gave_up"` | At least one stage stopped after 3 failed attempts. `consumption` / `generation` say which (`"gave_up"`). That stage's month keeps its old timing, with totals intact. |
+  | `reason: "gave_up"` | At least one stage stopped after 3 failed attempts. `consumption` / `generation` say which (`"gave_up"`). That stage's month keeps its old timing, nothing missing; consumption stays high by the one half-hour (SA) or hour (Queensland) the first corrected poll counted twice. |
   | `reason: "not_affected"` | Nothing needed moving. |
   | `reason: "fresh_install"` | Nothing needed moving. |
   | `reason: "unsupported_shift"` | Northern Territory or Western Australia (next entry). |
@@ -229,13 +249,23 @@ No Repairs notice is raised.
 What you see:
 
 - History written before v0.5.0-beta.3 keeps the old timing: NT 30 or 90
-  minutes early, WA 2 or 3 hours early. Nothing is missing or counted
-  twice, but readings from the first hours after midnight show on the
-  previous day.
-- In the trailing week that your first corrected poll rewrote, a few
-  old-timing rows may remain next to the corrected ones. Those hours can
-  read high. That poll logged a WARNING, "AGL returned less energy than is
-  stored". There are no negative bars.
+  minutes early, WA 2 or 3 hours early. Nothing is missing, but readings
+  from the first hours after midnight show on the previous day.
+- **Your first corrected poll counted the start of one day twice.** That
+  poll (beta.3/beta.4, or the first beta.5 poll if you upgraded directly)
+  rewrote the trailing week, but the old-timing rows just before it
+  already held the first slots of its first day, so those slots were
+  stored again. Your consumption, cost and solar export totals stay high
+  by up to one shift width: measured during Sydney daylight saving, up to
+  3 hours of consumption (and 2.5 hours of export after dawn) in WA, 90
+  minutes of each in NT. **Nothing is logged for this**, and there are no
+  negative bars. On SA and Queensland the re-alignment removes the same
+  bump; on NT and WA it stays. The only signal is
+  `tz_realign.reason: "unsupported_shift"` in diagnostics.
+- In that trailing week, at shifts over one hour, a few old-timing rows
+  may also remain next to the corrected ones, so those hours can read high
+  as well. When that happens the poll logs a WARNING, "AGL returned less
+  energy than is stored". There are no negative bars.
 - The decision is made once, from the largest shift in the 30 days before
   the first poll on beta.5 or later. WA is always excluded. NT is excluded
   whenever those 30 days include a Sydney daylight-saving day, which is
