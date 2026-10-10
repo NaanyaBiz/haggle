@@ -4274,6 +4274,9 @@ class TestOverlapDayAndContractMidnightSites:
 
         coord.client.local_tz = ZoneInfo("Australia/Adelaide")
         coord.client.tz_is_contract = True
+        # A contract zone arms the #300 stale-key fill, whose stored-row read
+        # needs a recorder this mocked-seam class doesn't run: nothing stored.
+        coord._stored_hourly_states = AsyncMock(return_value={})
 
     async def test_overlap_day_never_counts_as_fetched_or_progress(
         self, hass: HomeAssistant

@@ -336,6 +336,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.5.0-beta.3] - 2026-10-09
 
+**Withdrawn — see 0.5.0-beta.4.** The trailing-week rewrite below could
+step the cumulative sum down (#300); fixed under [Unreleased].
+
 **Escaped defects closed this release:** 0. (#292, sev:high, is partly fixed here and closes with the follow-up history-realign release.)
 
 ### Added
@@ -409,9 +412,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **What self-heals and what does not.** Statistics rows are keyed on the
     UTC hour and imports overwrite in place, so the trailing 7-day rewindow
     is rewritten correctly on the first poll after upgrading — no doubled
-    bars, no ghost rows; the only artefact is a one-off upward bump of one
-    slot (SA) or one hour (QLD) at the junction with the old rows, never a
-    downward step. **History older than the trailing week stays shifted
+    bars; the intended artefact is a one-off upward bump of one slot (SA)
+    or one hour (QLD) at the junction with the old rows. (As shipped in
+    this beta, old-convention rows at hours the corrected batch did not
+    write survived as ghost rows and could step the sum down — #300, fixed
+    in 0.5.0-beta.4.) **History older than the trailing week stays shifted
     for now** (SA: 30 min; QLD: 1 h for the October–April span). A
     follow-up change re-aligns the 30 days before the upgrade in place and
     raises a Repairs notice for anything older. **Do not delete the
@@ -482,6 +487,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Reconfigure flow suppresses it (#280).
 
 ## [Unreleased]
+
+**v0.5.0-beta.3 was withdrawn** about 75 minutes after publication, before
+any install outside the project (the release was converted back to a draft).
+The next beta (v0.5.0-beta.4) carries everything listed under
+[0.5.0-beta.3] above plus the fix below. Anyone who did install beta.3
+should upgrade: each beta.4 poll repairs the beta.3 rows inside its own
+trailing week; any older ones (if beta.3 ran for more than a day before
+the upgrade) are fixed by the coming 30-day re-alignment.
+
+### Fixed
+
+- **The #292 timestamp correction could make the Energy dashboard show a
+  negative hour** (#300; escaped, sev:high — v0.5.0-beta.3 only). On the
+  first poll after upgrading, the trailing week is rewritten at the
+  corrected hours. The old and corrected timestamps put different
+  half-hour slots into each hourly statistics row. Where both corrected
+  slots in an hour read zero (for example, the end of a solar home's
+  midday zero-import block), AGL's zero-on-zero placeholder filter left the
+  batch with nothing to write at that hour. The old row therefore survived
+  with a running sum from the old chain, above its newly written
+  neighbour: a downward step in the cumulative sum (the #114 class),
+  drawn as a negative bar followed by an inflated one. Reproduced on the
+  real recorder: 5 × 0.38 kWh on a South Australian contract and
+  4 × 0.78 kWh on a Queensland contract during daylight saving; the solar
+  generation series can do the same at night. Every import now also
+  rewrites every stored hourly row from the start of its window onward
+  (including any after the last hour it fetched) that the batch has no
+  value for:
+  - **Zero** when the batch is authoritative for every contract-local day
+    the hour belongs to. A day is authoritative when its own fetch
+    returned readings and the batch holds at least the day's stored kWh
+    (less what its last hour may hold of the next day's first slots). For
+    a half-hour zone's local-midnight hour, both days must be
+    authoritative.
+  - **Its stored value, carried forward** otherwise (a day that errored,
+    returned nothing, or would lose energy). The hour's kWh is unchanged
+    and only its running sum is re-chained, so a mid-week AGL error can no
+    longer leave a stale sum behind either. A day that would lose energy
+    also logs one WARNING per import (count and date range only).
+  - The rewrite never creates an hour or a statistic that was not already
+    stored, and it runs only when the contract's zone comes from its
+    service address. Under the Home Assistant-timezone fallback, imports
+    behave exactly as before. It costs one extra recorder read per import
+    and no extra AGL requests.
+  - On beta.3 installs, each beta.4 poll repairs the trailing week it
+    re-fetches. Any later change that moves slots between hours
+    (including a downgrade followed by a re-upgrade) repairs itself the
+    same way, for the hours inside the next poll's week. Rows that have
+    already aged out of that week keep their step until the follow-up
+    30-day re-alignment release: beta.3 rows when the upgrade came days
+    after beta.3's last poll, and rows a downgrade left outside the
+    re-upgrade's week. History older than the trailing week also keeps
+    the #292 shift until that release, as described under [0.5.0-beta.3].
 
 ### Targets for next sprint
 

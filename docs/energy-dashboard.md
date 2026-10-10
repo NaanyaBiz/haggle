@@ -93,15 +93,23 @@ October–April) early — or, on v0.5.0-beta.1/beta.2, the first half-hour (SA 
 Broken Hill) or first hour (Queensland) of every day is missing.**
 AGL's API converts every meter's local slot labels to UTC through Sydney
 time, wherever the meter actually is
-([#292](https://github.com/NaanyaBiz/haggle/issues/292)). Fixed in the
-release that carries #292 (see the CHANGELOG): slots are re-localised to
-your contract's zone before import.
+([#292](https://github.com/NaanyaBiz/haggle/issues/292)). Fixed from
+v0.5.0-beta.4 (see the CHANGELOG): slots are re-localised to your
+contract's zone before import. (v0.5.0-beta.3 carried the same fix but was
+withdrawn: on its first poll it could leave a few old rows behind, drawn
+as a **negative bar followed by an inflated one**, typically around
+midday on a solar home or overnight on the solar export series —
+[#300](https://github.com/NaanyaBiz/haggle/issues/300). If you saw that,
+upgrade to beta.4 or later; its first poll repairs the trailing week it
+re-fetches automatically, and the coming 30-day re-alignment covers
+anything older. Nothing to delete.)
 What self-heals: the trailing 7 days are rewritten correctly on the first
-poll after upgrading (rows are overwritten in place — no doubled bars; one
-small upward step where the new rows meet the old ones). What does not,
-yet: history older than that week stays shifted — 30 min for SA all year,
-1 h for Queensland across the October–April span — until the follow-up
-release, which re-aligns the 30 days before your upgrade in place and
+poll after upgrading (rows are overwritten in place, with no doubled bars
+or negative bars, and one small upward step where the new rows meet the
+old ones). What does not, yet: history older than that week stays
+shifted — 30 min for SA all year, 1 h for Queensland across the
+October–April span — until a coming release, which re-aligns the 30 days
+before your upgrade in place and
 raises a Repairs notice for anything older. **Do not delete the `haggle:*`
 statistics to force a rebuild**: rows older than ~30 days cannot be
 re-fetched from AGL, and your daily totals were always right — only the

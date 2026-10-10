@@ -41,6 +41,8 @@ from custom_components.haggle.const import (
 from custom_components.haggle.coordinator import HaggleCoordinator
 
 if TYPE_CHECKING:
+    from zoneinfo import ZoneInfo
+
     from homeassistant.core import HomeAssistant
 
 # --- cpython gh-145754 shim -------------------------------------------------
@@ -870,3 +872,1325 @@ async def test_half_hour_zone_overlap_day_error_residual_is_one_half_slot(
         if hour in (floor_bucket, bc_boundary):
             continue
         assert got[hour] == pytest.approx(kwh), hour.isoformat()
+
+
+# ---------------------------------------------------------------------------
+# #300 stale-key fill — real recorder, zero downward steps
+# ---------------------------------------------------------------------------
+#
+# A timezone-correction convention change (#292 PR1) moves slot timestamps
+# between UTC hour buckets.  The parser's zero-on-zero filter means "no batch
+# value at a key" ≠ "key untouched": a zero-import hour whose OLD slot and
+# NEW slot both have kwh=0 is dropped from both sides, leaving the old-UTC
+# row in the recorder with its old running sum.  Every later row moves to the
+# new chain → a downward step (#300, #114 class).
+#
+# The fill rewrites every stored key the batch has no value for:
+#   · 0.0 on an authoritative day (batch holds ≥ 1 reading dated that day
+#     AND, given the provenance set, that day's own fetch returned readings);
+#   · the stored state CARRIED FORWARD otherwise, so a day the batch says
+#     nothing about preserves its hourly values exactly, and the chain is
+#     re-chained monotonically regardless.
+#
+# Zone shorthand used below:
+#   _SYD  = Australia/Sydney  (AGL's pre-#292 conversion zone)
+#   _ADL  = Australia/Adelaide  (ACST/ACDT — 30 min offset from Sydney)
+#   _BNE  = Australia/Brisbane  (no DST — 1 h offset from Sydney in Oct)
+
+
+def _300_coord(hass: HomeAssistant, tz: ZoneInfo) -> HaggleCoordinator:
+    """Coordinator with contract-zone correction active."""
+    c = _make_coordinator(hass)
+    c.client.local_tz = tz
+    c.client.tz_is_contract = True
+    return c
+
+
+def _300_slot_dt(d: date, i: int, tz: ZoneInfo, conv: str) -> datetime:
+    """UTC datetime for the i-th 30-min slot of local day d.
+
+    conv='new': correct UTC via the contract zone.
+    conv='old': AGL's pre-#292 bug — local time re-labelled as Sydney time.
+    """
+    from zoneinfo import ZoneInfo
+
+    syd = ZoneInfo("Australia/Sydney")
+    local = datetime(d.year, d.month, d.day, tzinfo=tz) + timedelta(minutes=30 * i)
+    if conv == "new":
+        return local.astimezone(UTC)
+    return local.replace(tzinfo=None).replace(tzinfo=syd).astimezone(UTC)
+
+
+def _300_prof(i: int) -> float:
+    """kWh profile for a solar home: zero grid import 10:00-15:00 local.
+
+    The zero block (i=20..30) is where old and new UTC buckets diverge for
+    :30 local slots, leaving stale keys after a convention change.
+    """
+    if i < 12:
+        return 0.4
+    if 20 <= i <= 30:
+        return 0.0  # solar covers demand — no grid import
+    if i == 31:
+        return 0.02  # tiny ramp at end of zero block
+    return 0.3
+
+
+def _300_day_slots(d: date, tz: ZoneInfo, conv: str) -> list[IntervalReading]:
+    """All non-zero kWh slots for local day d at the given convention."""
+    out = []
+    for i in range(48):
+        kwh = _300_prof(i)
+        if kwh == 0.0:
+            continue
+        dt = _300_slot_dt(d, i, tz, conv)
+        out.append(
+            IntervalReading(
+                dt=dt, kwh=kwh, cost_aud=round(kwh * 0.3, 6), rate_type="normal"
+            )
+        )
+    return out
+
+
+def _300_gen_day_slots(d: date, tz: ZoneInfo, conv: str) -> list[IntervalReading]:
+    """Solar export slots for local day d: daylight only (i=14..38)."""
+    return [
+        IntervalReading(
+            dt=_300_slot_dt(d, i, tz, conv),
+            kwh=0.2 + 0.005 * i,
+            cost_aud=0.05,
+            rate_type="normal",
+        )
+        for i in range(14, 39)
+    ]
+
+
+def _300_steps(rows: list[dict]) -> list[tuple[str, float]]:
+    """(start_iso, magnitude) for every downward step in a sorted row list."""
+    sorted_rows = sorted(rows, key=lambda r: r["start"])
+    return [
+        (datetime.fromtimestamp(b["start"], tz=UTC).isoformat(), a["sum"] - b["sum"])
+        for a, b in pairwise(sorted_rows)
+        if b["sum"] < a["sum"] - 1e-9
+    ]
+
+
+def _300_hour_totals(
+    readings: list[IntervalReading], *, credit: bool = False
+) -> dict[float, float]:
+    """Batch value per hourly key (epoch seconds): kWh, or AUD with credit."""
+    out: dict[float, float] = {}
+    for r in readings:
+        h = r.dt.replace(minute=0, second=0, microsecond=0).timestamp()
+        out[h] = out.get(h, 0.0) + (r.cost_aud if credit else r.kwh)
+    return out
+
+
+def _300_assert_realigned(
+    before_rows: list[dict], after_rows: list[dict], new_hours: dict[float, float]
+) -> None:
+    """Formerly-stale keys read 0 and the window totals the corrected data.
+
+    A stale key is a row stored before the corrected import, at/after its
+    cutoff, that the corrected batch has no value for. Carrying its old
+    state forward also keeps the chain monotone, so a steps-only check
+    cannot tell it from a zero fill — this one can: the carried state is
+    the old-convention value counted a second time.
+    """
+    cutoff = min(new_hours)
+    after = {r["start"]: r["state"] for r in after_rows}
+    stale = [
+        r["start"]
+        for r in before_rows
+        if r["start"] >= cutoff and r["start"] not in new_hours
+    ]
+    assert stale, "setup: the convention change must leave stale keys"
+    for ts in stale:
+        assert after[ts] == pytest.approx(0.0), (
+            f"stale key {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
+            f"still carries {after[ts]}"
+        )
+    # Skip the cutoff bucket: on a half-hour zone it straddles the overlap
+    # day and keeps the prior day's half (PR1 straddle trim).
+    window = sum(st for ts, st in after.items() if ts > cutoff)
+    assert window == pytest.approx(sum(v for h, v in new_hours.items() if h > cutoff))
+
+
+async def test_300_stale_key_fill_sa_consumption_zero_steps(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#300 reproduction on the real recorder — Adelaide (ACDT, UTC+10:30).
+
+    SA solar home: zero-import block at local 10:00-15:00 (i=20..30).  Old
+    AGL convention placed :30-minute slots 30 min earlier in UTC than the
+    correct ACDT convention; zero slots are dropped by the parser on both
+    sides.  The stale old-UTC rows survive with their old running sums;
+    the rewindow's new chain steps down at every affected UTC hour.
+
+    Step 1: import 12 days at old convention (v0.4.x baseline).
+    Step 2: import last 5 days (trailing rewindow + overlap day) at new
+            convention with reading_days set (beta.3 first rewindow).
+    Assert: ZERO downward steps in the consumption series, every formerly
+    stale key reads 0 kWh, and the window totals the corrected data.
+
+    Mutation: fill disabled (tz_is_contract=False) → 5 downward steps appear
+    at the zero-block boundary hours; fill on → none. Mutation: stale keys
+    carried forward instead of zeroed (zero_ok empty) → monotone, but each
+    stale key still holds its old kWh (double-counted) → RED.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Adelaide")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(12)]
+
+    # Step 1: v0.4.x baseline — all days at old (Sydney-converted) convention.
+    old_intervals = [s for d in days for s in _300_day_slots(d, tz, "old")]
+    await coord._import_intervals(old_intervals)
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+
+    # Step 2: beta.3/beta.4 first rewindow — trailing 5 days at correct convention.
+    # Adelaide (half-hour zone) needs an overlap day, so rewindow = days[-5:].
+    rewindow = days[-5:]
+    new_intervals = [s for d in rewindow for s in _300_day_slots(d, tz, "new")]
+    await coord._import_intervals(new_intervals, reading_days=frozenset(rewindow))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    steps = _300_steps(rows)
+    assert steps == [], f"downward steps after SA rewindow: {steps}"
+    _300_assert_realigned(before_rows, rows, _300_hour_totals(new_intervals))
+
+
+async def test_300_stale_key_fill_qld_dst_consumption_zero_steps(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#300 reproduction on the real recorder — Queensland in DST season.
+
+    Brisbane is UTC+10 year-round; Sydney is AEDT (UTC+11) in October.  Old
+    AGL convention placed every slot 1 hour earlier than correct.  Every :00
+    and :30 local slot moves to a different UTC hour bucket, leaving 11
+    stale old-UTC rows per zero-block day.
+
+    Same structure as the SA test; for a whole-hour-offset zone there is no
+    straddle so the rewindow needs no overlap day.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(12)]
+
+    old_intervals = [s for d in days for s in _300_day_slots(d, tz, "old")]
+    await coord._import_intervals(old_intervals)
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+
+    # Brisbane whole-hour zone: no overlap day needed.
+    rewindow = days[-4:]
+    new_intervals = [s for d in rewindow for s in _300_day_slots(d, tz, "new")]
+    await coord._import_intervals(new_intervals, reading_days=frozenset(rewindow))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    steps = _300_steps(rows)
+    assert steps == [], f"downward steps after QLD rewindow: {steps}"
+    _300_assert_realigned(before_rows, rows, _300_hour_totals(new_intervals))
+
+
+async def test_300_stale_key_fill_generation_nighttime_zero_steps(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """#300 generation variant — QLD solar home, night-time zero-on-zero.
+
+    Export runs local 07:00-19:30 (i=14..38); every night slot is
+    zero-on-zero and dropped by the parser. The old convention put each
+    slot 1 h early (Brisbane UTC+10 vs Sydney AEDT UTC+11), so the old
+    import wrote export at the local 06:00 key — a NIGHT hour on the
+    corrected clock. The corrected batch has no value there, so that old
+    row is a stale key on every rewindow day after the first.
+
+    Assert, for generation AND credit: no downward steps, every stale
+    night key reads 0, and the window totals the corrected data.
+
+    Mutation: fill disabled → the stale 06:00 rows keep their old export
+    (counted twice) → RED. A steps-only check would stay green here: with
+    no chain offset at midnight, a stale row's old sum lands between its
+    new neighbours, so the direct state check is what proves the fill.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id_gen, stat_id_credit = coord._generation_stat_ids()
+
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(12)]
+
+    old_intervals = [s for d in days for s in _300_gen_day_slots(d, tz, "old")]
+    await coord._import_generation(old_intervals)
+    await async_wait_recording_done(hass)
+    before = {
+        sid: await _read_series(hass, sid) for sid in (stat_id_gen, stat_id_credit)
+    }
+
+    rewindow = days[-4:]
+    new_intervals = [s for d in rewindow for s in _300_gen_day_slots(d, tz, "new")]
+    await coord._import_generation(
+        new_intervals,
+        fetched_days=rewindow,
+        reading_days=frozenset(rewindow),
+    )
+    await async_wait_recording_done(hass)
+
+    for sid, credit in ((stat_id_gen, False), (stat_id_credit, True)):
+        rows = await _read_series(hass, sid)
+        steps = _300_steps(rows)
+        assert steps == [], (
+            f"{sid}: downward steps after QLD generation rewindow: {steps}"
+        )
+        _300_assert_realigned(
+            before[sid], rows, _300_hour_totals(new_intervals, credit=credit)
+        )
+
+
+async def test_300_per_day_gate_generation_error_day_stored_rows_byte_identical(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Per-day gate on the generation path: a rewindow where one middle day
+    returns NO feedIn readings (AGL per-day error) leaves that day's stored
+    generation and credit rows byte-identical — carried forward, not zeroed
+    — and both chains re-chain monotonically.
+
+    Scenario: 10 BNE days stored; rewindow days[3:] where days[7] errors
+    (not fetched, not in reading_days). The consumption-side twin is
+    test_300_carry_forward_mid_rewindow_error_preserves_day.
+
+    Mutation: a stale key on a non-authoritative day emitted as 0.0 instead
+    of its stored state (or the per-day gate removed) → days[7]'s export is
+    zeroed → RED.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    ids = coord._generation_stat_ids()
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(10)]
+
+    await coord._import_generation(
+        [s for d in days for s in _300_gen_day_slots(d, tz, "new")],
+        fetched_days=days,
+        reading_days=frozenset(days),
+    )
+    await async_wait_recording_done(hass)
+    before = {sid: await _read_series(hass, sid) for sid in ids}
+
+    error_day = days[7]
+    rewindow_ok = [d for d in days[3:] if d != error_day]
+    await coord._import_generation(
+        [s for d in rewindow_ok for s in _300_gen_day_slots(d, tz, "new")],
+        fetched_days=rewindow_ok,
+        reading_days=frozenset(rewindow_ok),
+    )
+    await async_wait_recording_done(hass)
+
+    d7_lo = datetime(
+        error_day.year, error_day.month, error_day.day, tzinfo=tz
+    ).timestamp()
+    d8_lo = d7_lo + 86400  # Brisbane has no DST
+    for sid in ids:
+        after_rows = await _read_series(hass, sid)
+        assert _300_steps(after_rows) == [], sid
+        after_states = {r["start"]: r["state"] for r in after_rows}
+        d7 = {
+            r["start"]: r["state"] for r in before[sid] if d7_lo <= r["start"] < d8_lo
+        }
+        assert d7, f"{sid}: test setup — days[7] must have stored rows"
+        for ts, state in d7.items():
+            assert after_states.get(ts) == state, (
+                f"{sid}: days[7] stored state changed at "
+                f"{datetime.fromtimestamp(ts, tz=UTC).isoformat()}"
+            )
+
+
+async def test_300_all_empty_batch_writes_nothing(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """An empty batch exits before the stored-row read — no recorder write,
+    no _stored_hourly_states call (brief rule 5: early-return comes first).
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    day = date(2026, 10, 10)
+
+    # Seed one day.
+    await coord._import_intervals(
+        [
+            IntervalReading(
+                dt=_300_slot_dt(day, i, tz, "new"),
+                kwh=0.3,
+                cost_aud=0.09,
+                rate_type="normal",
+            )
+            for i in range(48)
+        ],
+        reading_days={day},
+    )
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+
+    # Stub _stored_hourly_states to count calls.
+    coord._stored_hourly_states = AsyncMock(return_value={})
+    await coord._import_intervals([])
+    assert coord._stored_hourly_states.await_count == 0, (
+        "empty batch must not trigger the stored-row read"
+    )
+    await async_wait_recording_done(hass)
+
+    after_rows = await _read_series(hass, stat_id)
+    assert [(r["start"], r["state"], r["sum"]) for r in before_rows] == [
+        (r["start"], r["state"], r["sum"]) for r in after_rows
+    ], "empty batch must not modify stored rows"
+
+
+async def test_300_partial_day_only_authoritative_days_keys_zero_filled(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Only the authoritative day's stale keys are zero-filled; keys belonging
+    to non-authoritative days are carried forward.
+
+    Scenario (BNE, solar-home profile): 3 days seeded at old convention.
+    Re-import only days[1] at new convention (days[1] in reading_days;
+    days[2] is NOT).  The cutoff = min(days[1] new keys).
+
+    · days[1]'s stale old-convention zero-import keys → zero-filled.
+    · days[2]'s stale keys are above the cutoff but not authoritative →
+      carried forward (NOT zeroed).
+    · Zero downward steps throughout.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(3)]
+
+    # Seed all 3 days at old (Sydney-converted) convention.
+    old_intervals = [s for d in days for s in _300_day_slots(d, tz, "old")]
+    await coord._import_intervals(old_intervals)
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+    before_states = {r["start"]: r["state"] for r in before_rows}
+
+    # Re-import only days[1] at new convention; days[2] is skipped.
+    d1_new = _300_day_slots(days[1], tz, "new")
+    await coord._import_intervals(d1_new, reading_days=frozenset({days[1]}))
+    await async_wait_recording_done(hass)
+    after_rows = await _read_series(hass, stat_id)
+    after_states = {r["start"]: r["state"] for r in after_rows}
+
+    # No downward steps.
+    assert _300_steps(after_rows) == []
+
+    # days[1]'s stale old-convention keys (at/after the cutoff, inside its
+    # local day, with no new-convention value) must be zero-filled.
+    d1_hours = _300_hour_totals(d1_new)
+    d1_lo = datetime(days[1].year, days[1].month, days[1].day, tzinfo=tz).timestamp()
+    d2_lo = d1_lo + 86400  # Brisbane has no DST
+    d1_stale = [
+        ts
+        for ts in before_states
+        if max(d1_lo, min(d1_hours)) <= ts < d2_lo and ts not in d1_hours
+    ]
+    assert d1_stale, "days[1] must have stale old-convention keys"
+    for ts in d1_stale:
+        assert after_states[ts] == pytest.approx(0.0), (
+            f"days[1] stale key {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
+            f"still carries {after_states[ts]} kWh"
+        )
+
+    # days[2]'s stale old-convention keys (above the cutoff) must be carried
+    # forward — days[2] is NOT in reading_days.
+    d2_keys = [ts for ts in before_states if ts >= d2_lo]
+    assert d2_keys, "days[2] must have stored rows above the cutoff"
+    for ts in d2_keys:
+        assert after_states.get(ts) == before_states[ts], (
+            f"days[2] key at {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
+            "changed despite not being authoritative"
+        )
+
+
+async def test_300_steady_state_no_extra_rows(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Steady state: re-importing the same corrected data twice produces
+    identical rows — no extra rows, sums unchanged — and neither import
+    writes a key the batch has no reading for (brief rule 7).
+
+    Mutation: fill creates keys not already stored (e.g. zero-fills every
+    hour between the batch's first and last key) → the zero-import hours
+    appear as rows → RED. Comparing the two imports alone would not catch
+    it: the same invented rows appear both times.
+    Mutation: fill re-emits existing keys with wrong values → sums change.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Adelaide")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(5)]
+    # _300_day_slots already omits the zero-import block (local 10:00-15:00),
+    # so those hours must stay absent from storage.
+    batch = [s for d in days for s in _300_day_slots(d, tz, "new")]
+
+    await coord._import_intervals(batch, reading_days=frozenset(days))
+    await async_wait_recording_done(hass)
+    rows1 = sorted(await _read_series(hass, stat_id), key=lambda r: r["start"])
+
+    await coord._import_intervals(batch, reading_days=frozenset(days))
+    await async_wait_recording_done(hass)
+    rows2 = sorted(await _read_series(hass, stat_id), key=lambda r: r["start"])
+
+    assert [(r["start"], r["state"], r["sum"]) for r in rows1] == [
+        (r["start"], r["state"], r["sum"]) for r in rows2
+    ], "re-importing the same data must not change stored rows"
+
+    batch_keys = set(_300_hour_totals(batch))
+    for rows in (rows1, rows2):
+        starts = {r["start"] for r in rows}
+        # Fill never creates a key: the zero-import hours stay absent.
+        assert starts <= batch_keys, sorted(starts - batch_keys)
+        # Only the first bucket — the half-hour zone's straddle — is trimmed.
+        assert batch_keys - starts == {min(batch_keys)}
+
+
+async def test_300_band_fill_no_new_series_created(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Band series fill: a ToU band with stored rows but only PARTLY present
+    in this batch on an authoritative day → its stale keys are zero-filled.
+    (The wholly-absent case is test_300_band_wholly_absent_still_filled.)
+
+    A band with NO stored rows AND no batch data is NEVER created (the
+    existing 'band not seen' guard must not be bypassed for empty bands).
+
+    Scenario (BNE, one day):
+    · Batch 1: peak slots 0-9, offpeak slots 10-47.
+    · Batch 2: peak slots 0-3 only, offpeak slots 4-47, same day.
+      Stored peak keys 4-9 have no batch value → zero-filled.
+    · Shoulder: no stored rows, no batch data → no series created.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    d = date(2026, 10, 10)
+    bands = frozenset({"peak", "offpeak"})
+
+    b1 = [
+        IntervalReading(
+            dt=_300_slot_dt(d, i, tz, "new"),
+            kwh=0.3,
+            cost_aud=0.09,
+            rate_type="peak" if i < 10 else "offpeak",
+        )
+        for i in range(48)
+    ]
+    await coord._import_intervals(b1, reading_days={d}, known_bands=bands)
+    await async_wait_recording_done(hass)
+
+    b2 = [
+        IntervalReading(
+            dt=_300_slot_dt(d, i, tz, "new"),
+            kwh=0.3,
+            cost_aud=0.09,
+            rate_type="peak" if i < 4 else "offpeak",
+        )
+        for i in range(48)
+    ]
+    await coord._import_intervals(b2, reading_days={d}, known_bands=bands)
+    await async_wait_recording_done(hass)
+
+    peak_cons, _ = coord._tariff_stat_ids("peak")
+    offpeak_cons, _ = coord._tariff_stat_ids("offpeak")
+    shoulder_cons, _ = coord._tariff_stat_ids("shoulder")
+
+    peak_rows = await _read_series(hass, peak_cons)
+    offpeak_rows = await _read_series(hass, offpeak_cons)
+    shoulder_rows = await _read_series(hass, shoulder_cons)
+
+    assert _300_steps(peak_rows) == [], "peak must be monotone"
+    assert _300_steps(offpeak_rows) == [], "offpeak must be monotone"
+    assert shoulder_rows == [], (
+        "shoulder series must not be created with no stored rows"
+    )
+
+    # Peak: only slots 0-3 in batch2 are non-zero; slots 4-9 were stored but
+    # are zero-filled (authoritative day) → peak sum = 4 * 0.3 = 1.2 kWh.
+    assert abs(peak_rows[-1]["sum"] - 4 * 0.3) < 1e-9, (
+        f"peak sum {peak_rows[-1]['sum']:.6f} ≠ 1.2 (slots 4-9 not zero-filled)"
+    )
+
+
+async def test_300_band_wholly_absent_still_filled(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """A ToU band with stored rows but NO readings at all in this batch, on
+    a day that has other readings, is still emitted for its fill keys
+    (brief rule 3): its stale rows read 0, its chain stays monotone, and
+    the per-tariff partition still sums to the aggregate.
+
+    Mutation: restore the old "band not seen in this batch" skip in
+    _import_intervals → peak is never emitted, keeps its 3.0 kWh, and the
+    partition double-counts it against the aggregate → RED.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    d = date(2026, 10, 10)
+    bands = frozenset({"peak", "offpeak"})
+
+    def _batch(n_peak: int) -> list[IntervalReading]:
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=0.3,
+                cost_aud=0.09,
+                rate_type="peak" if i < n_peak else "offpeak",
+            )
+            for i in range(48)
+        ]
+
+    await coord._import_intervals(_batch(10), reading_days={d}, known_bands=bands)
+    await async_wait_recording_done(hass)
+    # Same day re-imported with every slot offpeak: no peak reading at all.
+    await coord._import_intervals(_batch(0), reading_days={d}, known_bands=bands)
+    await async_wait_recording_done(hass)
+
+    peak_cons, peak_cost = coord._tariff_stat_ids("peak")
+    offpeak_cons, _ = coord._tariff_stat_ids("offpeak")
+    agg = await _read_series(hass, f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}")
+    offpeak_rows = await _read_series(hass, offpeak_cons)
+    for sid in (peak_cons, peak_cost):
+        rows = await _read_series(hass, sid)
+        assert len(rows) == 5, f"{sid}: the fill rewrites keys, never drops them"
+        assert _300_steps(rows) == [], sid
+        assert all(r["state"] == 0.0 for r in rows), f"{sid}: stale keys not zeroed"
+        assert rows[-1]["sum"] == pytest.approx(0.0), sid
+    peak_rows = await _read_series(hass, peak_cons)
+    total = max(r["sum"] for r in agg)
+    assert peak_rows[-1]["sum"] + offpeak_rows[-1]["sum"] == pytest.approx(total)
+
+
+async def test_300_downgrade_re_upgrade_zero_steps(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Downgrade/re-upgrade: write correct rows, then old-convention rows
+    over the same week (simulating a v0.4 downgrade), then correct rows
+    again (re-upgrade rewindow) → zero downward steps.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Adelaide")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(10)]
+
+    # Step 1 (beta.4 install): all 10 days at new convention.
+    new_all = [s for d in days for s in _300_day_slots(d, tz, "new")]
+    await coord._import_intervals(new_all, reading_days=frozenset(days))
+    await async_wait_recording_done(hass)
+
+    # Step 2 (v0.4 downgrade): re-import trailing 5 days at old convention.
+    # The downgrade client has tz_is_contract=False (no correction), so fill
+    # is inactive — old-convention rows overwrite the trailing week.
+    coord.client.tz_is_contract = False
+    rewindow = days[-5:]
+    old_win = [s for d in rewindow for s in _300_day_slots(d, tz, "old")]
+    await coord._import_intervals(old_win)
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+
+    # Step 3 (re-upgrade): re-import the same trailing window at new convention
+    # with fill active and provenance set.
+    coord.client.tz_is_contract = True
+    new_win = [s for d in rewindow for s in _300_day_slots(d, tz, "new")]
+    await coord._import_intervals(new_win, reading_days=frozenset(rewindow))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    assert _300_steps(rows) == [], (
+        "re-upgrade rewindow must produce zero downward steps"
+    )
+    _300_assert_realigned(before_rows, rows, _300_hour_totals(new_win))
+
+
+async def test_300_exactly_one_recorder_read_per_nonempty_import(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Read budget (brief rule 1): the fill costs exactly ONE recorder read
+    per non-empty import, batched across the whole series family — the
+    aggregate plus every ToU band on _import_intervals, generation plus
+    credit on _import_generation — and none for an empty batch.
+
+    Counts real ``statistics_during_period`` calls for the fill's
+    ``{"state"}`` read (baseline reads ask for ``sum``), with the real
+    _stored_hourly_states in place, so a per-series executor loop inside
+    the helper is caught, not just a second call to it.
+    """
+    from unittest.mock import patch
+    from zoneinfo import ZoneInfo
+
+    from homeassistant.components.recorder import statistics as rec_stats
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    day = date(2026, 10, 10)
+
+    real_sdp = rec_stats.statistics_during_period
+    state_reads: list[set[str]] = []
+
+    def _spy(hass_, start, end, ids, period, units, types):
+        if types == {"state"}:
+            state_reads.append(set(ids))
+        return real_sdp(hass_, start, end, ids, period, units, types)
+
+    tou_batch = [
+        IntervalReading(
+            dt=_300_slot_dt(day, i, tz, "new"),
+            kwh=0.3,
+            cost_aud=0.09,
+            rate_type=("peak", "offpeak", "normal")[i % 3],
+        )
+        for i in range(48)
+    ]
+    gen_batch = _300_gen_day_slots(day, tz, "new")
+
+    with patch.object(rec_stats, "statistics_during_period", _spy):
+        # Empty batch → early return before the read.
+        await coord._import_intervals([])
+        assert state_reads == [], "empty batch must not read stored rows"
+
+        await coord._import_intervals(tou_batch, reading_days={day})
+        assert len(state_reads) == 1, "one ToU import must cost one fill read"
+        band_ids = {
+            sid for t in ("peak", "offpeak") for sid in coord._tariff_stat_ids(t)
+        }
+        assert band_ids < state_reads[0], "band series must share the one read"
+
+        state_reads.clear()
+        await coord._import_generation(gen_batch, reading_days={day})
+        assert state_reads == [set(coord._generation_stat_ids())]
+
+        # Fill inactive (HA-zone fallback) → no fill read at all.
+        state_reads.clear()
+        coord.client.tz_is_contract = False
+        await coord._import_intervals(tou_batch, reading_days={day})
+        assert state_reads == [], "fill-inactive path must not read stored rows"
+
+
+async def test_300_carry_forward_mid_rewindow_error_preserves_day(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Critic MAJOR 1 (carry-forward): a mid-rewindow AGL per-day error
+    returns [] for that day; the fill must CARRY FORWARD its stored states
+    exactly — not zero them — so its sums re-chain monotonically.
+
+    Without carry-forward, stored rows on the errored day keep their OLD
+    running sums while every later row moves to the new chain → a downward
+    step at the first row after the errored day (#114 class).
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(10)]
+
+    def full_day(d: date) -> list[IntervalReading]:
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=0.3,
+                cost_aud=0.09,
+                rate_type="normal",
+            )
+            for i in range(48)
+        ]
+
+    # Seed: all 10 days.
+    await coord._import_intervals(
+        [s for d in days for s in full_day(d)],
+        reading_days=frozenset(days),
+    )
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+    before_states = {r["start"]: r["state"] for r in before_rows}
+
+    # Rewindow: days[3:], but days[7] errors (not in reading_days, no batch).
+    error_day = days[7]
+    rewindow_ok = [d for d in days[3:] if d != error_day]
+    batch = [s for d in rewindow_ok for s in full_day(d)]
+    await coord._import_intervals(batch, reading_days=frozenset(rewindow_ok))
+    await async_wait_recording_done(hass)
+    after_rows = await _read_series(hass, stat_id)
+
+    # Zero downward steps — the carry-forward must re-chain the errored day.
+    assert _300_steps(after_rows) == []
+
+    # The errored day's stored states are byte-identical.
+    after_states = {r["start"]: r["state"] for r in after_rows}
+    d7_lo = datetime(
+        error_day.year, error_day.month, error_day.day, tzinfo=tz
+    ).astimezone(UTC)
+    d8_lo = datetime(days[8].year, days[8].month, days[8].day, tzinfo=tz).astimezone(
+        UTC
+    )
+    d7_keys = [
+        ts for ts in before_states if d7_lo.timestamp() <= ts < d8_lo.timestamp()
+    ]
+    assert d7_keys, "error day must have stored rows"
+    for ts in d7_keys:
+        assert after_states.get(ts) == before_states[ts], (
+            f"error day state changed at "
+            f"{datetime.fromtimestamp(ts, tz=UTC).isoformat()}"
+        )
+
+
+async def test_300_provenance_gate_slack_row_does_not_open_skipped_day(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Critic MAJOR 2 (provenance gate): day D's response may carry
+    trailing-slack rows dated D+1. If D+1 was SKIPPED (no fetch, not in
+    reading_days), those slack rows must NOT open the fill gate for D+1.
+
+    Built so provenance is the ONLY protection: D+1 (days[4]) is stored as
+    1.0 kWh in its first three hours and 2.0 kWh in its tail hour, and the
+    batch carries stored-equal slack rows for the first three hours. The
+    tail hour is exempt from the conservation guard's owed kWh (it may
+    legitimately hold the next day's opening slots), so the guard sees
+    batch 6.0 >= owed 6.0 and passes D+1 — only the reading_days
+    intersection keeps the tail key from being zeroed.
+
+    Mutation: gate on timestamp date alone (ignore reading_days), with the
+    conservation guard intact → the tail key is zeroed → 2.0 kWh lost → RED.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    day4 = days[4]
+
+    def slot(d: date, i: int, kwh: float) -> IntervalReading:
+        return IntervalReading(
+            dt=_300_slot_dt(d, i, tz, "new"),
+            kwh=kwh,
+            cost_aud=round(kwh * 0.3, 6),
+            rate_type="normal",
+        )
+
+    def full_day(d: date) -> list[IntervalReading]:
+        return [slot(d, i, 0.3) for i in range(48)]
+
+    early = [slot(day4, i, 1.0) for i in range(6)]
+    seed = [s for d in days if d != day4 for s in full_day(d)]
+    seed += [*early, slot(day4, 46, 1.0), slot(day4, 47, 1.0)]
+    await coord._import_intervals(seed, reading_days=frozenset(days))
+    await async_wait_recording_done(hass)
+
+    tail_ts = _300_slot_dt(day4, 46, tz, "new").timestamp()
+    before_states = {r["start"]: r["state"] for r in await _read_series(hass, stat_id)}
+    assert before_states[tail_ts] == pytest.approx(2.0), "test setup"
+
+    # Rewindow: days[1:] skipping days[4]; days[3]'s response overflowed
+    # stored-equal slack rows into days[4]'s first three hours.
+    rewindow_ok = [d for d in days[1:] if d != day4]
+    batch = [s for d in rewindow_ok for s in full_day(d)] + early
+    await coord._import_intervals(
+        batch,
+        reading_days=frozenset(rewindow_ok),  # D4 NOT in reading_days
+    )
+    await async_wait_recording_done(hass)
+    after_rows = await _read_series(hass, stat_id)
+    after_states = {r["start"]: r["state"] for r in after_rows}
+
+    assert _300_steps(after_rows) == []
+    assert after_states[tail_ts] == pytest.approx(2.0), (
+        f"days[4] tail hour zeroed: {after_states[tail_ts]} "
+        "despite D4 not being in reading_days"
+    )
+
+
+async def test_300_sa_straddle_key_both_days_required(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Critic MINOR 3 (straddle key): a half-hour-zone boundary bucket
+    straddles two local days; it must be zeroed only when BOTH days are
+    authoritative.
+
+    Scenario (Adelaide): day D's 23:30 slot is zero-on-zero (absent from
+    batch), D+1 is skipped.  Bucket H (= D 23:30 / D+1 00:00) holds 0.6
+    kWh from the seed (two 0.3 slots).  D is authoritative; D+1 is not.
+    The fill must NOT zero H — H's stored state must survive unchanged.
+
+    Mutation: gate on k's start instant only (not k+30min) → D is
+    authoritative, the bucket is dated D at its start → H is zeroed →
+    D+1's 00:00 kWh is permanently lost.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Adelaide")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+
+    def full_day_adl(d: date) -> list[IntervalReading]:
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=0.3,
+                cost_aud=0.09,
+                rate_type="normal",
+            )
+            for i in range(48)
+        ]
+
+    # Seed all 6 days (including D+1's 00:00 slot in bucket H).
+    await coord._import_intervals(
+        [s for d in days for s in full_day_adl(d)],
+        reading_days=frozenset(days),
+    )
+    await async_wait_recording_done(hass)
+
+    # Rewindow: days[1:] skipping days[3] (D+1).  On days[2] (D), slot 47
+    # (23:30 ACDT) is absent from the batch → zero-on-zero → bucket H has
+    # no batch value.
+    day_d = days[2]
+    day_d1 = days[3]
+    rewindow_ok = [d for d in days[1:] if d != day_d1]
+    batch: list[IntervalReading] = []
+    for d in rewindow_ok:
+        if d == day_d:
+            batch.extend(
+                IntervalReading(
+                    dt=_300_slot_dt(d, i, tz, "new"),
+                    kwh=0.3,
+                    cost_aud=0.09,
+                    rate_type="normal",
+                )
+                for i in range(47)  # slot 47 (23:30 ACDT) absent
+            )
+        else:
+            batch.extend(full_day_adl(d))
+
+    await coord._import_intervals(
+        batch,
+        reading_days=frozenset(rewindow_ok),  # D1 NOT in reading_days
+    )
+    await async_wait_recording_done(hass)
+    after_rows = await _read_series(hass, stat_id)
+
+    # No downward steps.
+    assert _300_steps(after_rows) == []
+
+    # Bucket H holds D's 23:30 (0.3) + D1's 00:00 (0.3) = 0.6 from the seed.
+    # Since D1 is not authoritative, H must NOT be zeroed: state = 0.6.
+    bucket_h = _300_slot_dt(day_d, 47, tz, "new").replace(minute=0)
+    h_row = next(
+        (r for r in after_rows if abs(r["start"] - bucket_h.timestamp()) < 1), None
+    )
+    assert h_row is not None, f"bucket H at {bucket_h.isoformat()} must exist"
+    assert abs(h_row["state"] - 0.6) < 1e-9, (
+        f"bucket H state {h_row['state']:.4f} must be 0.6 "
+        f"(D1 slot carried forward, not zeroed)"
+    )
+
+
+async def test_300_conservation_guard_preserves_partial_day(
+    recorder_mock, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Critic MINOR 4 (conservation guard): a day where the batch carries
+    fewer kWh than is stored is treated as non-authoritative — its stored
+    values are carried forward, not zeroed.  One WARNING is logged.
+
+    Scenario: 4 BNE days stored (48 slots * 0.3 kWh = 14.4 kWh each).
+    Rewindow days[1:]; days[2] returns only 40 of 48 slots (slots 30-37
+    absent, 8 missing * 0.3 = 2.4 kWh short).  Batch kWh for days[2] =
+    12.0 < stored 14.4 → conservation guard fires → days[2] carried forward.
+    """
+    import logging
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(4)]
+
+    def full_day(d: date) -> list[IntervalReading]:
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=0.3,
+                cost_aud=0.09,
+                rate_type="normal",
+            )
+            for i in range(48)
+        ]
+
+    await coord._import_intervals(
+        [s for d in days for s in full_day(d)],
+        reading_days=frozenset(days),
+    )
+    await async_wait_recording_done(hass)
+    before_rows = await _read_series(hass, stat_id)
+    before_states = {r["start"]: r["state"] for r in before_rows}
+
+    # Rewindow: days[1:]; days[2] missing slots 30-37.
+    day_d2 = days[2]
+    partial_batch: list[IntervalReading] = []
+    for d in days[1:]:
+        if d == day_d2:
+            partial_batch.extend(
+                IntervalReading(
+                    dt=_300_slot_dt(d, i, tz, "new"),
+                    kwh=0.3,
+                    cost_aud=0.09,
+                    rate_type="normal",
+                )
+                for i in range(48)
+                if i not in range(30, 38)
+            )
+        else:
+            partial_batch.extend(full_day(d))
+
+    caplog.set_level(logging.WARNING, logger="custom_components.haggle.coordinator")
+    await coord._import_intervals(partial_batch, reading_days=frozenset(days[1:]))
+    await async_wait_recording_done(hass)
+
+    after_rows = await _read_series(hass, stat_id)
+    after_states = {r["start"]: r["state"] for r in after_rows}
+
+    # No downward steps — carry-forward ensures monotonicity.
+    assert _300_steps(after_rows) == []
+
+    # days[2]'s stored states are preserved (conservation guard fired).
+    d2_lo = datetime(day_d2.year, day_d2.month, day_d2.day, tzinfo=tz).astimezone(UTC)
+    d3_lo = datetime(days[3].year, days[3].month, days[3].day, tzinfo=tz).astimezone(
+        UTC
+    )
+    d2_keys = [
+        ts for ts in before_states if d2_lo.timestamp() <= ts < d3_lo.timestamp()
+    ]
+    assert d2_keys, "days[2] must have stored rows"
+    for ts in d2_keys:
+        assert after_states.get(ts) == before_states[ts], (
+            f"days[2] state at {datetime.fromtimestamp(ts, tz=UTC).isoformat()} "
+            f"changed despite failing the conservation guard"
+        )
+
+    # Exactly one WARNING mentioning the energy shortfall.
+    hits = [
+        r
+        for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "less energy than is stored" in r.getMessage()
+    ]
+    assert len(hits) == 1, "conservation guard must emit exactly one WARNING"
+
+
+async def test_300_fill_inactive_on_ha_zone_fallback(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Critic MINOR 5 (tz_is_contract identity check): the fill only runs
+    when client.tz_is_contract `is True` — a strict identity test, not a
+    truthiness test.  Any other value (False, 1, MagicMock) leaves the
+    import unchanged from pre-fill behaviour.
+
+    Confirmed by:
+    · _fill_active() with True / False / 1.
+    · Re-importing the same data with tz_is_contract=1 → no change to rows.
+    · _stored_hourly_states called directly with tz_is_contract=False returns
+      {} immediately without any DB I/O.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Adelaide")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(5)]
+
+    # --- Identity check ---
+    coord.client.tz_is_contract = True
+    assert coord._fill_active() is True, "`is True` must arm fill"
+    coord.client.tz_is_contract = False
+    assert coord._fill_active() is False, "False must not arm fill"
+    coord.client.tz_is_contract = 1  # truthy but not `is True`
+    assert coord._fill_active() is False, "truthy non-True must not arm fill"
+
+    # --- Recorder: fill inactive → stored rows unchanged ---
+    coord.client.tz_is_contract = True  # re-arm for seeding
+    batch = [s for d in days for s in _300_day_slots(d, tz, "new")]
+    await coord._import_intervals(batch, reading_days=frozenset(days))
+    await async_wait_recording_done(hass)
+    seeded_rows = sorted(await _read_series(hass, stat_id), key=lambda r: r["start"])
+
+    # Inactive: re-import with tz_is_contract=1 (fill won't arm).
+    coord.client.tz_is_contract = 1
+    await coord._import_intervals(batch, reading_days=frozenset(days))
+    await async_wait_recording_done(hass)
+    after_rows = sorted(await _read_series(hass, stat_id), key=lambda r: r["start"])
+
+    assert [(r["start"], r["state"], r["sum"]) for r in seeded_rows] == [
+        (r["start"], r["state"], r["sum"]) for r in after_rows
+    ], "inactive fill must leave rows unchanged"
+
+    # --- _stored_hourly_states short-circuits with no DB I/O when inactive ---
+    coord.client.tz_is_contract = False
+    result = await coord._stored_hourly_states(
+        {stat_id}, datetime(2026, 1, 1, tzinfo=UTC)
+    )
+    assert result == {}, "_stored_hourly_states must return {} when fill inactive"
+
+
+# --- #300 fetch-site provenance + one-read budget (mutation-table gaps) ---
+
+
+def _300_small_day_seed(
+    days: list[date], small: date, tz: ZoneInfo
+) -> list[IntervalReading]:
+    """Full 0.3 kWh days, except `small`, which stores ONE 0.01 kWh slot.
+
+    A slack row (0.3 kWh) dated `small` then out-weighs the day's stored
+    energy, so the conservation guard cannot be what keeps the day's stored
+    rows: only the provenance gate does.
+    """
+    out: list[IntervalReading] = []
+    for d in days:
+        slots = [20] if d == small else range(48)
+        kwh = 0.01 if d == small else 0.3
+        out += [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=kwh,
+                cost_aud=round(kwh * 0.3, 6),
+                rate_type="normal",
+            )
+            for i in slots
+        ]
+    return out
+
+
+async def test_300_provenance_gate_small_skipped_day_not_zeroed(
+    recorder_mock, hass: HomeAssistant
+) -> None:
+    """Provenance gate on its own (critic MAJOR 2).
+
+    Same shape as the slack-row test above, but the skipped day stores LESS
+    energy than the stray slack row carries, so the conservation guard
+    passes and only `reading_days` stops the zero fill. Ignoring provenance
+    (gating on reading timestamps alone) zeroes the day's one stored slot:
+    permanent kWh loss.
+    """
+    from zoneinfo import ZoneInfo
+
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    skipped = days[4]
+    await coord._import_intervals(
+        _300_small_day_seed(days, skipped, tz), reading_days=frozenset(days)
+    )
+    await async_wait_recording_done(hass)
+
+    fetched = [d for d in days[1:] if d != skipped]
+    batch = _300_small_day_seed(fetched, skipped, tz)
+    batch.append(
+        IntervalReading(
+            dt=_300_slot_dt(skipped, 0, tz, "new"),
+            kwh=0.3,
+            cost_aud=0.09,
+            rate_type="normal",
+        )
+    )
+    await coord._import_intervals(batch, reading_days=frozenset(fetched))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    assert _300_steps(rows) == []
+    small_key = _300_slot_dt(skipped, 20, tz, "new").replace(minute=0).timestamp()
+    states = {r["start"]: r["state"] for r in rows}
+    assert states[small_key] == pytest.approx(0.01), (
+        "a day whose own fetch returned nothing must keep its stored kWh"
+    )
+
+
+async def test_300_fetch_provenance_empty_day_not_vouched_by_slack_row(
+    recorder_mock, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Provenance is recorded at the fetch site, end to end (#300).
+
+    Through `_fetch_range`: day D-1's response carries a trailing-slack row
+    dated D, and D's own fetch returns nothing (an AGL per-day error is the
+    `[]` skip). D must not join the reading days, so its one small stored
+    slot survives. Counting an empty day as a reading day lets the slack
+    row zero it.
+    """
+    from zoneinfo import ZoneInfo
+
+    import custom_components.haggle.coordinator as coordinator_mod
+
+    monkeypatch.setattr(coordinator_mod, "BACKFILL_INTER_REQUEST_DELAY", 0)
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    stat_id = f"{DOMAIN}:{STAT_CONSUMPTION}_{_CONTRACT}"
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    empty = days[4]
+    await coord._import_intervals(
+        _300_small_day_seed(days, empty, tz), reading_days=frozenset(days)
+    )
+    await async_wait_recording_done(hass)
+
+    async def hourly(contract: str, day: date) -> list[IntervalReading]:
+        if day == empty:
+            return []
+        out = _300_small_day_seed([day], empty, tz)
+        if day == empty - timedelta(days=1):
+            out.append(
+                IntervalReading(
+                    dt=_300_slot_dt(empty, 0, tz, "new"),
+                    kwh=0.3,
+                    cost_aud=0.09,
+                    rate_type="normal",
+                )
+            )
+        return out
+
+    coord.client.async_get_usage_hourly = AsyncMock(side_effect=hourly)
+    await coord._fetch_range((days[1], days[5]), None, None, today=date(2026, 10, 20))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, stat_id)
+    assert _300_steps(rows) == []
+    small_key = _300_slot_dt(empty, 20, tz, "new").replace(minute=0).timestamp()
+    states = {r["start"]: r["state"] for r in rows}
+    assert states[small_key] == pytest.approx(0.01)
+
+
+async def test_300_fetch_provenance_zero_export_day_not_a_reading_day(
+    recorder_mock, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Generation twin of the fetch-site provenance test.
+
+    A zero-export solar day (the fetch succeeds but every slot is filtered)
+    gets a marker, never a place in the reading days: a stray reading dated
+    that day from its neighbour's response must not zero its stored export.
+    """
+    from zoneinfo import ZoneInfo
+
+    import custom_components.haggle.coordinator as coordinator_mod
+
+    monkeypatch.setattr(coordinator_mod, "BACKFILL_INTER_REQUEST_DELAY", 0)
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    gen_id, _ = coord._generation_stat_ids()
+    days = [date(2026, 10, 10) + timedelta(days=n) for n in range(6)]
+    cloudy = days[4]
+
+    def export(d: date) -> list[IntervalReading]:
+        slots = [24] if d == cloudy else range(16, 36)
+        kwh = 0.01 if d == cloudy else 0.3
+        return [
+            IntervalReading(
+                dt=_300_slot_dt(d, i, tz, "new"),
+                kwh=kwh,
+                cost_aud=round(kwh * 0.05, 6),
+                rate_type="normal",
+            )
+            for i in slots
+        ]
+
+    await coord._import_generation(
+        [s for d in days for s in export(d)], reading_days=frozenset(days)
+    )
+    await async_wait_recording_done(hass)
+
+    async def solar(
+        contract: str, day: date, previous: bool = False
+    ) -> list[IntervalReading]:
+        if day == cloudy:
+            return []
+        out = export(day)
+        if day == cloudy - timedelta(days=1):
+            out.append(
+                IntervalReading(
+                    dt=_300_slot_dt(cloudy, 0, tz, "new"),
+                    kwh=0.3,
+                    cost_aud=0.015,
+                    rate_type="normal",
+                )
+            )
+        return out
+
+    coord.client.async_get_solar_hourly = AsyncMock(side_effect=solar)
+    await coord._fetch_range(None, (days[1], days[5]), None, today=date(2026, 10, 20))
+    await async_wait_recording_done(hass)
+
+    rows = await _read_series(hass, gen_id)
+    assert _300_steps(rows) == []
+    small_key = _300_slot_dt(cloudy, 24, tz, "new").replace(minute=0).timestamp()
+    states = {r["start"]: r["state"] for r in rows}
+    assert states[small_key] == pytest.approx(0.01)
+
+
+async def test_300_one_real_state_read_per_import(
+    recorder_mock, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The read budget, counted at the recorder API rather than our seam.
+
+    The stale-key fill is the only caller asking `statistics_during_period`
+    for `{"state"}`: exactly one such call per non-empty import (consumption
+    and generation alike, batched across every series), none for an empty
+    batch, and none at all when the fill is inactive (HA-zone fallback, or a
+    truthy non-True `tz_is_contract`).
+    """
+    from zoneinfo import ZoneInfo
+
+    from homeassistant.components.recorder import statistics as stats_mod
+
+    real = stats_mod.statistics_during_period
+    state_reads: list[set[str]] = []
+
+    def counting(hass_, start, end, ids, period, units, types):
+        if types == {"state"}:
+            state_reads.append(set(ids))
+        return real(hass_, start, end, ids, period, units, types)
+
+    monkeypatch.setattr(stats_mod, "statistics_during_period", counting)
+    tz = ZoneInfo("Australia/Brisbane")
+    coord = _300_coord(hass, tz)
+    day = date(2026, 10, 10)
+    batch = _300_day_slots(day, tz, "new")
+
+    await coord._import_intervals([])
+    assert state_reads == []
+    await coord._import_intervals(batch, reading_days={day})
+    await coord._import_intervals(batch, reading_days={day})
+    await coord._import_generation(batch, reading_days={day})
+    assert len(state_reads) == 3
+    gen_id, credit_id = coord._generation_stat_ids()
+    assert state_reads[-1] == {gen_id, credit_id}
+
+    for inactive in (False, 1):
+        coord.client.tz_is_contract = inactive
+        await coord._import_intervals(batch, reading_days={day})
+        await coord._import_generation(batch, reading_days={day})
+    assert len(state_reads) == 3, "an inactive fill must not read the recorder"
