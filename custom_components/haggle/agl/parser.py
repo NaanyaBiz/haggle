@@ -372,6 +372,35 @@ def relocalise_agl_timestamp(
     return labelled.replace(tzinfo=contract_tz, fold=labelled.fold).astimezone(UTC)
 
 
+def agl_api_tz() -> tzinfo | None:
+    """The zone the parser inverts through when a response declares none.
+
+    Public so the coordinator's timezone history re-alignment (#292 PR2b)
+    gates on the SAME resolution as the parser: "the parser cannot invert"
+    and "the re-alignment does not arm" share one implementation, and a
+    host without the tzdata entry disables both. Looks ``_default_api_tz``
+    up at call time, so patching that name covers every caller.
+    """
+    return _default_api_tz()
+
+
+def agl_reported_timestamp(
+    dt: datetime, *, api_tz: tzinfo, contract_tz: tzinfo
+) -> datetime:
+    """Inverse of relocalise_agl_timestamp: the instant AGL itself reported.
+
+    ``dt`` is a corrected (contract-zone) slot start; the result is where a
+    release before the correction stored that slot — the contract's
+    wall-clock label re-read in ``api_tz``. The history re-alignment uses it
+    to find the slots the OLD chain already counted below an import's
+    baseline cutoff (#292 PR2b, M1). ``fold`` round-trips per instant, as in
+    the forward direction. Raises OverflowError at the edge of the
+    representable datetime range.
+    """
+    labelled = dt.astimezone(contract_tz)
+    return labelled.replace(tzinfo=api_tz, fold=labelled.fold).astimezone(UTC)
+
+
 class _IntervalTimestamps:
     """Per-parse timestamp pipeline: parse, re-localise (#292), tripwire.
 
@@ -398,7 +427,7 @@ class _IntervalTimestamps:
         self.contract_tz = tz if tz_is_contract else None
         self.api_tz: tzinfo | None = None
         if self.contract_tz is not None:
-            self.api_tz = _zone_for_key(self.api_tz_label) or _default_api_tz()
+            self.api_tz = _zone_for_key(self.api_tz_label) or agl_api_tz()
         self.first: tuple[str, datetime, datetime] | None = None
 
     def parse(self, item: dict[str, Any]) -> datetime | None:
