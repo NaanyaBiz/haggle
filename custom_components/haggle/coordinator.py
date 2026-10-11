@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, NamedTuple
 
@@ -100,6 +100,7 @@ from .const import (
     TZ_REALIGN_REASON_FRESH_INSTALL,
     TZ_REALIGN_REASON_NOT_AFFECTED,
     TZ_REALIGN_REASON_UNSUPPORTED_SHIFT,
+    TZ_REALIGN_SHIFT_SCAN_DAYS,
     TZ_REALIGN_SKIPPED,
 )
 
@@ -124,6 +125,7 @@ _EARLIEST_HISTORY = datetime(1970, 1, 1, tzinfo=UTC)
 # `key` and `key + _SLOT`; in a half-hour zone those can be different
 # contract-local days (the local-midnight straddle bucket, #292 A4).
 _SLOT = timedelta(minutes=30)
+_HOUR = timedelta(hours=1)
 
 # Float slack for the stale-key fill's per-day energy-conservation guard
 # (#300). Batch and stored totals are sums of the same AGL floats, so a
@@ -227,6 +229,27 @@ class _RealignSweep(NamedTuple):
     start: date
     normal: tuple[date, date] | None
     ignore: frozenset[date] = frozenset()
+
+
+class _SeriesPick(NamedTuple):
+    """The readings and value one statistics series sums (#292 PR2b R1).
+
+    ``tariff`` is None for an aggregate series (every reading), else the ToU
+    band whose readings it holds; ``cost`` selects ``cost_aud`` (cost,
+    feed-in credit) over ``kwh``. Lets the floor-junction re-emit subtract
+    and add back exactly what each series holds of the moved slots.
+    """
+
+    tariff: str | None = None
+    cost: bool = False
+
+    def members(self, readings: Iterable[IntervalReading]) -> list[IntervalReading]:
+        """The readings this series holds."""
+        return [r for r in readings if self.tariff in (None, r.rate_type)]
+
+    def total(self, readings: Iterable[IntervalReading]) -> float:
+        """This series' value summed over ``readings``."""
+        return sum(r.cost_aud if self.cost else r.kwh for r in self.members(readings))
 
 
 @dataclass(slots=True)
@@ -1218,7 +1241,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             if heal_ctx is not None:
                 self._persist_solar_heal(heal_ctx, complete=False)
             if realign is not None:
-                self._count_tz_realign_exception()
+                self._count_tz_realign_exception(realign)
             raise
         if heal_ctx is not None:
             self._persist_solar_heal(heal_ctx, complete=complete)
@@ -1520,25 +1543,17 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         None when a done record was written, or when consumption is not yet
         contiguous with the window (last stored day < floor - 1: the normal
         big-gap chunks run first and nothing is written, so the next cycle
-        re-evaluates). Done reasons: fresh_install (no history to move),
-        unsupported_shift (M4: the API/contract offset gap exceeds
-        TZ_REALIGN_MAX_SHIFT somewhere in the window — NT while Sydney is on
-        DST, WA always; RA-19), not_affected (no shifted day in the window;
-        the history notice may still fire for older rows).
+        re-evaluates). Done reasons, checked in this order: unsupported_shift
+        (M4/R3: the API/contract offset gap exceeds TZ_REALIGN_MAX_SHIFT
+        somewhere in the TZ_REALIGN_SHIFT_SCAN_DAYS from the floor — a
+        property of the ZONE, so NT, WA and Eucla are excluded in every
+        season and even on a fresh install; RA-19), fresh_install (no
+        history to move), not_affected (no shifted day in the WINDOW; the
+        history notice may still fire for older rows).
         """
-        if last_cons_date is None:
-            self._write_tz_realign(
-                {
-                    "state": TZ_REALIGN_DONE,
-                    "zone": zone,
-                    "reason": TZ_REALIGN_REASON_FRESH_INSTALL,
-                }
-            )
-            return None
         floor = today - timedelta(days=TZ_REALIGN_DAYS)
-        if last_cons_date < floor - timedelta(days=1):
-            return None
-        shift = self._max_tz_shift(floor, yesterday)
+        year_end = floor + timedelta(days=TZ_REALIGN_SHIFT_SCAN_DAYS - 1)
+        shift = self._max_tz_shift(floor, year_end)
         if shift > TZ_REALIGN_MAX_SHIFT:
             _LOGGER.info(
                 "Timestamp shift for zone %s reaches %s (> %s); the one-off "
@@ -1556,7 +1571,18 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 }
             )
             return None
-        if not shift:
+        if last_cons_date is None:
+            self._write_tz_realign(
+                {
+                    "state": TZ_REALIGN_DONE,
+                    "zone": zone,
+                    "reason": TZ_REALIGN_REASON_FRESH_INSTALL,
+                }
+            )
+            return None
+        if last_cons_date < floor - timedelta(days=1):
+            return None
+        if not self._max_tz_shift(floor, yesterday):
             await self._publish_tz_realign_done(
                 {
                     "state": TZ_REALIGN_DONE,
@@ -1675,7 +1701,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         MAX_TZ_REALIGN_HALTS of them convert to one attempt (C5). Otherwise
         (a counted per-day skip) one attempt. MAX_TZ_REALIGN_ATTEMPTS ends
         the stage as gave_up. Completion is recomputed from the sweep's side
-        channels with the same rule _fetch_range used for C1.
+        channels with the same rule _fetch_range used for C1. An incomplete
+        sweep records its effective start as ``tried_from`` (R4: what a
+        give-up names, not the frozen floor).
         """
         if realign is None:
             return False
@@ -1694,6 +1722,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 record, TZ_REALIGN_COMPLETE, today, last_gen_date
             )
             return True
+        record = {**record, "tried_from": realign.start.isoformat()}
         if self._sweep_halted:
             record = self._count_tz_realign_halt(record)
         else:
@@ -1736,16 +1765,21 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         reset = {k: v for k, v in record.items() if k != "last_halt_at"}
         return {**reset, "halts": 0, "attempts": record["attempts"] + 1}
 
-    def _count_tz_realign_exception(self) -> None:
+    def _count_tz_realign_exception(self, realign: _RealignSweep | None = None) -> None:
         """Count one attempt for a stage sweep that raised (#151 parity).
 
         Synchronous on purpose (it runs inside the exception handler): an
         exhausted budget is turned into the give-up transition by the next
-        cycle's _plan_tz_realign_stage.
+        cycle's _plan_tz_realign_stage. Given the sweep, records its
+        effective start as ``tried_from``, like an incomplete sweep (R4).
         """
         record = self._read_tz_realign()
-        if record is not None and record["state"] == TZ_REALIGN_PENDING:
-            self._write_tz_realign({**record, "attempts": record["attempts"] + 1})
+        if record is None or record["state"] != TZ_REALIGN_PENDING:
+            return
+        record = {**record, "attempts": record["attempts"] + 1}
+        if realign is not None:
+            record["tried_from"] = realign.start.isoformat()
+        self._write_tz_realign(record)
 
     async def _end_tz_realign_stage(
         self,
@@ -1779,6 +1813,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         }
         if record.get("swept_from"):
             nxt["swept_from"] = record["swept_from"]
+        if outcome == TZ_REALIGN_GAVE_UP:
+            nxt["gave_up_from"] = self._tried_from(record).isoformat()
         start = max(
             date.fromisoformat(record["floor"]),
             today - timedelta(days=TZ_REALIGN_DAYS),
@@ -1794,7 +1830,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """Write the terminal done record after the generation stage.
 
         reason 'gave_up' when either stage gave up — one tz_realign_gave_up
-        Repairs issue, naming the stage(s), raised at this single terminal
+        Repairs issue, naming the stage(s) and the effective start their last
+        sweep tried (``gave_up_from``, R4), raised at this single terminal
         transition; else 'complete', with the hedged history notice when
         shifted rows predate the effective floor.
         """
@@ -1829,17 +1866,48 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             await self._publish_tz_realign_done(done, notice_floor)
             return
         sweeps = MAX_TZ_REALIGN_ATTEMPTS * len(gave_up)
+        gave_up_from = self._gave_up_from(record, generation).isoformat()
         self._write_tz_realign(
-            {**done, "sweeps": sweeps, "notice": False, "history_from": None}
+            {
+                **done,
+                "sweeps": sweeps,
+                "gave_up_from": gave_up_from,
+                "notice": False,
+                "history_from": None,
+            }
         )
         self._raise_tz_realign_issue(
             ISSUE_TZ_REALIGN_GAVE_UP,
             {
-                "floor": record["floor"],
+                "floor": gave_up_from,
                 "sweeps": str(sweeps),
                 "stages": " and ".join(gave_up),
             },
         )
+
+    @staticmethod
+    def _tried_from(record: Mapping[str, Any]) -> date:
+        """The effective start of a stage's last incomplete sweep (R4): its
+        persisted ``tried_from``, else the frozen floor (hand-edited data, or
+        a record written before the field existed)."""
+        return _iso_date(record.get("tried_from")) or date.fromisoformat(
+            record["floor"]
+        )
+
+    @classmethod
+    def _gave_up_from(cls, record: Mapping[str, Any], generation: str) -> date:
+        """The start a give-up names (R4): the earliest last-sweep start of
+        the stage(s) that gave up — consumption's carried over as
+        ``gave_up_from``, generation's own ``tried_from``."""
+        starts = [
+            day
+            for day in (
+                _iso_date(record.get("gave_up_from")),
+                cls._tried_from(record) if generation == TZ_REALIGN_GAVE_UP else None,
+            )
+            if day is not None
+        ]
+        return min(starts) if starts else date.fromisoformat(record["floor"])
 
     async def _publish_tz_realign_done(
         self, done: dict[str, Any], notice_floor: date
@@ -1892,8 +1960,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         (relocalise_agl_timestamp). Wall times 00:00 and 23:30 of each day
         bracket the 02:00/03:00 DST transitions, so a transition day (QLD's
         2026-10-04) counts from its own date. Pure; the caller bounds the
-        span (TZ_REALIGN_DAYS to arm, TZ_REALIGN_HISTORY_SCAN_DAYS for the
-        notice). Zero without the API zone (C7: nothing can be inverted).
+        span (TZ_REALIGN_SHIFT_SCAN_DAYS for the zone exclusion, the window
+        for not_affected, TZ_REALIGN_HISTORY_SCAN_DAYS for the notice). Zero
+        without the API zone (C7: nothing can be inverted).
         """
         api = agl_api_tz()
         if api is None:
@@ -2146,7 +2215,8 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         ``realign`` marks a timezone re-alignment stage (#292 PR2b): that
         series' range is the un-chunked window. A COMPLETE stage imports the
-        whole window with the exact floor-junction drop (M1); an incomplete
+        whole window with the exact floor junction and re-key recognition
+        (R1/R2, see _import_sweep_batches); an incomplete
         one is trimmed to the days a normal cycle would have fetched BEFORE
         the import (C1), so a partial window never lands. The per-day skip
         sets are published as ``_sweep_skipped_days`` for the settle step.
@@ -2342,8 +2412,10 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         The ``*_reading_days`` sets are each family's fetch provenance for the
         stale-key fill's per-day gate (#300) — see _stale_key_fill.
         ``junction`` names the series whose batch is a COMPLETE timezone
-        re-alignment window (#292 PR2b): only that import applies the exact
-        floor-junction drop (_realign_junction_drop).
+        re-alignment window (#292 PR2b): only that import rewrites the hour
+        below the window (_realign_junction, R1) and recognises pure
+        old-convention re-keys (_rekey_matches, R2); the other series'
+        import this cycle is a normal one.
         """
         if all_intervals:
             await self._import_intervals(
@@ -2766,6 +2838,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         readings: list[IntervalReading],
         reading_days: Collection[date] | None,
         since: datetime,
+        rekey: bool = False,
     ) -> dict[str, dict[datetime, float]]:
         """Rewrite every stored key at/after ``since`` the batch has no value for.
 
@@ -2795,12 +2868,26 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         first slots (_non_conserving_days). Otherwise it carries forward, with
         one WARNING per import: a delivery regression stays visible rather
         than becoming silent kWh loss.
+
+        ``rekey`` (a COMPLETE timezone re-alignment window only, #292 PR2b
+        R2): a stale key that is a pure old-convention re-key of the batch
+        (_rekey_matches; the provenance gate is unchanged) is exempt from
+        that guard and zeroed across the family, so a day whose only excess
+        is such a key passes, while a genuine regression on another key of
+        the same day still carries forward with the WARNING. Never on a
+        normal import.
         """
         if not stored:
             return series
         gate = self._authoritative_days(readings, reading_days)
+        stored_kwh = stored.get(kwh_id, {})
+        rekeyed = (
+            self._rekey_matches(readings, stored_kwh, series[kwh_id], gate)
+            if rekey
+            else set()
+        )
         failed = self._non_conserving_days(
-            readings, since, series[kwh_id], stored.get(kwh_id, {}), gate
+            readings, since, series[kwh_id], stored_kwh, gate, exempt=rekeyed
         )
         if failed:
             _LOGGER.warning(
@@ -2813,6 +2900,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             gate -= failed
         stored_keys: set[datetime] = set().union(*stored.values())
         zero_ok = {key for key in stored_keys if self._key_days(key) <= gate}
+        if rekeyed:
+            _LOGGER.debug(
+                "Re-alignment: %d stale old-convention key(s) re-keyed by the "
+                "batch; zeroed (#292, #303)",
+                len(rekeyed),
+            )
+            zero_ok |= rekeyed
         return {
             stat_id: self._fill_series(hourly, stored.get(stat_id, {}), zero_ok)
             for stat_id, hourly in series.items()
@@ -2837,11 +2931,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         batch_kwh: Mapping[datetime, float],
         stored_kwh: Mapping[datetime, float],
         gate: set[date],
+        *,
+        exempt: Collection[datetime] = frozenset(),
     ) -> set[date]:
         """Authoritative days that would lose stored kWh to a zero fill.
 
         Only days holding a would-be-zeroed key with stored energy are
-        checked, so the steady state (no stale keys) costs nothing.
+        checked, so the steady state (no stale keys) costs nothing. An
+        ``exempt`` key (a pure re-key the batch re-emits at its true hour,
+        #292 PR2b R2) neither puts its day at risk nor counts as owed.
 
         The correction only ever moves a reading LATER (#292), so a pure
         re-key can shift into a day's keys at most the next day's opening
@@ -2852,7 +2950,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """
         at_risk: set[date] = set()
         for key, state in stored_kwh.items():
-            if state > 0 and key not in batch_kwh:
+            if state > 0 and key not in batch_kwh and key not in exempt:
                 days = self._key_days(key)
                 if days <= gate:
                     at_risk |= days
@@ -2873,7 +2971,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         owed: dict[date, float] = dict.fromkeys(at_risk, 0.0)
         for key, state in stored_kwh.items():
             day = key.astimezone(tz).date()
-            if day in owed and key < tails[day]:
+            if day in owed and key < tails[day] and key not in exempt:
                 owed[day] += state
         return {
             day for day in at_risk if batch[day] < owed[day] - _CONSERVATION_SLACK_KWH
@@ -2938,8 +3036,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         self-contained batch.
 
         ``junction`` (a COMPLETE timezone re-alignment window only, #292
-        PR2b M1): slots the OLD chain already counted below the baseline
-        are zeroed before the import — see _realign_junction_drop.
+        PR2b R1/R2): the hour below the window is rewritten so the slots the
+        OLD chain counted there move to their true hour — see
+        _realign_junction — and a stale key that is a pure old-convention
+        re-key of the batch is zeroed despite the conservation guard — see
+        _rekey_matches. Never on a normal import.
         """
         from homeassistant.const import UnitOfEnergy
 
@@ -2947,16 +3048,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
 
         intervals = _dedupe_slots(intervals)
-        trim_before = self._straddle_trim_before(intervals)
 
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
-        buckets = self._trimmed_buckets(intervals, trim_before)
-        if junction and buckets[0]:
-            intervals = await self._realign_junction_drop(
-                intervals, min(buckets[0]), kwh_id=stat_id_cons
-            )
-            buckets = self._trimmed_buckets(intervals, trim_before)
-        hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = buckets
+        buckets = self._trimmed_buckets(
+            intervals, self._straddle_trim_before(intervals)
+        )
+        hour_cons = buckets[0]
 
         # Nothing fetched → nothing to import, and no baseline lookup needed.
         if not hour_cons:
@@ -2967,29 +3064,33 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # to-be-overwritten rewindow rows are excluded regardless of timezone/DST.
         cutoff = min(hour_cons)
 
-        # Every series this import may emit, keyed by statistic id. Per-tariff
-        # series join only on a ToU contract; a band absent from this batch
-        # enters EMPTY so the stale-key fill can still rewrite its stored
-        # rows (#300) — an empty band that has none is never emitted.
-        tou_seen = (set(known_bands) | bands_this_batch) & set(TOU_BANDS)
-        series = {stat_id_cons: hour_cons, stat_id_cost: hour_cost}
-        band_ids: set[str] = set()
-        if tou_seen:
-            for tariff in TOU_SERIES_TARIFFS:
-                cons_id, cost_id = self._tariff_stat_ids(tariff)
-                series[cons_id] = band_cons.get(tariff, {})
-                series[cost_id] = band_cost.get(tariff, {})
-                band_ids.update((cons_id, cost_id))
+        series, picks, band_ids, tou_seen = self._consumption_series(
+            buckets, known_bands
+        )
 
         # Aggregate + per-tariff baselines and the stored rows for the fill,
         # overlapped on the executor. _get_tariff_baseline_sums short-circuits
         # to {} for an empty band set (flat-rate contract), so no extra
-        # recorder round-trip is incurred there.
-        (initial_cons_sum, initial_cost_sum), band_sums, stored = await asyncio.gather(
-            self._get_baseline_sums(stat_id_cons, stat_id_cost, cutoff),
-            self._get_tariff_baseline_sums(band_ids, cutoff),
-            self._stored_hourly_states(series, cutoff),
-        )
+        # recorder round-trip is incurred there. A re-alignment junction
+        # reads the stored rows first: its verdict decides the cutoff.
+        if junction:
+            cutoff, stored = await self._realign_junction(
+                series, intervals, cutoff, kwh_id=stat_id_cons, picks=picks
+            )
+            (initial_cons_sum, initial_cost_sum), band_sums = await asyncio.gather(
+                self._get_baseline_sums(stat_id_cons, stat_id_cost, cutoff),
+                self._get_tariff_baseline_sums(band_ids, cutoff),
+            )
+        else:
+            (
+                (initial_cons_sum, initial_cost_sum),
+                band_sums,
+                stored,
+            ) = await asyncio.gather(
+                self._get_baseline_sums(stat_id_cons, stat_id_cost, cutoff),
+                self._get_tariff_baseline_sums(band_ids, cutoff),
+                self._stored_hourly_states(series, cutoff),
+            )
         series = self._stale_key_fill(
             series,
             stored,
@@ -2997,6 +3098,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             readings=intervals,
             reading_days=reading_days,
             since=cutoff,
+            rekey=junction,
         )
 
         kwh = UnitOfEnergy.KILO_WATT_HOUR
@@ -3029,6 +3131,39 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # hour_cons is non-empty here (we returned early otherwise).
         self._latest_cumulative_kwh = cons_sum
 
+    def _consumption_series(
+        self, buckets: _HourlyBuckets, known_bands: frozenset[str]
+    ) -> tuple[
+        dict[str, dict[datetime, float]],
+        dict[str, _SeriesPick],
+        set[str],
+        set[str],
+    ]:
+        """Every series one consumption import may emit, keyed by statistic id.
+
+        Returns (series, picks, band_ids, tou_seen). Per-tariff series join
+        only on a ToU contract; a band absent from this batch enters EMPTY so
+        the stale-key fill can still rewrite its stored rows (#300) — an
+        empty band that has none is never emitted. ``picks`` says what each
+        series sums, for the re-alignment junction (#292 PR2b R1).
+        """
+        hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = buckets
+        stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
+        stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
+        tou_seen = (set(known_bands) | bands_this_batch) & set(TOU_BANDS)
+        series = {stat_id_cons: hour_cons, stat_id_cost: hour_cost}
+        picks = {stat_id_cons: _SeriesPick(), stat_id_cost: _SeriesPick(cost=True)}
+        band_ids: set[str] = set()
+        if tou_seen:
+            for tariff in TOU_SERIES_TARIFFS:
+                cons_id, cost_id = self._tariff_stat_ids(tariff)
+                series[cons_id] = band_cons.get(tariff, {})
+                series[cost_id] = band_cost.get(tariff, {})
+                picks[cons_id] = _SeriesPick(tariff)
+                picks[cost_id] = _SeriesPick(tariff, cost=True)
+                band_ids.update((cons_id, cost_id))
+        return series, picks, band_ids, tou_seen
+
     @classmethod
     def _trimmed_buckets(
         cls, intervals: list[IntervalReading], trim_before: datetime | None
@@ -3045,92 +3180,224 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             bands_this_batch &= set(band_cons)
         return hour_cons, hour_cost, band_cons, band_cost, bands_this_batch
 
-    async def _realign_junction_drop(
+    async def _realign_junction(
         self,
+        series: dict[str, dict[datetime, float]],
         intervals: list[IntervalReading],
         cutoff: datetime,
         *,
         kwh_id: str,
-    ) -> list[IntervalReading]:
-        """Zero the batch slots the OLD chain already counted below ``cutoff``.
+        picks: Mapping[str, _SeriesPick],
+    ) -> tuple[datetime, dict[str, dict[datetime, float]]]:
+        """Rewrite the hour below a re-alignment window (#292 PR2b R1).
 
-        The exact floor junction of a timezone re-alignment window (#292
-        PR2b, M1). The import's baseline is the stored sum strictly before
-        ``cutoff`` (its first hourly key). Below the window the stored rows
-        are in the OLD convention, where a slot sits at the instant AGL
-        reported (agl_reported_timestamp: contract wall-clock re-read in the
-        API zone) — 30 min early in SA, 1 h early in QLD while Sydney is on
-        DST. A batch slot whose reported instant is before ``cutoff`` is
-        therefore already inside the baseline, and importing it again would
-        count it twice: SA the floor's 00:30 slot, QLD-in-DST the floor's
-        first hour, generation the first export slot after dawn.
+        Returns (cutoff, stored): the import's baseline cutoff and the stored
+        rows at/after it for the stale-key fill, from ONE batched read.
 
-        Zeroed, not removed: every key and so the cutoff (min of the hourly
-        keys), the straddle trim and the zero-export markers stay exactly as
-        the undropped batch had them. Applied only when the stored state of
-        the hour before ``cutoff`` equals the batch's own old-convention
-        bucket for that hour (within _CONSERVATION_SLACK_KWH): history an
-        entry wrote with the corrected parser (set up on 0.5.0-beta.3+, C10)
-        holds different slots there and must not lose them. With the shift
-        bounded at TZ_REALIGN_MAX_SHIFT every such slot reports inside that
-        one hour. No API zone (C7) or no stored row: nothing is dropped.
+        Below the window the stored rows are in the OLD convention, where a
+        slot sits at the instant AGL reported (agl_reported_timestamp) — 30
+        min early in SA, 1 h early in QLD while Sydney is on DST — so the
+        hour ``prev`` just below ``cutoff`` holds slots the batch re-emits at
+        their true hour (SA the floor's 00:30, QLD-in-DST the floor's first
+        hour, generation the first export slot after dawn). Importing from
+        ``cutoff`` would count them twice. When _junction_matched confirms
+        that old shape, ``prev`` joins every series with
+
+            state = stored(prev) - Σ(matched old bucket) + Σ(trimmed half)
+
+        — the trimmed half being the batch slots whose CORRECTED hour is
+        ``prev`` (the SA floor's 00:00 slot, dropped by the A4 straddle
+        trim) — and the cutoff moves to ``prev``, so the chain is rebuilt
+        through the rewritten row: every moved slot in its true hour, the
+        floor-day bar exact (SA keeps the floor-1 23:30 slot in its old row,
+        on the same day bar). For 0.5.0-beta.1/beta.2 history (variant b)
+        the same formula restores the floor's 00:00 slot those releases
+        never stored.
+
+        Cost and ToU bands follow the aggregate-kWh verdict, never their
+        own: a re-price or band re-type is clamped at 0 (DEBUG-logged),
+        never a reason to double-count the aggregate. A series with neither
+        a stored ``prev`` row nor trimmed slots is skipped — like the fill,
+        this never creates a key. Not confirmed (history written by the
+        corrected parser, C10; a re-sweep over realigned rows; an ambiguous
+        flat day; no API zone): ``prev`` is left untouched and the import
+        starts at ``cutoff`` exactly as a normal one.
         """
-        api_tz = agl_api_tz()
-        if api_tz is None:
-            return intervals
-        tz = self._contract_tz()
-        prev = cutoff - timedelta(hours=1)
-        drop: set[datetime] = set()
-        old_bucket = 0.0
-        for r in intervals:
-            reported = agl_reported_timestamp(r.dt, api_tz=api_tz, contract_tz=tz)
-            if prev <= reported < cutoff:
-                drop.add(r.dt)
-                old_bucket += r.kwh
-        if not drop:
-            return intervals
-        stored = await self._stored_state_at(kwh_id, prev)
-        if stored is None or abs(stored - old_bucket) > _CONSERVATION_SLACK_KWH:
+        prev = cutoff - _HOUR
+        stored = await self._stored_hourly_states(series, prev)
+        matched = self._junction_matched(intervals, stored.get(kwh_id, {}), cutoff)
+        if matched is None:
             _LOGGER.debug(
-                "Re-alignment junction at %s: stored hour does not match the "
-                "old convention; nothing dropped (#292)",
+                "Re-alignment junction at %s: stored rows not confirmed as the "
+                "old convention; left untouched (#292)",
                 cutoff.isoformat(),
             )
-            return intervals
-        _LOGGER.debug(
-            "Re-alignment junction at %s: %d slot(s) already counted below "
-            "the baseline; zeroed (#292)",
-            cutoff.isoformat(),
-            len(drop),
-        )
-        return [
-            replace(r, kwh=0.0, cost_aud=0.0) if r.dt in drop else r for r in intervals
-        ]
-
-    async def _stored_state_at(self, stat_id: str, key: datetime) -> float | None:
-        """The stored hourly ``state`` of ``stat_id`` at ``key``, or None."""
-        from homeassistant.components.recorder.statistics import (
-            statistics_during_period,
-        )
-        from homeassistant.helpers.recorder import get_instance
-
-        result = await get_instance(self.hass).async_add_executor_job(
-            statistics_during_period,
-            self.hass,
-            key,
-            key + timedelta(hours=1),
-            {stat_id},
-            "hour",
-            None,
-            {"state"},
-        )
-        for row in result.get(stat_id) or []:
-            start, state = row.get("start"), row.get("state")
-            if start is None or state is None:
+            return cutoff, {
+                stat_id: {key: v for key, v in rows.items() if key >= cutoff}
+                for stat_id, rows in stored.items()
+            }
+        trimmed = [r for r in intervals if r.dt < cutoff]
+        for stat_id, pick in picks.items():
+            row = stored.get(stat_id, {}).get(prev)
+            if row is None and not pick.members(trimmed):
                 continue
-            if datetime.fromtimestamp(float(start), tz=UTC) == key:
-                return float(state)
+            state = (row or 0.0) - pick.total(matched) + pick.total(trimmed)
+            if state < -_CONSERVATION_SLACK_KWH:
+                _LOGGER.debug(
+                    "Re-alignment junction: %s at %s would go negative (%.6f); "
+                    "clamped to 0 (re-priced or re-typed since stored, #292)",
+                    stat_id,
+                    prev.isoformat(),
+                    state,
+                )
+            series[stat_id][prev] = max(0.0, state)
+        _LOGGER.debug(
+            "Re-alignment junction at %s: %d slot(s) moved out of the hour "
+            "below the window (#292)",
+            cutoff.isoformat(),
+            len(matched),
+        )
+        return prev, stored
+
+    def _junction_matched(
+        self,
+        intervals: list[IntervalReading],
+        stored_kwh: Mapping[datetime, float],
+        cutoff: datetime,
+    ) -> list[IntervalReading] | None:
+        """The old-convention bucket the stored hour below ``cutoff`` holds,
+        or None when the stored rows are not confirmed old-convention.
+
+        Decided on the aggregate kWh series alone, from rows already read:
+        - the floor day's interior keys hold the OLD bucketing of the batch
+          and it differs from the new one somewhere (_floor_day_is_old). One
+          hour alone false-positives on a flat night profile (new-convention
+          SA: a 23:30 reading equal to the next 00:30) and would make a
+          re-sweep over realigned rows lose a slot;
+        - stored(prev) equals, within _CONSERVATION_SLACK_KWH, one of two old
+          buckets at ``prev``: (a) every batch reading AGL reported in
+          [prev, cutoff), what v0.4 stored; (b) the same minus the readings
+          reported before the contract-local midnight of their own corrected
+          date, what 0.5.0-beta.1/beta.2 stored (their day window dropped
+          those). Returns the matched variant's readings.
+        """
+        prev = cutoff - _HOUR
+        stored = stored_kwh.get(prev)
+        old = self._old_buckets(intervals)
+        if stored is None or old is None:
+            return None
+        if not self._floor_day_is_old(intervals, old, stored_kwh, cutoff):
+            return None
+        tz = self._contract_tz()
+        full = old.get(prev, [])
+        windowed = [
+            (reported, r)
+            for reported, r in full
+            if reported >= self._local_midnight_utc(r.dt.astimezone(tz).date())
+        ]
+        for variant in (full, windowed):
+            readings = [r for _, r in variant]
+            if readings and (
+                abs(stored - sum(r.kwh for r in readings)) <= _CONSERVATION_SLACK_KWH
+            ):
+                return readings
         return None
+
+    def _floor_day_is_old(
+        self,
+        intervals: list[IntervalReading],
+        old: Mapping[datetime, list[tuple[datetime, IntervalReading]]],
+        stored_kwh: Mapping[datetime, float],
+        cutoff: datetime,
+    ) -> bool:
+        """Whether the window's first local day is stored in the OLD convention.
+
+        Over its interior keys — after ``cutoff`` and early enough that both
+        bucketings hold only that day's slots (key + 2 h <= next local
+        midnight, the shift being at most 1 h) — every stored kWh row must
+        equal the batch's old-convention bucket, and at least one key must
+        tell the conventions apart. A day where they never differ (flat
+        profile, no shift) is ambiguous: not confirmed, nothing moved.
+        """
+        tz = self._contract_tz()
+        end = self._local_midnight_utc(cutoff.astimezone(tz).date() + timedelta(days=1))
+        new: dict[datetime, float] = {}
+        for r in intervals:
+            if r.dt < end:
+                hour = r.dt.replace(minute=0, second=0, microsecond=0)
+                new[hour] = new.get(hour, 0.0) + r.kwh
+        differs = False
+        key = cutoff + _HOUR
+        while key + 2 * _HOUR <= end:
+            old_kwh = sum(r.kwh for _, r in old.get(key, ()))
+            if abs(stored_kwh.get(key, 0.0) - old_kwh) > _CONSERVATION_SLACK_KWH:
+                return False
+            differs |= abs(old_kwh - new.get(key, 0.0)) > _CONSERVATION_SLACK_KWH
+            key += _HOUR
+        return differs
+
+    def _old_buckets(
+        self, readings: Iterable[IntervalReading]
+    ) -> dict[datetime, list[tuple[datetime, IntervalReading]]] | None:
+        """Readings keyed by the hour a release before the correction stored
+        them at (agl_reported_timestamp, floored), each with that reported
+        instant; None without the API zone (C7: nothing can be inverted)."""
+        api_tz = agl_api_tz()
+        if api_tz is None:
+            return None
+        tz = self._contract_tz()
+        old: dict[datetime, list[tuple[datetime, IntervalReading]]] = {}
+        for r in readings:
+            reported = agl_reported_timestamp(r.dt, api_tz=api_tz, contract_tz=tz)
+            key = reported.replace(minute=0, second=0, microsecond=0)
+            old.setdefault(key, []).append((reported, r))
+        return old
+
+    def _rekey_matches(
+        self,
+        readings: list[IntervalReading],
+        stored_kwh: Mapping[datetime, float],
+        batch_kwh: Mapping[datetime, float],
+        gate: set[date],
+    ) -> set[datetime]:
+        """Stale keys that are a pure old-convention re-key of the batch.
+
+        Re-alignment imports only (#292 PR2b R2, #303). A release before the
+        correction stored a slot at the hour AGL reported it. A stored key
+        the batch has no value for, whose kWh equals (within
+        _CONSERVATION_SLACK_KWH) the batch readings the OLD convention puts
+        there, holds nothing but slots the batch re-emits at their true
+        hour. That is the first-poll dawn double count: beta.3/beta.4
+        re-timed the trailing week from a cutoff with the old dawn key just
+        below it, so that day stores the dawn slot twice and the #301
+        conservation guard (rightly, for a normal import) refuses to zero
+        it. Decided once per FAMILY on its kWh series; a match is exempt
+        from the conservation check and zeroed in every series of the
+        family (cost, credit, each band).
+
+        It never bypasses provenance: (i) every day the key holds is already
+        in ``gate``; (ii) every reading counted is dated on one of those
+        days — a cross-midnight coincidence (a flat night's 23:00 hour vs
+        the next day's 00:00 pair) never matches, and the tail allowance
+        already covers a genuine one; (iii) stored kWh > slack.
+        """
+        old = self._old_buckets(readings)
+        if old is None:
+            return set()
+        tz = self._contract_tz()
+        matched: set[datetime] = set()
+        for key, state in stored_kwh.items():
+            if key in batch_kwh or state <= _CONSERVATION_SLACK_KWH:
+                continue
+            days = self._key_days(key)
+            slots = [r for _, r in old.get(key, ())]
+            if not slots or not days <= gate:
+                continue
+            if any(r.dt.astimezone(tz).date() not in days for r in slots):
+                continue
+            if abs(state - sum(r.kwh for r in slots)) <= _CONSERVATION_SLACK_KWH:
+                matched.add(key)
+        return matched
 
     def _emit_tariff_series(
         self,
@@ -3255,41 +3522,51 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         added after the gate is fixed and keep their #292 A4(e) key.
 
         ``junction`` (a COMPLETE generation re-alignment window, #292 PR2b
-        M1): the export slots the OLD chain already counted below the
-        baseline — the first one after dawn — are zeroed first; see
-        _realign_junction_drop.
+        R1/R2): the hour below the window gives up the export slot the OLD
+        chain counted there — the first one after dawn — to its true hour
+        (_realign_junction), and a stale old dawn key the batch re-keys is
+        zeroed despite the conservation guard (_rekey_matches, #303).
         """
         from homeassistant.const import UnitOfEnergy
 
         stat_id_gen, stat_id_credit = self._generation_stat_ids()
         intervals = _dedupe_slots(intervals)
-        trim_before = self._straddle_trim_before(intervals)
-        days = list(fetched_days)
-
-        hour_kwh, hour_credit = self._generation_buckets(intervals, days, trim_before)
-        if junction and hour_kwh:
-            intervals = await self._realign_junction_drop(
-                intervals, min(hour_kwh), kwh_id=stat_id_gen
-            )
-            hour_kwh, hour_credit = self._generation_buckets(
-                intervals, days, trim_before
-            )
+        hour_kwh, hour_credit = self._generation_buckets(
+            intervals, list(fetched_days), self._straddle_trim_before(intervals)
+        )
 
         if not hour_kwh:
             return
 
         cutoff = min(hour_kwh)
-        (base_gen, base_credit), stored = await asyncio.gather(
-            self._get_baseline_sums(stat_id_gen, stat_id_credit, cutoff),
-            self._stored_hourly_states((stat_id_gen, stat_id_credit), cutoff),
-        )
+        series = {stat_id_gen: hour_kwh, stat_id_credit: hour_credit}
+        if junction:
+            cutoff, stored = await self._realign_junction(
+                series,
+                intervals,
+                cutoff,
+                kwh_id=stat_id_gen,
+                picks={
+                    stat_id_gen: _SeriesPick(),
+                    stat_id_credit: _SeriesPick(cost=True),
+                },
+            )
+            base_gen, base_credit = await self._get_baseline_sums(
+                stat_id_gen, stat_id_credit, cutoff
+            )
+        else:
+            (base_gen, base_credit), stored = await asyncio.gather(
+                self._get_baseline_sums(stat_id_gen, stat_id_credit, cutoff),
+                self._stored_hourly_states(series, cutoff),
+            )
         series = self._stale_key_fill(
-            {stat_id_gen: hour_kwh, stat_id_credit: hour_credit},
+            series,
             stored,
             kwh_id=stat_id_gen,
             readings=intervals,
             reading_days=reading_days,
             since=cutoff,
+            rekey=junction,
         )
 
         contract = self.contract_number

@@ -232,10 +232,11 @@ CONF_SOLAR_STALL_SPANS: Final = "solar_stall_spans"
 #   pending: {"state": "pending", "zone": IANA key, "floor": "YYYY-MM-DD",
 #             "series": "consumption"|"generation", "attempts": int,
 #             "halts": int[, "last_halt_at": ISO instant]
-#             [, "consumption": "complete"|"gave_up"][, "swept_from": date]}
+#             [, "consumption": "complete"|"gave_up"][, "swept_from": date]
+#             [, "tried_from": date][, "gave_up_from": date]}
 #   done:    {"state": "done", "zone": IANA key, "reason": one of the
 #             TZ_REALIGN_REASON_* / outcome values[, "floor"][, "swept_from"]
-#             [, "consumption"][, "generation"][, "sweeps"]
+#             [, "consumption"][, "generation"][, "sweeps"][, "gave_up_from"]
 #             [, "notice": bool, "history_from": date|None]}
 # Absent = never evaluated. The `floor` is FROZEN when the record is armed
 # (written BEFORE the first fetch, like the solar heal), but every attempt
@@ -243,16 +244,21 @@ CONF_SOLAR_STALL_SPANS: Final = "solar_stall_spans"
 # batch — never "only the failed days" (a day-only retry loses the
 # half-hour-zone boundary slots) and never more than TZ_REALIGN_DAYS (an aged
 # floor must not grow the request burst); `swept_from` records the effective
-# start. An incomplete sweep imports exactly what a normal cycle would, so
+# start of a completed stage, `tried_from` that of the last incomplete sweep
+# and `gave_up_from` the one a give-up names (the Repairs issue's {floor}).
+# An incomplete sweep imports exactly what a normal cycle would, so
 # only a complete one rewrites the window. Consumption runs first, generation
 # on a later cycle. 429/transport halts are counted separately from failed
 # sweeps (at most one per poll interval; MAX_TZ_REALIGN_HALTS of them convert
 # to one attempt) and only attempts lead to give-up. "done" is terminal for
 # its `zone`; a different CONF_LOCAL_TZ re-evaluates the record in every
-# state. Armed only when the largest API-zone/contract-zone offset gap over
-# the window is <= TZ_REALIGN_MAX_SHIFT (excludes NT in Sydney DST and WA —
+# state. Excluded by ZONE, in every season, when the largest API-zone/
+# contract-zone offset gap over the TZ_REALIGN_SHIFT_SCAN_DAYS from the floor
+# exceeds TZ_REALIGN_MAX_SHIFT (NT 1.5 h in Sydney DST, WA 2-3 h, Eucla —
 # RA-19: AGL does not retail electricity there, and the #301 conservation
-# guard's tail allowance assumes <= 1 h).
+# guard's tail allowance assumes <= 1 h); SA/Broken Hill (0.5 h) and QLD
+# (<= 1 h) are not. Checked before anything else, so a fresh NT/WA install
+# records 'unsupported_shift' too.
 CONF_TZ_REALIGN: Final = "tz_realign"
 TZ_REALIGN_DAYS: Final = BACKFILL_DAYS
 TZ_REALIGN_PENDING: Final = "pending"
@@ -271,6 +277,9 @@ TZ_REALIGN_REASON_UNSUPPORTED_SHIFT: Final = "unsupported_shift"
 MAX_TZ_REALIGN_ATTEMPTS: Final = 3
 MAX_TZ_REALIGN_HALTS: Final = 3
 TZ_REALIGN_MAX_SHIFT: Final = timedelta(hours=1)
+# Span the exclusion shift is measured over: a full year from the floor, so
+# the verdict is a property of the zone, not of the season it is armed in.
+TZ_REALIGN_SHIFT_SCAN_DAYS: Final = 365
 # Bounded look-back for the "older history keeps its old timing" notice.
 TZ_REALIGN_HISTORY_SCAN_DAYS: Final = 366
 # Repairs issue translation keys; the issue id is f"{key}_{entry_id}".
