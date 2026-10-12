@@ -545,6 +545,19 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+## [0.5.0-beta.5] - 2026-10-12
+
+**Escaped defects closed this release:** 2 (2 sev:high) — #292, #303.
+
 ### Added
 
 - **Diagnostics schema v4**: a top-level `tz_realign` block carries the
@@ -784,14 +797,6 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
   The same limits as the consumption junction apply: see "The junction
   day of the first corrected poll" above.
 
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
 
 ---
 
