@@ -212,6 +212,7 @@ risk-acceptance register (RA-14), accepted by @naanyabiz, 2026-07-13.
 | T-4 | Crafted interval `dateTime` poisons the cumulative-sum baseline | **Mitigated** | `parse_interval_readings` validates each reading against the requested day ± `INTERVAL_DAY_TOLERANCE` and the client passes it at all three fetch sites (#242). Previously the parser took no period argument and the client discarded the `period=` it had just built, while `coordinator._import_intervals` derives its baseline cutoff as `min(hour_cons)` — straight from response content. One injected interval dated near `_EARLIEST_HISTORY` pinned the cutoff before all real recorder history, so `_baseline_sums_before` returned 0.0 instead of the true multi-year total and the same import wrote today's genuine hours on top of it: a large downward step in the `sum` column. That is the #114 failure class, but reachable from a single crafted timestamp rather than only a resume-gap edge case. That first cut bounded the window to the requested day ± 1 DATE (the parser had no timezone context), which Codex showed is still exploitable: an AEST day D starts at D-1T14:00Z, so every instant of D-1 was accepted and an injected D-1T00:00Z reading dragged the cutoff ~14 h early — stored rows in the gap excluded from the baseline but not re-emitted, a downward step with no 1970-style absurdity. The window is now derived from the configured local timezone (local midnight → next local midnight + `INTERVAL_WINDOW_TRAILING_SLACK_HOURS`, DST handled by the tzinfo; `AglClient` receives `local_tz` at construction); the ±1-DATE check remains only as the tz-less fallback. The slack is TRAILING only — pass 2 showed a leading slack re-admits the cutoff attack at its own width (the cutoff is `min(hour_cons)`, which only earlier-than-genuine rows can move), while a late row cannot lower the min. Pass 3 closed two residuals: the window tz is refined each overview cycle from the CONTRACT's service-address state (`tz_for_address` — a cross-timezone household would otherwise clip the day's first slots under DST), and `_import_intervals` dedupes slots within a batch last-wins (a slot appearing in two days' responses via the trailing slack was SUMMED by the hourly bucketing, inflating statistics — recorder idempotency only dedupes across imports). #292 then showed AGL's `dateTime` is not true UTC at all but the meter's local label converted through Australia/Sydney (the response's `timeZone`), so `relocalise_agl_timestamp` now runs BEFORE the window check; for every zone `tz_for_address` can produce it never moves a reading earlier (verified over every 30-min instant of 2026), so the no-leading-slack invariant and the `min(hour_cons)` cutoff analysis are unchanged — a crafted timestamp is corrected by at most the Sydney/contract offset in the LATER direction and then window-checked. The response's `timeZone` is honoured as the conversion zone (bounded, untrusted, tzdata-guarded, Sydney fallback); a hostile value with a larger offset than the contract's would move readings earlier, which is why the window check stays after the correction — the contract-local midnight is still the hard lower bound. The correction is applied only when the contract zone is address-derived (`tz_is_contract`): under the HA-timezone fallback a mis-zoned entry keeps today's loud behaviour (dropped slots + WARNING) instead of being shifted silently into a window where every slot looks plausible. The contract zone is now persisted (`CONF_LOCAL_TZ`, migrated from the entry title, refreshed by reauth/Reconfigure and each overview cycle) so the window and the correction share one authority. #300 added a second path that rewrites stored rows the batch never names (the stale-key fill, which re-chains every stored key at/after the cutoff so an old-convention row cannot keep a sum above its neighbour). It leaves the baseline untouched and never creates a key. It zeroes a stored key only when every local day the key holds was fetched as itself and returned readings, AND the batch's kWh for that day covers the stored kWh less the day's last hour; any other stored key keeps its stored value, re-chained. A crafted response can therefore move a day's energy between its hours, as it already could by stating values, but cannot zero a day it did not answer for or silently drop a day's stored total: a short day is carried forward and logs a WARNING. The fill runs only under an address-derived contract zone. |
 | T-2 | Malicious GitHub Action via unpinned refs | **Mitigated** | All actions SHA-pinned with version comments (PR #42); repo Actions policy restricts to GitHub-owned + four pinned publisher patterns with SHA pinning required at policy level; actionlint/zizmor workflow-audit gates (PR #184); `continue-on-error` removed from HACS validation; no third-party actions in the privileged release workflow; Dependabot maintains pins; policy state snapshotted in `.github/settings/` with weekly drift detection (PR #188). |
 | T-3 | Refresh-token prefix written to entity registry as `unique_id` | **Mitigated** | Fallback is `sha256(refresh_token)[:16]` (PR #43). |
+| T-5 | Statistics integrity: hourly history written before the #292 timestamp correction stays at the wrong hours | **Mitigated for SA / Broken Hill / QLD (last 30 days); residual accepted (RA-19)** | v0.5.0-beta.5 re-imports the last `TZ_REALIGN_DAYS` (30) once per contract zone, through the unchanged #300 import path. Every row from the cutoff on is the baseline plus non-negative deltas, so the result is monotone. Safeguards (§8): an incomplete sweep writes no more than a normal poll would (a halt mid-window usually writes nothing); the floor junction rewrites the one stored hour below the window (`stored − Σ matched old bucket + Σ trimmed straddle half`) so the moved slot lands in its true hour and the floor-day bar is exact, and only after confirming that the whole floor day is stored in the old timing; on the realign import only, a stale stored hour that is a pure old-timing re-key of the batch is zeroed (#303) instead of carried forward; attempts and halts are bounded, and a give-up raises a Repairs issue. A crafted response during a sweep can do no more than on a normal poll. It passes the same T-4 window check and the same fill. The junction rewrite touches only the hour below the window, never writes a negative state (cost/bands clamp at 0), and fires only when every interior hour of the floor day equals the batch's own old-timing bucket and at least one hour tells the timings apart. The re-key recognition waives only the #301 conservation check, never its provenance gate: every day the hour belongs to must already be authoritative and every counted reading must be dated on one of those days, and the decision is taken on the family's kWh series. **Residuals:** (1) **NT/WA**: arming requires the API/contract offset gap to be ≤ 1 h (`TZ_REALIGN_MAX_SHIFT`) over the whole year from the window start (`TZ_REALIGN_SHIFT_SCAN_DAYS`), checked before every other gate. NT (90 min in Sydney daylight saving) and WA (2–3 h) therefore get `unsupported_shift` in every season, fresh installs included: their history from before the correction stays shifted with no automatic repair and no Repairs notice. The first corrected poll's trailing-week junction also double-counts, **silently** (no WARNING, no step): the old-timing rows below its cutoff already hold the junction day's leading shift-width of slots, which are imported again, so consumption, cost and generation stay high by up to the shift width (measured in Sydney DST: WA 3 h of consumption / 2.5 h of export, NT 90 min; pinned by `TestEndToEndUnsupportedShift`). On SA/QLD a complete stage removes the same bump while the junction day is inside its window (residual 3). Their trailing week may additionally keep over-counted old-timing rows where the #300 conservation guard fails at shifts over 1 h (that one logs a WARNING). Accepted as **RA-19** (AGL does not retail electricity there). (2) Rows older than the window keep the old timing on every affected entry (the history Repairs notice says so). (3) The first corrected poll's trailing-week junction double count (one slot SA / one hour QLD of consumption and cost; on solar contracts one dawn export slot and its credit, #303) is removed by the re-alignment, and survives only for: (a) entries that never run that stage (NT/WA; the generation family when solar statistics writes were off when its stage was due); (b) a family whose stage gave up; (c) a family whose stage first completes after its window no longer contains the junction day, i.e. more than `TZ_REALIGN_DAYS − REWINDOW_DAYS − 1` (22) days after the first corrected poll, including late beta.3/beta.4 upgraders and entries that spent that long catching up a backfill gap. Over-count only, never a downward step. (4) A stage that gives up leaves its window at the old timing, monotone, with nothing missing (residual 3b); pinned by a real-recorder test. (5) The junction check compares energy, not provenance (tolerance `_CONSERVATION_SLACK_KWH`, 1e-6 kWh). Because the whole floor day must match the old bucketing, with at least one distinguishing hour, an already-correct entry (set up on 0.5.0-beta.3+) cannot be mistaken for old timing and is left untouched. The accepted failure is the other way round: on an old-timing entry whose floor day cannot be confirmed (no hour tells the two timings apart, e.g. readings that repeat hour to hour all day, or AGL revised that day's readings after they were stored), the hour below the window is left untouched and the floor's first slot (SA) or hour (QLD) stays counted twice. An over-count, never a downward step. (6) Cost, credit and bands follow the aggregate-kWh junction verdict at the batch's current price and band: if AGL re-priced or re-typed the floor junction's moved slot after it was stored, the junction row of a cost, credit or band series can over-count by at most that one slot (a price increase is clamped at 0 and exact). Aggregate kWh stays exact; never a downward step. |
 | R-1 | No structured audit trail of token-rotation events | **Accepted** | Debug-level persist log exists; external use of a stolen token surfaces as a reauth event. A structured audit log is disproportionate — accepted; revisit if account-takeover reports appear. |
 | R-2 | No disclosure path for reporters | **Mitigated** | SECURITY.md + GitHub private vulnerability reporting enabled (verified); CVD terms documented. |
 | I-1 | Refresh token plaintext at rest in `.storage` | **Accepted (platform ceiling)** | HA offers integrations no vault API; the file is plaintext on ALL install types (HAOS included — corrected 2026-07). Compensating: 15-min memory-only access token; rotate-on-every-use refresh token; host FDE guidance in SECURITY.md §Storage. |
@@ -242,7 +243,14 @@ The diagnostics timezone fields added for #292 (`entry.data.local_tz`,
 `Australia/Broken_Hill`, a single-postcode locality — accepted as
 non-identifying (Class C, §2) rather than scrubbed, because the zone is the
 diagnostic signal a timestamp report is triaged on; the entry title that
-carries the actual address stays scrubbed.
+carries the actual address stays scrubbed. Schema v4's `tz_realign` block
+(the re-alignment record: the same zone key, dates, counts and fixed status
+words) adds nothing beyond that.
+T-5's NT/WA residual is registered as RA-19 (2026-10-10). It is reviewed
+on an NT/WA user report rather than annually. The pre-condition it rests
+on is that AGL does not retail electricity in NT or WA. Evidence of an
+affected customer reopens it, along with a recorder measurement of the
+re-alignment and the #300 conservation guard at shifts over 1 h.
 Anything that changes an accepted threat's pre-conditions (new scope, new
 endpoint, new storage location, telemetry) reopens the row.
 
@@ -456,6 +464,13 @@ regression test in `tests/test_coordinator_statistics.py`):
   on the normal path a 429 never produces a data hole. In the solar heal
   path, sweeps halted by persistent 429s count toward the bounded give-up
   caps below, so sustained rate-limiting can end in a rare accepted hole.
+  The timezone history re-alignment (#292) counts halts (429 or transport
+  failure) separately from failed sweeps and never lets one burn an
+  attempt directly. At most one halt counts per configured poll interval,
+  through the `last_halt_at` field. The `MAX_TZ_REALIGN_HALTS`-th (3rd)
+  counted halt converts to one attempt and drops the entry back to its
+  configured cadence. A halted sweep imports only the normal window, so
+  rate-limiting can never leave a hole there.
 - **Bounded give-up**: the solar leading-hole heal is capped at
   `MAX_SOLAR_HEAL_ATTEMPTS` (3) sweeps (lifetime hard cap 2×); a
   persistently erroring span is abandoned after
@@ -467,10 +482,25 @@ regression test in `tests/test_coordinator_statistics.py`):
   Class C) — surfaced in diagnostics as `stall_give_up_spans`. Both
   produce rare permanent holes rather than wedged integrations —
   accepted, logged at
-  WARNING (surfacing these as HA Repairs is tracked separately).
+  WARNING (surfacing these as HA Repairs is tracked separately). Each
+  stage of the timezone history re-alignment (#292) is capped at
+  `MAX_TZ_REALIGN_ATTEMPTS` (3) failed sweeps. A consumption give-up still
+  runs the generation stage. The terminal give-up raises ONE persistent
+  WARNING Repairs issue, `tz_realign_gave_up_<entry_id>`, that names the
+  stage(s) and the earliest start their last sweep tried (`gave_up_from`,
+  a date). Unlike the heal, a re-alignment give-up leaves no hole: an
+  incomplete sweep imports no more than the normal window, so the window
+  keeps its old timing, monotone, with nothing missing. It does keep the
+  one reading (consumption one slot SA / hour QLD; generation one dawn
+  export slot) that the first corrected poll double-counted at its
+  trailing-week junction (T-5 residuals 3 and 4).
 - **Restart survival**: multi-cycle repair state is persisted in
-  `entry.data` (`{state, floor, attempts}`), and the rotated refresh token
-  is persisted synchronously — an HA restart at any point loses neither.
+  `entry.data`: the heal record `{state, floor, attempts}` and the
+  re-alignment record `tz_realign` `{state, zone, floor, series, attempts,
+  halts, …}` (dates, counts, fixed status words and an IANA key, Class C).
+  The re-alignment record is written BEFORE its first fetch, so the floor
+  stays frozen across restarts. The rotated refresh token is persisted
+  synchronously, so an HA restart at any point loses neither.
 - **Half-hour-zone straddle guard** (#292): for SA / Broken Hill / NT
   contracts every series range fetches one extra leading day (one extra
   request per series per cycle — `3 + 8 + 8` on a solar contract, pinned
@@ -502,10 +532,68 @@ regression test in `tests/test_coordinator_statistics.py`):
   downgrade/re-upgrade self-heal within the next poll's own window (keys
   at/after the batch cutoff); stale rows that have already aged out of
   that window keep their step until the 30-day re-alignment below, whose
-  window must cover them. Rows older than the trailing week stay shifted (SA
-  30 min; QLD 1 h for October–April spans) until the follow-up one-off
-  30-day in-place re-alignment lands. Deleting `haggle:*` statistics is
-  never the remedy — rows older than ~30 days cannot be re-fetched.
+  window covers them. Rows older than the trailing week were shifted (SA
+  30 min; QLD 1 h for October–April spans) until v0.5.0-beta.5's one-off
+  re-alignment (next bullet). Rows older than its window stay shifted, and
+  a Repairs notice says so. Deleting `haggle:*` statistics is never the
+  remedy: Haggle backfills only 30 days, so a rebuild loses everything
+  older.
+- **Timezone history re-alignment** (#292, v0.5.0-beta.5): affected
+  entries get one full-window re-import of the last `TZ_REALIGN_DAYS` (30)
+  per contract zone. Affected means the API/contract offset gap is more
+  than zero somewhere in the window and never more than
+  `TZ_REALIGN_MAX_SHIFT` (1 h) over the year from the window start: SA,
+  Broken Hill, and QLD whenever the window touches Sydney daylight
+  saving. NT and WA are excluded in every season (T-5, RA-19). The
+  request budget is bounded per cycle:
+  - **Stage cycles.** Consumption and generation run on separate cycles,
+    never together and never alongside a solar heal sweep (the heal wins
+    the cycle).
+  - **Consumption stage.** A consumption-stage cycle makes
+    `3 + window + normal solar range (7, or 8 in a half-hour zone)`
+    requests. A generation-stage cycle makes
+    `3 + normal consumption range (7/8) + window`.
+  - **Window size.** The window is `[max(frozen floor, today − 30),
+    yesterday]`, at most 30 days. An aged floor (long poll interval, a
+    heal, a contiguity wait) therefore never grows the burst. It never
+    takes an overlap day, because the day before the floor is past the
+    retention guard. The worst case is `3 + 30 + 8 = 41`, against the
+    `3 + 7 + 30` that AGL tolerated in the heal. Pacing is unchanged
+    (`BACKFILL_INTER_REQUEST_DELAY`).
+  - **Halted sweeps.** A halted stage re-sweeps under the usual #155
+    30-minute retry. Each retry stops at its first 429, and halts are
+    counted at most once per poll interval. The third counted halt
+    converts to one failed sweep and restores the configured cadence. So
+    under a persistent 429, the 30-minute retries last at most about two
+    poll intervals per failed sweep. The give-up then bounds the whole
+    stage at 3 failed sweeps.
+  - **Failed sweeps.** A failed sweep waits for the next scheduled poll,
+    with no fast retry. A sweep fails when AGL returns a per-day error on a
+    stage-series day in `[window start, today − REWINDOW_DAYS]`, or when an
+    exception aborts it (`CancelledError` excepted). Per stage that allows
+    at most 3 failed sweeps plus one complete one. Per-day errors on the
+    six most recent days never count, because the normal rewindow
+    re-fetches them anyway.
+
+  The resilience properties are:
+  - Only a COMPLETE sweep rewrites the window.
+  - An incomplete one imports no more than a normal poll would (a per-day
+    skip: the same trailing week; a halt: only the normal-range days
+    fetched before it, usually none), so it is monotone and the window is
+    untouched.
+  - The junction at the floor is exact at bar level. The old-timing hour
+    below the cutoff is rewritten in the same import, with the slots it
+    held for the window moved to their true hours, but only when the whole
+    floor day is confirmed to be in the old timing. The running sum and
+    the floor-day bar are both exact; floor − 1 keeps its old timing like
+    the older history.
+  - The first corrected poll's trailing-week double count (consumption
+    one slot/hour; solar one dawn export slot, #303) is removed by a
+    complete stage whose window still contains that junction day.
+
+  Recorded residuals: T-5 residual 3 (where that double count survives)
+  and residual 5 (an unconfirmable floor day leaves the junction
+  untouched).
 
 **Dependency concentration**: every install shares AGL's iOS `client_id`
 and the two AGL endpoints — a single systemic availability dependency with

@@ -223,6 +223,69 @@ MAX_SOLAR_HEAL_ATTEMPTS: Final = 3
 # Repairs issue per span. Bounded list (oldest dropped) so entry.data stays small.
 CONF_SOLAR_STALL_SPANS: Final = "solar_stall_spans"
 
+# One-off timezone history re-alignment (#292 PR2b). Rows stored before the
+# v0.5.0-beta.3 timestamp correction sit at AGL's Sydney-converted hours
+# (SA/Broken Hill 30 min early all year, QLD 1 h early while Sydney is on
+# DST). The trailing REWINDOW_DAYS self-healed on the first corrected poll;
+# this record drives ONE re-import of the last TZ_REALIGN_DAYS so the rest of
+# the backfill window moves to the right hours too. Stored as a record:
+#   pending: {"state": "pending", "zone": IANA key, "floor": "YYYY-MM-DD",
+#             "series": "consumption"|"generation", "attempts": int,
+#             "halts": int[, "last_halt_at": ISO instant]
+#             [, "consumption": "complete"|"gave_up"][, "swept_from": date]
+#             [, "tried_from": date][, "gave_up_from": date]}
+#   done:    {"state": "done", "zone": IANA key, "reason": one of the
+#             TZ_REALIGN_REASON_* / outcome values[, "floor"][, "swept_from"]
+#             [, "consumption"][, "generation"][, "sweeps"][, "gave_up_from"]
+#             [, "notice": bool, "history_from": date|None]}
+# Absent = never evaluated. The `floor` is FROZEN when the record is armed
+# (written BEFORE the first fetch, like the solar heal), but every attempt
+# sweeps [max(floor, today - TZ_REALIGN_DAYS), yesterday] in ONE contiguous
+# batch — never "only the failed days" (a day-only retry loses the
+# half-hour-zone boundary slots) and never more than TZ_REALIGN_DAYS (an aged
+# floor must not grow the request burst); `swept_from` records the effective
+# start of a completed stage, `tried_from` that of the last incomplete sweep
+# and `gave_up_from` the one a give-up names (the Repairs issue's {floor}).
+# An incomplete sweep imports exactly what a normal cycle would, so
+# only a complete one rewrites the window. Consumption runs first, generation
+# on a later cycle. 429/transport halts are counted separately from failed
+# sweeps (at most one per poll interval; MAX_TZ_REALIGN_HALTS of them convert
+# to one attempt) and only attempts lead to give-up. "done" is terminal for
+# its `zone`; a different CONF_LOCAL_TZ re-evaluates the record in every
+# state. Excluded by ZONE, in every season, when the largest API-zone/
+# contract-zone offset gap over the TZ_REALIGN_SHIFT_SCAN_DAYS from the floor
+# exceeds TZ_REALIGN_MAX_SHIFT (NT 1.5 h in Sydney DST, WA 2-3 h, Eucla —
+# RA-19: AGL does not retail electricity there, and the #301 conservation
+# guard's tail allowance assumes <= 1 h); SA/Broken Hill (0.5 h) and QLD
+# (<= 1 h) are not. Checked before anything else, so a fresh NT/WA install
+# records 'unsupported_shift' too.
+CONF_TZ_REALIGN: Final = "tz_realign"
+TZ_REALIGN_DAYS: Final = BACKFILL_DAYS
+TZ_REALIGN_PENDING: Final = "pending"
+TZ_REALIGN_DONE: Final = "done"
+# Stage cursor ("series") values.
+TZ_REALIGN_CONSUMPTION: Final = "consumption"
+TZ_REALIGN_GENERATION: Final = "generation"
+# Per-stage outcomes; "complete"/"gave_up" double as the done record's reason.
+TZ_REALIGN_COMPLETE: Final = "complete"
+TZ_REALIGN_GAVE_UP: Final = "gave_up"
+TZ_REALIGN_SKIPPED: Final = "skipped"
+# Done reasons for a record that never swept.
+TZ_REALIGN_REASON_FRESH_INSTALL: Final = "fresh_install"
+TZ_REALIGN_REASON_NOT_AFFECTED: Final = "not_affected"
+TZ_REALIGN_REASON_UNSUPPORTED_SHIFT: Final = "unsupported_shift"
+MAX_TZ_REALIGN_ATTEMPTS: Final = 3
+MAX_TZ_REALIGN_HALTS: Final = 3
+TZ_REALIGN_MAX_SHIFT: Final = timedelta(hours=1)
+# Span the exclusion shift is measured over: a full year from the floor, so
+# the verdict is a property of the zone, not of the season it is armed in.
+TZ_REALIGN_SHIFT_SCAN_DAYS: Final = 365
+# Bounded look-back for the "older history keeps its old timing" notice.
+TZ_REALIGN_HISTORY_SCAN_DAYS: Final = 366
+# Repairs issue translation keys; the issue id is f"{key}_{entry_id}".
+ISSUE_TZ_REALIGN_GAVE_UP: Final = "tz_realign_gave_up"
+ISSUE_TZ_HISTORY_BEFORE_REALIGN: Final = "tz_history_before_realign"
+
 # Options-flow keys (entry.options). Read LIVE by the coordinator each cycle —
 # deliberately no update listener / reload (the coordinator writes entry.data
 # mid-cycle for token rotation and heal state; a reload listener would bounce

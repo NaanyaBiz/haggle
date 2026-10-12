@@ -40,6 +40,7 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SOLAR_HEAL,
     CONF_SOLAR_STALL_SPANS,
+    CONF_TZ_REALIGN,
     DOMAIN,
     STAT_CONSUMPTION,
     STAT_COST,
@@ -50,7 +51,7 @@ if TYPE_CHECKING:
 
     from . import HaggleConfigEntry
 
-DIAGNOSTICS_SCHEMA_VERSION = 3
+DIAGNOSTICS_SCHEMA_VERSION = 4
 
 _TO_REDACT = {CONF_REFRESH_TOKEN}
 
@@ -185,6 +186,13 @@ async def async_get_config_entry_diagnostics(
     # coverage stats look healthy over the hole, so this is the only place
     # the hole is visible (CO-16.4). None = never gave up.
     stall_spans = entry_data.pop(CONF_SOLAR_STALL_SPANS, None)
+    # One-off timezone history re-alignment record (#292 PR2b, schema v4):
+    # pending stage + attempts/halts, or the done reason (complete /
+    # gave_up / not_affected / unsupported_shift = NT/WA, RA-19 /
+    # fresh_install) with the notice verdict. Holds only an IANA key, dates,
+    # counts and enum strings — no identifiers; the final scrub applies
+    # regardless. None = never evaluated (pre-beta.5 or no poll yet).
+    tz_realign = entry_data.pop(CONF_TZ_REALIGN, None)
     # CONF_LOCAL_TZ deliberately stays in entry_data (`entry.data.local_tz`):
     # the persisted contract-zone authority, "" = never derived (#268 class).
     # An IANA key is non-identifying — Australia/Broken_Hill is the finest
@@ -271,6 +279,7 @@ async def async_get_config_entry_diagnostics(
         },
         "solar_heal": solar_heal,
         "stall_give_up_spans": stall_spans,
+        "tz_realign": tz_realign,
         "coordinator": coordinator_block,
         "statistics": statistics,
     }

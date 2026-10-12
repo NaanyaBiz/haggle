@@ -27,8 +27,15 @@ from custom_components.haggle.const import (
     CONF_REFRESH_TOKEN,
     CONF_SOLAR_HEAL,
     CONF_SOLAR_STALL_SPANS,
+    CONF_TZ_REALIGN,
     DOMAIN,
     PIN_MISMATCH_NOTIFICATION_ID,
+    TZ_REALIGN_COMPLETE,
+    TZ_REALIGN_CONSUMPTION,
+    TZ_REALIGN_DONE,
+    TZ_REALIGN_GENERATION,
+    TZ_REALIGN_PENDING,
+    TZ_REALIGN_SKIPPED,
 )
 
 if TYPE_CHECKING:
@@ -859,8 +866,31 @@ async def test_reauth_fills_empty_pins(hass: HomeAssistant) -> None:
     assert entry.data[CONF_PINNED_SPKI_BFF] == _NEW_BFF_SPKI
 
 
+# #292 re-alignment records: losing one to a flow write would re-arm the
+# ~40-request sweep and re-raise the history Repairs notice (C8).
+_REALIGN_PENDING = {
+    "state": TZ_REALIGN_PENDING,
+    "zone": "Australia/Adelaide",
+    "floor": "2026-09-10",
+    "series": TZ_REALIGN_CONSUMPTION,
+    "attempts": 1,
+    "halts": 0,
+}
+_REALIGN_DONE = {
+    "state": TZ_REALIGN_DONE,
+    "zone": "Australia/Adelaide",
+    "reason": TZ_REALIGN_COMPLETE,
+    "floor": "2026-09-10",
+    "consumption": TZ_REALIGN_COMPLETE,
+    "generation": TZ_REALIGN_SKIPPED,
+    "notice": True,
+    "history_from": "2026-06-01",
+}
+
+
 async def test_reauth_preserves_coordinator_state(hass: HomeAssistant) -> None:
-    """Coordinator-written keys (solar heal record, stall spans) must survive reauth.
+    """Coordinator-written keys (solar heal record, stall spans, timezone
+    re-alignment record) must survive reauth.
 
     data_updates= merges into live entry.data rather than replacing it, so
     these keys are automatically preserved.
@@ -869,12 +899,17 @@ async def test_reauth_preserves_coordinator_state(hass: HomeAssistant) -> None:
     stall = [{"start": "2026-01-01", "end": "2026-01-07"}]
     entry = _repair_entry(
         hass,
-        **{CONF_SOLAR_HEAL: heal, CONF_SOLAR_STALL_SPANS: stall},
+        **{
+            CONF_SOLAR_HEAL: heal,
+            CONF_SOLAR_STALL_SPANS: stall,
+            CONF_TZ_REALIGN: _REALIGN_PENDING,
+        },
     )
     result = await _run_repair(hass, entry, source=config_entries.SOURCE_REAUTH)
     assert result["reason"] == "reauth_successful"
     assert entry.data[CONF_SOLAR_HEAL] == heal
     assert entry.data[CONF_SOLAR_STALL_SPANS] == stall
+    assert entry.data[CONF_TZ_REALIGN] == _REALIGN_PENDING
 
 
 async def test_reauth_contract_not_found_wrong_contract(hass: HomeAssistant) -> None:
@@ -951,10 +986,13 @@ async def test_reconfigure_updates_token_and_all_pins(hass: HomeAssistant) -> No
 async def test_reconfigure_preserves_coordinator_state(hass: HomeAssistant) -> None:
     """Coordinator-written solar state must survive a reconfigure."""
     heal = {"state": "done", "floor": "2026-06-01", "attempts": 3}
-    entry = _repair_entry(hass, **{CONF_SOLAR_HEAL: heal})
+    entry = _repair_entry(
+        hass, **{CONF_SOLAR_HEAL: heal, CONF_TZ_REALIGN: _REALIGN_DONE}
+    )
     result = await _run_repair(hass, entry, source=config_entries.SOURCE_RECONFIGURE)
     assert result["reason"] == "reconfigure_successful"
     assert entry.data[CONF_SOLAR_HEAL] == heal
+    assert entry.data[CONF_TZ_REALIGN] == _REALIGN_DONE
 
 
 @pytest.mark.parametrize(
@@ -975,10 +1013,20 @@ async def test_repair_keeps_coordinator_writes_made_while_flow_open(
     """
     entry = _repair_entry(
         hass,
-        **{CONF_SOLAR_HEAL: {"state": "pending", "floor": "2026-09-01", "attempts": 1}},
+        **{
+            CONF_SOLAR_HEAL: {"state": "pending", "floor": "2026-09-01", "attempts": 1},
+            CONF_TZ_REALIGN: _REALIGN_PENDING,
+        },
     )
     heal_mid = {"state": "done", "floor": "2026-09-01", "attempts": 2}
     spans_mid = [{"start": "2026-09-02", "end": "2026-09-08"}]
+    # The consumption stage completes while the flow is open.
+    realign_mid = {
+        **_REALIGN_PENDING,
+        "series": TZ_REALIGN_GENERATION,
+        "attempts": 0,
+        "consumption": TZ_REALIGN_COMPLETE,
+    }
 
     def _coordinator_writes() -> None:
         hass.config_entries.async_update_entry(
@@ -987,6 +1035,7 @@ async def test_repair_keeps_coordinator_writes_made_while_flow_open(
                 **entry.data,
                 CONF_SOLAR_HEAL: heal_mid,
                 CONF_SOLAR_STALL_SPANS: spans_mid,
+                CONF_TZ_REALIGN: realign_mid,
                 CONF_REFRESH_TOKEN: "v1.rotated",
             },
         )
@@ -996,6 +1045,7 @@ async def test_repair_keeps_coordinator_writes_made_while_flow_open(
     assert result["reason"] == f"{source}_successful"
     assert entry.data[CONF_SOLAR_HEAL] == heal_mid
     assert entry.data[CONF_SOLAR_STALL_SPANS] == spans_mid
+    assert entry.data[CONF_TZ_REALIGN] == realign_mid
     # The flow's freshly minted grant wins over the mid-flow rotation
     # (documented accepted race, threat-model I-5 — no compare-and-swap).
     assert entry.data[CONF_REFRESH_TOKEN] == "v1.new_token"
