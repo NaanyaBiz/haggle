@@ -685,8 +685,10 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
     hour into its correct hour, rewriting that one older row in the same
     import. The running total is exact, the window's first day reads its
     true total, and the day before keeps its old timing like the rest of
-    the older history. Solar export is not affected: nothing is exported
-    around midnight.
+    the older history. Solar export gets the same treatment at dawn: the
+    window's first early-morning export slot (and its feed-in credit) is
+    moved out of the older hour just before it into its correct hour, just
+    as exactly.
   - **The junction day of the first corrected poll.** The first corrected
     poll (beta.3/beta.4, or the first beta.5 poll on a direct upgrade)
     counted one reading twice where its trailing week met the older rows:

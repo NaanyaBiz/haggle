@@ -100,8 +100,8 @@ tests/
 │   └── requirements.txt             # hash-pinned atheris (Scorecard Pinned-Dependencies)
 ├── test_coordinator_statistics.py   # backfill, incremental resume, idempotency, ToU per-tariff series, numeric guards, half-hour-zone overlap/trim + contract-local midnight sites (#292)
 ├── test_tz_realign.py               # #292 timezone history re-alignment state machine (gates incl. NT/WA unsupported_shift checked first, with no Repairs issue, floor freeze, stages, halts vs attempts, C2 inclusive horizon, give-up, zone change, notice floor = swept start, Repairs issues, period gate, diagnostics v4, request ceiling, junction old-convention classifier TestRealignJunctionMatch)
-├── test_tz_realign_recorder.py      # re-alignment end to end vs the REAL recorder — bar-exact floor junction (consumption + generation, sum and floor-day bar), stage order/budget, C1 degrade == plain normal poll, give-up and NT/WA (RA-19) junction residuals, C10
-├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST/generation convention re-key with stale keys asserted 0, per-day gate incl. generation error day, wholly-absent ToU band, provenance gate, straddle both-days, conservation guard, read budget on the real recorder read) + #292 re-alignment (exact floor junction SA/QLD-in-DST consumption + generation, already-correct entry unchanged, halted/skipped sweep writes only the normal window)
+├── test_tz_realign_recorder.py      # re-alignment end to end vs the REAL recorder — bar-exact floor junction (consumption + generation, sum and floor-day bar), stage order/budget, C1 degrade == plain normal poll, give-up and NT/WA (RA-19) junction residuals, C10, junction cost/bands/credit, interior check past a flat night, #303/R2 re-key through the cycle (consumption family incl. ToU bands, and generation)
+├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST/generation convention re-key with stale keys asserted 0, per-day gate incl. generation error day, wholly-absent ToU band, provenance gate, straddle both-days, conservation guard, read budget on the real recorder read)
 ├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
 ├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
 ├── test_provenance_hook.py          # executes scripts/check_provenance_trailer.sh against sample messages (any-vendor Co-Authored-By / AI-Assisted: none / merge skip)
@@ -827,16 +827,30 @@ complete stage's import only, `junction=True`, for the consumption family
   keeps its own old timing like older history (SA keeps floor − 1's
   23:30 slot in its old row, on the same day bar). Variant (b) restores
   the floor's 00:00 slot that beta.1/beta.2 never stored.
-- Cost, credit and bands follow the aggregate-kWh verdict, never their own:
-  a re-price or band re-type is clamped at 0 (DEBUG-logged), because
-  falling back to "not confirmed" would double-count the aggregate. A
-  series with neither a stored `prev` row nor trimmed slots is skipped (no
-  key is ever created).
+- Generation has its own junction at dawn, not midnight: its cutoff is
+  the floor day's first EXPORT hour (`_generation_buckets` adds a marker
+  only for a day with no readings), and the old-timing row just below it
+  holds the floor's first export slot, 30 min (SA) or 1 h (QLD in Sydney
+  DST) early. It is confirmed and moved the same way, and credit follows
+  the kWh verdict. This is distinct from the #303 stale key (R2 below),
+  the dawn key of the day the first corrected poll's rewindow met older
+  rows.
+- Cost, credit and bands follow the aggregate-kWh verdict, never their own
+  (falling back to "not confirmed" would double-count the aggregate). Each
+  series subtracts its share of the matched slots at the batch's CURRENT
+  value and band, so a re-price or band re-type since storage is not
+  neutralised: a state that would go negative (a price increase, the new
+  band of a re-typed slot) is written as 0 (DEBUG-logged); a price
+  decrease, or the OLD band of a re-typed slot, keeps at most one moved
+  slot's worth of over-count in that cost, credit or band row. The
+  aggregate kWh stays exact; only cost and the band partition can be off
+  by that slot. A series is skipped only when it has neither a stored
+  `prev` row nor a trimmed slot; a band that holds a trimmed slot but has
+  no stored `prev` row gains a key at `prev` (the restored 00:00 slot in
+  its true hour). No other key is created.
 - Not confirmed (C10 history, a re-sweep over realigned rows, an
   ambiguous floor day, AGL revised the floor day since storage, no API
   zone) → `prev` untouched, import from `cutoff` exactly as a normal one.
-  For generation this is the usual path (nothing is exported around
-  midnight; its junction slot is the #303 stale key below).
 
 **Pure re-key recognition** (R2, #303, `_rekey_matches`). On realign
 imports ONLY (`rekey=junction`, per series), never the normal path. A

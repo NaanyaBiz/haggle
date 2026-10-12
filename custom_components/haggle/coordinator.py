@@ -3215,13 +3215,18 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         never stored.
 
         Cost and ToU bands follow the aggregate-kWh verdict, never their
-        own: a re-price or band re-type is clamped at 0 (DEBUG-logged),
-        never a reason to double-count the aggregate. A series with neither
-        a stored ``prev`` row nor trimmed slots is skipped — like the fill,
-        this never creates a key. Not confirmed (history written by the
-        corrected parser, C10; a re-sweep over realigned rows; an ambiguous
-        flat day; no API zone): ``prev`` is left untouched and the import
-        starts at ``cutoff`` exactly as a normal one.
+        own, and subtract the matched slots at the batch's CURRENT value and
+        band: a state that would go negative (a re-price up, the new band of
+        a re-typed slot) is clamped at 0 (DEBUG-logged), never a reason to
+        double-count the aggregate; a re-price down, or the old band of a
+        re-typed slot, keeps at most one moved slot of over-count. A series
+        with neither a stored ``prev`` row nor trimmed slots is skipped; a
+        band holding a trimmed slot gains its ``prev`` key (the restored
+        00:00 slot), and no other key is created. Not confirmed (history
+        written by the corrected parser, C10; a re-sweep over realigned
+        rows; an ambiguous flat day; no API zone): ``prev`` is left
+        untouched and the import starts at ``cutoff`` exactly as a normal
+        one.
         """
         prev = cutoff - _HOUR
         stored = await self._stored_hourly_states(series, prev)
