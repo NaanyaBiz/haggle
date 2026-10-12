@@ -2894,9 +2894,9 @@ class TestJunctionMatchedVariantB:
         assert len(matched) == 1
         assert matched[0].kwh == pytest.approx(0.11)
 
-    async def test_variant_b_mutation_only_a_fails(self, hass: HomeAssistant) -> None:
-        """If variant (b) is removed, beta.1/2 stored(prev) never equals the
-        full old bucket → _junction_matched returns None."""
+    async def test_variant_a_matches_full_bucket(self, hass: HomeAssistant) -> None:
+        """v0.4 shape: stored(prev) equals the full old bucket (b00 + b30 =
+        0.21), so variant (a) matches and returns both readings."""
         _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
         api_tz = agl_api_tz()
         if api_tz is None:
@@ -2921,23 +2921,13 @@ class TestJunctionMatchedVariantB:
             key = at.replace(minute=0)
             stored_kwh[key] = stored_kwh.get(key, 0.0) + r.kwh
         prev = cutoff - timedelta(hours=1)
-        stored_kwh[prev] = 0.11  # beta.1/2 shape: only b30
-        # Removing variant (b) means only the full bucket (0.21) is tested.
-        # Simulate that by testing stored(prev)=0.21 (v0.4 shape) still matches.
-        stored_kwh[prev] = 0.21  # v0.4 full shape: b00 + b30
-        matched_full = coord._junction_matched(intervals, stored_kwh, cutoff)
-        assert matched_full is not None
-        assert len(matched_full) == 2  # both slots (b00 and b30)
-        # Beta.1/2 shape with only variant (a) available: no match.
-        stored_kwh[prev] = 0.11
-        # Patch: pretend there is only variant (a) by forcing the windowed list empty.
-        # (If variant (b) were removed, this would be the result: no match.)
-        # Here we directly assert the variant (b) path by showing that 0.11
-        # does NOT equal the full old bucket (0.21) — the test proves variant (b)
-        # is the only path that resolves this case.
-        assert abs(0.11 - 0.21) > 1e-6  # variant (a) would fail
-        matched_b12 = coord._junction_matched(intervals, stored_kwh, cutoff)
-        assert matched_b12 is not None  # variant (b) succeeds
+        assert stored_kwh[prev] == pytest.approx(0.21)
+
+        matched = coord._junction_matched(intervals, stored_kwh, cutoff)
+
+        assert matched is not None
+        assert len(matched) == 2  # both slots (b00 and b30)
+        assert sum(r.kwh for r in matched) == pytest.approx(0.21)
 
 
 # ---------------------------------------------------------------------------
@@ -3003,3 +2993,51 @@ class TestJunctionMatchedInteriorCheck:
         result = coord._junction_matched(intervals, stored, cutoff)
 
         assert result is not None
+
+    async def test_later_interior_key_alone_confirms_old(
+        self, hass: HomeAssistant
+    ) -> None:
+        """SA July, flat 0.15 kWh baseload for slots 0-7 then unique values:
+        the first interior keys (16:00Z, 17:00Z) hold the same kWh in both
+        timings, and only 18:00Z tells them apart. The check keeps walking,
+        so the old-timing floor day is confirmed and slots 0 and 1 match.
+
+        Mutation NV1 (loop bounded to the first interior key): None."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        api_tz = agl_api_tz()
+        if api_tz is None:
+            pytest.skip("Australia/Sydney tzdata unavailable")
+        tz = coord._contract_tz()
+        cutoff = datetime(2026, 7, 9, 15, 0, tzinfo=UTC)
+        start = coord._local_midnight_utc(date(2026, 7, 10))  # 07-09T14:30Z
+        intervals = [
+            _make_interval(
+                start + timedelta(minutes=30 * n),
+                kwh=0.15 if n < 8 else round(0.1 + 0.01 * n, 3),
+            )
+            for n in range(50)
+        ]
+        stored: dict[datetime, float] = {}
+        for r in intervals:
+            at = agl_reported_timestamp(r.dt, api_tz=api_tz, contract_tz=tz)
+            key = at.replace(minute=0)
+            stored[key] = stored.get(key, 0.0) + r.kwh
+
+        matched = coord._junction_matched(intervals, stored, cutoff)
+
+        assert matched is not None
+        assert sorted(r.dt for r in matched) == [intervals[0].dt, intervals[1].dt]
+
+    async def test_mismatch_on_later_interior_key_not_confirmed(
+        self, hass: HomeAssistant
+    ) -> None:
+        """Every interior key must equal the old bucket, not just the first:
+        a floor day AGL revised mid-day (one later key off by 0.2 kWh) is not
+        confirmed old-timing, so nothing is moved.
+
+        Mutation NV1 (loop bounded to the first interior key): matched."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Adelaide")
+        intervals, cutoff, stored = _sa_july_floor_day(coord, old_rows=True)
+        stored[datetime(2026, 7, 10, 0, 0, tzinfo=UTC)] += 0.2
+
+        assert coord._junction_matched(intervals, stored, cutoff) is None

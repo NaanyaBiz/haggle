@@ -1,8 +1,8 @@
 """Real-recorder tests for the #292 PR2b timezone history re-alignment machine.
 
 These tests use phcc's real in-memory SQLite recorder and drive the
-production cycle, so the M1 junction drop is exercised at its real call
-sites against genuinely stored old-convention rows (no patched reads).
+production cycle, so the R1 floor-junction re-emit is exercised at its real
+call sites against genuinely stored old-convention rows (no patched reads).
 
 Must be a separate module from test_tz_realign.py: phcc's recorder_db_url
 asserts the recorder fixtures are initialised BEFORE the hass fixture; the
@@ -10,9 +10,9 @@ module-level autouse fixture override is the only clean way to guarantee that
 ordering without affecting non-recorder tests.
 
 The end-to-end classes drive the production cycle (_async_update_data) on
-the real recorder with frozen dates and pin signed residuals: M1 for
-consumption (SA, and QLD with the floor in Sydney DST) and generation,
-stage order plus the per-cycle request budget, C1 halt / per-day-skip
+the real recorder with frozen dates and pin the exact floor junction (R1
+re-emit) for consumption (SA, and QLD with the floor in Sydney DST) and
+generation, stage order plus the per-cycle request budget, C1 halt / per-day-skip
 degradation (pinned against a plain normal poll), the give-up residual,
 HTTP-OK empty days, the exception attempt, C10, the per-day floor
 attribution, and the M4 NT/WA exclusion residual (RA-19).
@@ -835,7 +835,7 @@ class TestEndToEndIncompleteStage:
         """A give-up leaves the window in its old timing, monotone, nothing
         missing — but the one slot (SA) / hour (QLD) the first corrected
         poll's trailing-week junction counted twice STAYS counted twice:
-        only a complete stage's M1 drop removes it. Signed residual ==
+        only a complete stage's R1 junction re-emit removes it. Signed residual ==
         exactly those named slots of the junction day."""
         from homeassistant.helpers import issue_registry as ir
 
@@ -1732,3 +1732,210 @@ class TestGenerationStageWaitsUntilJunctionExpires:
             f"generation residual {gen_residual:+.6f} != 0 (R2 should fix the "
             "dawn slot while J is still in the window)"
         )
+
+
+# ---------------------------------------------------------------------------
+# R2 on the CONSUMPTION family, through the real cycle (_import_intervals)
+# ---------------------------------------------------------------------------
+
+
+def _solar_home_kwh(day: date, i: int) -> float:
+    """A solar home's grid import: zero 09:00-14:30 local (slots 18-28, the
+    parser drops zero-on-zero slots, so the batch is silent there), a small
+    unique evening tail, unique values elsewhere. The block ends on a local
+    :00 slot so the old timing puts the first post-block slot (14:30) into
+    a key the corrected batch never writes, under both the SA 30-min and
+    the QLD-in-DST 1-h shift."""
+    if 18 <= i <= 28:
+        return 0.0
+    if i >= 44:
+        return round(0.01 + 0.0001 * i, 6)
+    return _cons_kwh(day, i)
+
+
+class TestR2ConsumptionFamilyThroughCycle:
+    """R2 applies per family: consumption keys are recognised against the
+    consumption readings, wired by ``rekey=junction`` in _import_intervals.
+
+    A beta.3-style write (one interior window day re-imported at corrected
+    timing with the #300 fill inactive) leaves that day's old-timing key at
+    the end of the zero-import block holding the first post-block slot,
+    which the corrected write ALSO counts in its true hour: the day's stored
+    kWh exceeds the batch's, so on the normal path the conservation guard
+    carries the stale key forward and the slot stays counted twice.
+    """
+
+    @pytest.mark.parametrize(
+        ("tz", "now"),
+        [
+            (_ADL, "2026-10-10T03:00:00+00:00"),
+            (_ADL, "2026-11-20T03:00:00+00:00"),
+            (_BNE, "2026-11-20T03:00:00+00:00"),
+        ],
+        ids=["SA-oct", "SA-nov", "QLD-nov"],
+    )
+    async def test_stale_block_end_key_zeroed_family_exact(
+        self,
+        hass: HomeAssistant,
+        freezer,
+        caplog: pytest.LogCaptureFixture,
+        tz: ZoneInfo,
+        now: str,
+    ) -> None:
+        """ToU contract: after the consumption stage the aggregate kWh and
+        cost and every band's kWh and cost end at the corrected truth with
+        zero steps, no #300 WARNING fires, and every stored hour around the
+        rewritten day equals its corrected bucket (the stale key: 0).
+
+        Pre-fix value (consumption rekey off, mutation NV3): the stale key is
+        carried, +the first post-block slot of the rewritten day in the
+        aggregate (and in its band and cost), plus the #300 WARNING.
+        """
+        freezer.move_to(now)
+        coord, agl = _e2e_coordinator(hass, tz)
+
+        async def hourly(_c: str, day: date) -> list[IntervalReading]:
+            agl.cons_days.append(day)
+            return _day_readings(day, tz, old=False, profile=_solar_home_kwh, tou=True)
+
+        coord.client.async_get_usage_hourly.side_effect = hourly
+        coord.client.async_get_usage_hourly_previous.side_effect = hourly
+        today = datetime.now(UTC).date()
+        days = _history(today)
+        await coord._import_intervals(
+            [
+                r
+                for d in days
+                for r in _day_readings(
+                    d, tz, old=True, profile=_solar_home_kwh, tou=True
+                )
+            ]
+        )
+        await async_wait_recording_done(hass)
+        rewritten = today - timedelta(days=15)
+        coord.client.tz_is_contract = False  # beta.3: no #300 fill
+        await coord._import_intervals(
+            _day_readings(rewritten, tz, old=False, profile=_solar_home_kwh, tou=True)
+        )
+        await async_wait_recording_done(hass)
+        coord.client.tz_is_contract = True
+        caplog.clear()
+
+        await _cycle(hass, coord)
+
+        assert _record(coord)["consumption"] == TZ_REALIGN_COMPLETE
+        assert [w for w in _haggle_warnings(caplog) if "#300" in w] == []
+        world = [
+            r
+            for d in days
+            for r in _day_readings(d, tz, old=False, profile=_solar_home_kwh, tou=True)
+        ]
+        expected = {
+            _CONS: sum(r.kwh for r in world),
+            _COST: sum(r.cost_aud for r in world),
+        }
+        for tariff in _TOU_BANDS:
+            cons_id, cost_id = _band_ids(tariff)
+            expected[cons_id] = sum(r.kwh for r in world if r.rate_type == tariff)
+            expected[cost_id] = sum(r.cost_aud for r in world if r.rate_type == tariff)
+        for stat_id, total in expected.items():
+            rows = await _rows(hass, stat_id)
+            assert _steps(rows) == [], stat_id
+            assert rows[-1]["sum"] == pytest.approx(total, abs=1e-6), (
+                f"{stat_id}: residual {rows[-1]['sum'] - total:+.6f}"
+            )
+        # Every stored hour of the rewritten day (both straddle buckets
+        # included) equals its corrected bucket; the old-timing key at the
+        # end of the zero-import block holds nothing.
+        hours = _hour_totals(
+            [
+                r
+                for d in (
+                    rewritten - timedelta(days=1),
+                    rewritten,
+                    rewritten + timedelta(days=1),
+                )
+                for r in _day_readings(d, tz, old=False, profile=_solar_home_kwh)
+            ]
+        )
+        lo = datetime(rewritten.year, rewritten.month, rewritten.day, tzinfo=tz)
+        nxt = rewritten + timedelta(days=1)
+        hi = datetime(nxt.year, nxt.month, nxt.day, tzinfo=tz)
+        lo_ts = lo.astimezone(UTC).timestamp() - 1800
+        hi_ts = hi.astimezone(UTC).timestamp()
+        got = {
+            r["start"]: r["state"]
+            for r in await _rows(hass, _CONS)
+            if lo_ts <= r["start"] < hi_ts
+        }
+        assert got == pytest.approx({k: hours.get(k, 0.0) for k in got}, abs=1e-9)
+        stale = [k for k in got if k not in hours]
+        assert stale, "the scenario must leave an old-timing key the batch skips"
+
+
+# ---------------------------------------------------------------------------
+# Interior check walks the WHOLE floor day (a flat night is not the end)
+# ---------------------------------------------------------------------------
+
+
+def _flat_dawn_kwh(day: date, i: int) -> float:
+    """Flat baseload 00:00-04:30 local (slots 0-9): the first several
+    interior keys hold the same kWh in both timings, so only a LATER key
+    tells them apart."""
+    if i <= 9:
+        return _FLAT
+    return _cons_kwh(day, i)
+
+
+class TestInteriorCheckBeyondFirstKey:
+    """_floor_day_is_old must keep walking past an ambiguous first interior
+    key: an old-timing floor day with a flat night is still confirmed."""
+
+    @pytest.mark.parametrize(
+        ("tz", "now"),
+        [
+            (_ADL, "2026-10-10T03:00:00+00:00"),
+            (_BNE, "2026-11-20T03:00:00+00:00"),
+        ],
+        ids=["SA-oct", "QLD-nov"],
+    )
+    async def test_flat_night_floor_still_confirmed(
+        self, hass: HomeAssistant, freezer, tz: ZoneInfo, now: str
+    ) -> None:
+        """Old-timing history with a flat 00:00-04:30 night: zero steps, the
+        final sum equals the corrected truth, the floor-day bar is exact.
+
+        Pre-fix value (loop bounded to the first interior key, mutation
+        NV1): the junction is not confirmed, so the floor's moved slot(s)
+        stay counted twice, +FLAT (SA) / +2*FLAT (QLD-in-DST).
+        """
+        freezer.move_to(now)
+        coord, agl = _e2e_coordinator(hass, tz)
+
+        async def hourly(_c: str, day: date) -> list[IntervalReading]:
+            agl.cons_days.append(day)
+            return _day_readings(day, tz, old=False, profile=_flat_dawn_kwh)
+
+        coord.client.async_get_usage_hourly.side_effect = hourly
+        coord.client.async_get_usage_hourly_previous.side_effect = hourly
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        days = _history(today)
+        await coord._import_intervals(
+            [
+                r
+                for d in days
+                for r in _day_readings(d, tz, old=True, profile=_flat_dawn_kwh)
+            ]
+        )
+        await async_wait_recording_done(hass)
+
+        await _cycle(hass, coord)
+
+        rows = await _rows(hass, _CONS)
+        assert _steps(rows) == []
+        residual = rows[-1]["sum"] - _total(days, tz, _flat_dawn_kwh)
+        assert residual == pytest.approx(0.0, abs=1e-6), f"residual {residual:+.6f}"
+        dash = _dash_days(rows, tz)
+        world = _world_days(days, tz, _flat_dawn_kwh)
+        assert dash[floor] == pytest.approx(world[floor], abs=1e-9)
