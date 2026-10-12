@@ -2622,49 +2622,99 @@ class TestRekeyMatchesUnit:
     def test_r2_ii_reading_outside_key_days_not_matched(
         self, hass: HomeAssistant
     ) -> None:
-        """R2(ii): a batch reading whose corrected local date ∉ key_days is
-        rejected, preventing flat-night cross-midnight coincidences.
+        """R2(ii): a counted reading dated outside the key's own days blocks
+        the match even when every key day is in the gate — the flat-night
+        cross-midnight coincidence.
 
-        QLD cross-midnight: D-1 00:30 AEST = D-2 T14:30 UTC (corrected).
-        agl_reported_timestamp → D-2 T13:30 UTC (old key).
-        _key_days(D-2 T13:30 UTC) = {D-2}: 23:30 AEST.  key + 30 min =
-        T14:00 UTC = D-1 00:00 AEST = D-1.  So key_days = {D-2, D-1}.
-        Gate = {D-2, D-1} (both days fetched) — passes R2(i).
-        But reading.dt = D-2 T14:30 UTC = D-1 00:30 AEST → date D-1 ∉ {D-2,D-1}?
-        Actually D-1 IS in key_days={D-2,D-1}, so (ii) passes here.
-
-        Use a cleaner example: a reading at D-1 T23:00 UTC (D 09:00 AEST,
-        date=D) whose agl_reported_timestamp = D-1 T22:00 UTC.
-        _key_days(D-1 T22:00 UTC) = {D-1} (08:00 AEST and 08:30 AEST → D-1).
-        gate = {D-1} (passes (i)).
-        reading.dt.astimezone(BNE).date() = D (09:00 AEST) ∉ {D-1} → fails (ii).
+        QLD, Sydney DST: D's 00:00 AEST slot (D-1 T14:00Z) was stored 1 h
+        early, at D-1 T13:00Z = D-1 23:00 AEST, so the old bucket at that key
+        holds a reading dated D while _key_days(T13:00Z) = {D-1}. Gate
+        {D-1, D} passes (i); a stored D-1 23:00 hour that merely EQUALS that
+        reading (a flat night) is real D-1 energy, never a re-key.
         """
         _entry, coord = _make_entry(hass, zone_name="Australia/Brisbane")
         coord.client.local_tz = ZoneInfo("Australia/Brisbane")
-        # Corrected reading at D-1 T23:00 UTC = D 09:00 AEST.
-        dt_corr = datetime(
-            self._D.year, self._D.month, self._D.day - 1, 23, 0, tzinfo=UTC
-        )
-        # agl_reported_timestamp: labelled = dt_corr.astimezone(BNE)
-        # = D 09:00+10:00 AEST. labelled.replace(tzinfo=SYD)
-        # = D 09:00+11:00 AEDT -> UTC = D-1 T22:00 UTC.
-        dt_old = datetime(
-            self._D.year, self._D.month, self._D.day - 1, 22, 0, tzinfo=UTC
-        )
+        dt_corr = datetime(2026, 11, 19, 14, 0, tzinfo=UTC)  # D 00:00 AEST
+        dt_old = datetime(2026, 11, 19, 13, 0, tzinfo=UTC)  # D-1 23:00 AEST
         reading = IntervalReading(
             dt=dt_corr, kwh=0.15, cost_aud=0.045, rate_type="normal"
         )
-        # _key_days(dt_old): D-1 T22:00 UTC = D 08:00 AEST → date D-1.
-        # D-1 T22:30 UTC = D 08:30 AEST → date D-1. key_days = {D-1}.
-        # Gate = {D-1}: passes R2(i).
-        # reading.dt.astimezone(bne).date() = D 09:00 AEST → date D ∉ {D-1}: fails R2(ii).
+        assert coord._key_days(dt_old) == {self._D - timedelta(days=1)}
         matched = coord._rekey_matches(
             [reading],
             stored_kwh={dt_old: 0.15},
             batch_kwh={dt_corr: 0.15},
-            gate={self._D - timedelta(days=1)},
+            gate={self._D - timedelta(days=1), self._D},
         )
         assert matched == set()
+
+    def test_r2_value_mismatch_not_matched(self, hass: HomeAssistant) -> None:
+        """A stale key whose stored kWh differs from the old bucket by more
+        than _CONSERVATION_SLACK_KWH (AGL revised the reading since it was
+        stored) is not a pure re-key: the conservation guard decides it."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Brisbane")
+        coord.client.local_tz = ZoneInfo("Australia/Brisbane")
+        matched = coord._rekey_matches(
+            [self._make_reading()],
+            stored_kwh={self._DT_OLD: self._KWH + 0.05},
+            batch_kwh={self._DT_CORR: self._KWH},
+            gate={self._D},
+        )
+        assert matched == set()
+
+    def test_rekeyed_key_not_owed_by_its_day(self, hass: HomeAssistant) -> None:
+        """Critic minor 6: a matched re-key is excluded from the day's owed kWh,
+        so a second stale key the batch covers is still zeroed.
+
+        Day D (QLD, Nov): A at 06:00 AEST (0.25, old key T19:00Z = the
+        re-key), C at 08:00 AEST (0.10, old key T21:00Z). Stored T21:00Z
+        holds 0.20 (revised since: not a re-key). Batch 0.35 >= owed 0.20
+        without the re-key -> D conserves -> T21:00Z zeroed. Counting the
+        re-key as owed (0.45) would fail D and carry T21:00Z with a WARNING.
+        """
+        _entry, coord = _make_entry(hass, zone_name="Australia/Brisbane")
+        coord.client.local_tz = ZoneInfo("Australia/Brisbane")
+        kwh_id = f"{DOMAIN}:consumption_9999999999"
+        dt_c = datetime(2026, 11, 19, 22, 0, tzinfo=UTC)  # D 08:00 AEST
+        dt_x = datetime(2026, 11, 19, 21, 0, tzinfo=UTC)  # D 07:00 AEST
+        readings = [
+            self._make_reading(),
+            IntervalReading(dt=dt_c, kwh=0.1, cost_aud=0.03, rate_type="normal"),
+        ]
+        result = coord._stale_key_fill(
+            {kwh_id: {self._DT_CORR: self._KWH, dt_c: 0.1}},
+            {kwh_id: {self._DT_OLD: self._KWH, dt_x: 0.2}},
+            kwh_id=kwh_id,
+            readings=readings,
+            reading_days={self._D},
+            since=self._DT_CORR - timedelta(days=1),
+            rekey=True,
+        )
+        assert result[kwh_id][self._DT_OLD] == 0.0
+        assert result[kwh_id][dt_x] == 0.0
+
+    def test_rekeyed_key_puts_no_day_at_risk(
+        self, hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Critic minor 6: a matched re-key alone never puts its day through
+        the conservation check — a lower batch value at a key the batch
+        overwrites anyway is no #300 regression, so no WARNING."""
+        _entry, coord = _make_entry(hass, zone_name="Australia/Brisbane")
+        coord.client.local_tz = ZoneInfo("Australia/Brisbane")
+        kwh_id = f"{DOMAIN}:consumption_9999999999"
+        with caplog.at_level("WARNING", logger="custom_components.haggle"):
+            result = coord._stale_key_fill(
+                {kwh_id: {self._DT_CORR: self._KWH}},
+                {kwh_id: {self._DT_OLD: self._KWH, self._DT_CORR: 0.75}},
+                kwh_id=kwh_id,
+                readings=[self._make_reading()],
+                reading_days={self._D},
+                since=self._DT_CORR - timedelta(days=1),
+                rekey=True,
+            )
+        assert result[kwh_id][self._DT_OLD] == 0.0
+        assert result[kwh_id][self._DT_CORR] == self._KWH
+        assert not [r for r in caplog.records if "#300" in r.getMessage()]
 
     def test_key_in_batch_not_matched(self, hass: HomeAssistant) -> None:
         """A key that already has a batch value is never stale — skipped."""

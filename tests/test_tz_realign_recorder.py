@@ -51,6 +51,7 @@ from custom_components.haggle.const import (
     RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
     STAT_CONSUMPTION,
+    STAT_COST,
     STAT_GENERATION,
     STAT_GENERATION_CREDIT,
     TZ_REALIGN_COMPLETE,
@@ -175,10 +176,29 @@ def _gen_kwh(day: date, i: int) -> float:
     return round(0.2 + 0.01 * i + 0.001 * (day.toordinal() % 50), 6)
 
 
+def _tou_band(i: int) -> str:
+    """ToU band of local slot ``i``: the junction slots (00:00-01:00) are
+    off-peak; peak and shoulder never touch the junction hour."""
+    if 14 <= i < 40:
+        return "peak"
+    if 40 <= i < 44:
+        return "shoulder"
+    return "offpeak"
+
+
 def _day_readings(
-    day: date, tz: ZoneInfo, *, old: bool, profile=_cons_kwh
+    day: date,
+    tz: ZoneInfo,
+    *,
+    old: bool,
+    profile=_cons_kwh,
+    rate: float = 0.3,
+    tou: bool = False,
 ) -> list[IntervalReading]:
-    """One local day in the corrected (``old=False``) or pre-beta.3 convention."""
+    """One local day in the corrected (``old=False``) or pre-beta.3 convention.
+
+    ``rate`` is the AUD/kWh price of every slot; ``tou`` types the slots by
+    _tou_band instead of all ``normal``."""
     out: list[IntervalReading] = []
     for i, dt in enumerate(_local_slots(day, tz)):
         kwh = profile(day, i)
@@ -187,7 +207,10 @@ def _day_readings(
         at = agl_reported_timestamp(dt, api_tz=_SYD, contract_tz=tz) if old else dt
         out.append(
             IntervalReading(
-                dt=at, kwh=kwh, cost_aud=round(kwh * 0.3, 6), rate_type="normal"
+                dt=at,
+                kwh=kwh,
+                cost_aud=round(kwh * rate, 6),
+                rate_type=_tou_band(i) if tou else "normal",
             )
         )
     return out
@@ -217,6 +240,9 @@ class _Agl:
         self.boom: date | None = None
         self.cons_days: list[date] = []
         self.solar_days: list[date] = []
+        self.rate = 0.3
+        self.gen_rate = 0.3
+        self.tou = False
 
     async def hourly(self, _contract: str, day: date) -> list[IntervalReading]:
         self.cons_days.append(day)
@@ -228,13 +254,15 @@ class _Agl:
             raise RuntimeError("unwrapped")
         if day == self.empty:
             return []
-        return _day_readings(day, self.tz, old=False)
+        return _day_readings(day, self.tz, old=False, rate=self.rate, tou=self.tou)
 
     async def solar(
         self, _contract: str, day: date, previous: bool = False
     ) -> list[IntervalReading]:
         self.solar_days.append(day)
-        return _day_readings(day, self.tz, old=False, profile=_gen_kwh)
+        return _day_readings(
+            day, self.tz, old=False, profile=_gen_kwh, rate=self.gen_rate
+        )
 
 
 def _e2e_coordinator(
@@ -302,16 +330,26 @@ async def _seed_old(
     days: list[date],
     *,
     generation: bool = False,
+    rate: float = 0.3,
+    tou: bool = False,
 ) -> None:
     """Write ``days`` the way a pre-beta.3 release did (old convention)."""
     if generation:
         await coord._import_generation(
-            [r for d in days for r in _day_readings(d, tz, old=True, profile=_gen_kwh)],
+            [
+                r
+                for d in days
+                for r in _day_readings(d, tz, old=True, profile=_gen_kwh, rate=rate)
+            ],
             fetched_days=days,
         )
     else:
         await coord._import_intervals(
-            [r for d in days for r in _day_readings(d, tz, old=True)]
+            [
+                r
+                for d in days
+                for r in _day_readings(d, tz, old=True, rate=rate, tou=tou)
+            ]
         )
     await async_wait_recording_done(hass)
 
@@ -532,6 +570,188 @@ class TestEndToEndGenerationStage:
         assert record["generation"] == TZ_REALIGN_COMPLETE
 
 
+_COST = f"{DOMAIN}:{STAT_COST}_{_CONTRACT}"
+_TOU_BANDS = ("offpeak", "peak", "shoulder")
+
+
+def _band_ids(tariff: str) -> tuple[str, str]:
+    return (
+        f"{DOMAIN}:{STAT_CONSUMPTION}_{tariff}_{_CONTRACT}",
+        f"{DOMAIN}:{STAT_COST}_{tariff}_{_CONTRACT}",
+    )
+
+
+def _junction_prev(floor: date, tz: ZoneInfo) -> float:
+    """Start (epoch) of the stored hour just below the realign cutoff: the
+    straddle hour in SA (A4 trims the floor's 00:00 slot), the floor's
+    previous local hour in QLD."""
+    midnight = datetime(floor.year, floor.month, floor.day, tzinfo=tz).astimezone(UTC)
+    trim = timedelta(minutes=midnight.minute)
+    return (midnight + trim - timedelta(hours=1)).timestamp()
+
+
+class TestJunctionCostAndBands:
+    """R1 per series: the cost and every ToU band series follow the aggregate
+    kWh verdict at the floor junction (critic minor 5)."""
+
+    @pytest.mark.parametrize(
+        ("tz", "now"),
+        [
+            (_ADL, "2026-10-10T03:00:00+00:00"),
+            (_ADL, "2026-11-20T03:00:00+00:00"),
+            (_BNE, "2026-11-20T03:00:00+00:00"),
+        ],
+        ids=["SA-oct", "SA-nov", "QLD-nov"],
+    )
+    async def test_cost_and_bands_exact_at_floor(
+        self, hass: HomeAssistant, freezer, tz: ZoneInfo, now: str
+    ) -> None:
+        """ToU contract, same prices before and after: the aggregate cost and
+        every band's kWh/cost series end at the corrected truth with zero
+        steps, the floor-day bars are exact, and no band gains a row below
+        the window that it never had (a key is never created).
+
+        Pre-fix values: subtraction applied to the aggregate kWh only ->
+        cost and off-peak series over-count the moved junction slot(s);
+        rowless bands not skipped -> a new zero row at the junction hour.
+        """
+        freezer.move_to(now)
+        coord, agl = _e2e_coordinator(hass, tz)
+        agl.tou = True
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        days = _history(today)
+        await _seed_old(hass, coord, tz, days, tou=True)
+        prev = _junction_prev(floor, tz)
+        before = {
+            stat_id: {r["start"] for r in await _rows(hass, stat_id)}
+            for tariff in _TOU_BANDS
+            for stat_id in _band_ids(tariff)
+        }
+
+        await _cycle(hass, coord)
+
+        world = [r for d in days for r in _day_readings(d, tz, old=False, tou=True)]
+        expected = {
+            _CONS: sum(r.kwh for r in world),
+            _COST: sum(r.cost_aud for r in world),
+        }
+        for tariff in _TOU_BANDS:
+            cons_id, cost_id = _band_ids(tariff)
+            expected[cons_id] = sum(r.kwh for r in world if r.rate_type == tariff)
+            expected[cost_id] = sum(r.cost_aud for r in world if r.rate_type == tariff)
+        for stat_id, total in expected.items():
+            rows = await _rows(hass, stat_id)
+            assert _steps(rows) == [], stat_id
+            assert rows[-1]["sum"] == pytest.approx(total, abs=1e-6), (
+                f"{stat_id}: residual {rows[-1]['sum'] - total:+.6f}"
+            )
+        # Floor-day bars of the cost and the off-peak band (the band the
+        # junction slots belong to) are exact.
+        off_cons, off_cost = _band_ids("offpeak")
+        for stat_id, value in (
+            (_COST, lambda r: r.cost_aud),
+            (off_cons, lambda r: r.kwh if r.rate_type == "offpeak" else 0.0),
+            (off_cost, lambda r: r.cost_aud if r.rate_type == "offpeak" else 0.0),
+        ):
+            bar = 0.0
+            for r in world:
+                start = r.dt.replace(minute=0)
+                if start.astimezone(tz).date() == floor:
+                    bar += value(r)
+            dash = _dash_days(await _rows(hass, stat_id), tz)
+            assert dash[floor] == pytest.approx(bar, abs=1e-9), stat_id
+        # The peak/shoulder bands never held the junction hour: still no row.
+        for tariff in ("peak", "shoulder"):
+            for stat_id in _band_ids(tariff):
+                assert prev not in before[stat_id]
+                assert prev not in {r["start"] for r in await _rows(hass, stat_id)}
+
+    async def test_qld_repriced_cost_clamped_not_carried(
+        self, hass: HomeAssistant, freezer
+    ) -> None:
+        """QLD, floor in Sydney DST, price up 10% since the old write: the
+        junction cost row would go negative (0.30x - 0.33x), so it is clamped
+        to 0 and written — never skipped, which would leave the stored row
+        to be carried forward by the fill (its day, floor-1, is outside the
+        window) and count the moved slots' cost twice.
+
+        Expected cost: old price for every day before the floor, new price
+        from the floor on; the junction row (floor-1 23:00) is 0 in the cost
+        and off-peak cost series.
+        """
+        freezer.move_to("2026-11-20T03:00:00+00:00")
+        tz = _BNE
+        coord, agl = _e2e_coordinator(hass, tz)
+        agl.tou = True
+        agl.rate = 0.33
+        today = datetime.now(UTC).date()
+        floor = today - timedelta(days=TZ_REALIGN_DAYS)
+        days = _history(today)
+        await _seed_old(hass, coord, tz, days, tou=True)
+
+        await _cycle(hass, coord)
+
+        prev = _junction_prev(floor, tz)
+        _off_cons, off_cost = _band_ids("offpeak")
+        for stat_id, band in ((_COST, None), (off_cost, "offpeak")):
+            rows = await _rows(hass, stat_id)
+            assert _steps(rows) == [], stat_id
+            exp = sum(
+                r.cost_aud
+                for d in days
+                for r in _day_readings(
+                    d, tz, old=False, rate=0.3 if d < floor else 0.33, tou=True
+                )
+                if band is None or r.rate_type == band
+            )
+            assert rows[-1]["sum"] == pytest.approx(exp, abs=1e-6), (
+                f"{stat_id}: residual {rows[-1]['sum'] - exp:+.6f}"
+            )
+            assert {r["start"]: r["state"] for r in rows}[prev] == pytest.approx(
+                0.0, abs=1e-12
+            )
+
+
+class TestJunctionCreditUsesCredit:
+    """R1 generation family: the credit junction row subtracts the matched
+    slots' CREDIT, never their kWh."""
+
+    @pytest.mark.parametrize("tz", [_ADL, _BNE], ids=["SA", "QLD"])
+    async def test_credit_exact_with_rate_above_one(
+        self, hass: HomeAssistant, freezer, tz: ZoneInfo
+    ) -> None:
+        """Feed-in at 1.50 AUD/kWh (unrealistic on purpose: kWh and AUD then
+        differ in the direction a clamp cannot hide). After both stages the
+        credit sum equals the true credit total with zero steps.
+
+        Pre-fix value (credit pick reads kWh): the junction credit row keeps
+        1.50x - 1.00x = +0.50x of the floor's dawn slot.
+        """
+        freezer.move_to("2026-11-20T03:00:00+00:00")
+        coord, agl = _e2e_coordinator(hass, tz, solar=True)
+        agl.gen_rate = 1.5
+        today = datetime.now(UTC).date()
+        days = _history(today)
+        await _seed_old(hass, coord, tz, days)
+        await _seed_old(hass, coord, tz, days, generation=True, rate=1.5)
+
+        await _cycle(hass, coord)
+        await _cycle(hass, coord)
+
+        assert _record(coord)["reason"] == TZ_REALIGN_COMPLETE
+        rows = await _rows(hass, _CREDIT)
+        assert _steps(rows) == []
+        exp = sum(
+            r.cost_aud
+            for d in days
+            for r in _day_readings(d, tz, old=False, profile=_gen_kwh, rate=1.5)
+        )
+        assert rows[-1]["sum"] == pytest.approx(exp, abs=1e-6), (
+            f"credit residual {rows[-1]['sum'] - exp:+.6f}"
+        )
+
+
 class TestEndToEndIncompleteStage:
     """C1: an incomplete stage writes no more than a normal poll would."""
 
@@ -675,6 +895,12 @@ class TestEndToEndIncompleteStage:
         record = _record(coord)
         assert record["state"] == TZ_REALIGN_PENDING
         assert (record["attempts"], record["halts"]) == (1, 0)
+        # R4: a raised sweep records its effective start like an incomplete
+        # one, so a later give-up names it in the Repairs issue.
+        assert (
+            record["tried_from"]
+            == (today - timedelta(days=TZ_REALIGN_DAYS)).isoformat()
+        )
 
         agl.boom = None
         await _cycle(hass, coord)
