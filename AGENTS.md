@@ -849,13 +849,17 @@ complete stage's import only, `junction=True`, for the consumption family
 - Cost, credit and bands follow the aggregate-kWh verdict, never their own
   (falling back to "not confirmed" would double-count the aggregate). Each
   series subtracts its share of the matched slots at the batch's CURRENT
-  value and band, so a re-price or band re-type since storage is not
-  neutralised: a state that would go negative (a price increase, the new
-  band of a re-typed slot) is written as 0 (DEBUG-logged); a price
-  decrease, or the OLD band of a re-typed slot, keeps at most one moved
-  slot's worth of over-count in that cost, credit or band row. The
-  aggregate kWh stays exact; only cost and the band partition can be off
-  by that slot. A series is skipped only when it has neither a stored
+  value; bands take the matched slots under the type they were STORED
+  under (AGL's raw tag, `stored_type`, #141 — with derived bands the
+  current band of a moved slot is not the band holding it). So a re-price,
+  or AGL re-typing a slot since storage, is not neutralised: a state that
+  would go negative (a price increase, the new band of a slot AGL
+  re-typed) is written as 0 (DEBUG-logged); a price decrease, or the OLD
+  band of a slot AGL re-typed, keeps at most the matched slots' worth of
+  over-count in that cost, credit or band row. The band partition is
+  exact provided AGL's type for those slots is unchanged since they were
+  stored. The aggregate kWh stays exact; only cost and the band
+  partition can be off by the matched slots. A series is skipped only when it has neither a stored
   `prev` row nor a trimmed slot; a band that holds a trimmed slot but has
   no stored `prev` row gains a key at `prev` (the restored 00:00 slot in
   its true hour). No other key is created.
@@ -1250,6 +1254,26 @@ The HA Energy dashboard requires:
   Band cost is always AGL's per-slot `consumption.amount`; entered rates feed
   the rate sensors only. A never-configured entry is on v0.5.0's exact path
   (`TOU_SERIES_TARIFFS`, the `& TOU_BANDS` gate) — golden-tested.
+  - **#292 re-alignment junction with derived bands**: the stored `prev`
+    row below the window was written before #141, under AGL's raw type, so
+    `_import_intervals` captures `raw_type` BEFORE `_attribute_bands` and
+    `_realign_junction(stored_type=…)` subtracts the MATCHED slots from the
+    band they are stored under; the trimmed half (new rows) keeps its
+    derived band. The band partition at `prev` is then exact, provided
+    AGL's type for those slots is unchanged since they were stored; if AGL
+    re-typed them, it can over-count by at most the matched slots (one SA,
+    two QLD-in-Sydney-DST). Aggregate always exact; never a step. The
+    applied-history `from` is the cutoff AFTER the junction moved it
+    (`prev`).
+  - **Downgrade to v0.5.x** (m4): the older build does not know
+    `superoffpeak`, so for the trailing `REWINDOW_DAYS` its band partition
+    counts those hours twice (Super Off-Peak + the tag-based band); no step.
+  - **Delete + re-add** (stats P3-2): the new entry is never-configured
+    (`CONF_TARIFF_BANDS_APPLIED` lives in the deleted entry's data), so it
+    is on the legacy path and does not retire the stored `superoffpeak`
+    rows in the rewindow: the band partition double-counts those hours for
+    up to `REWINDOW_DAYS`, with no step. The user's fix is to configure the
+    windows again (docs/energy-dashboard.md, Troubleshooting).
 - Resume point: `get_last_statistics(hass, 1, stat_id, True, {"start", "sum"})` — returns
   the last-imported hour so incremental updates don't re-import already-stored rows.
 - Each import call is idempotent: `(statistic_id, start)` updates in place.
