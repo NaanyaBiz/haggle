@@ -554,6 +554,15 @@ async def test_serviceable_filter_is_case_insensitive(hass: HomeAssistant) -> No
     assert kept == ["1", "2", "5"]
 
 
+async def _open_options_step(hass: HomeAssistant, entry: Any, step: str) -> Any:
+    """Open the options flow and pick ``step`` from the #141 menu."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": step}
+    )
+
+
 async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:
     """The options flow exposes and persists the solar-writes toggle (CO-10.3)."""
     from custom_components.haggle.const import OPT_SOLAR_STATISTICS_ENABLED
@@ -564,9 +573,9 @@ async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:
         unique_id="opt-test",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
+    assert result["step_id"] == "general"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {OPT_SOLAR_STATISTICS_ENABLED: False}
     )
@@ -584,10 +593,14 @@ async def test_options_flow_defaults_to_enabled(hass: HomeAssistant) -> None:
         unique_id="opt-default",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    from custom_components.haggle.config_flow import vol as flow_vol
+
+    result = await _open_options_step(hass, entry, "general")
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_SOLAR_STATISTICS_ENABLED)
-    assert key.default() is True
+    # Prefilled as a suggested value, not a voluptuous default (HA P3-1).
+    assert key.default is flow_vol.UNDEFINED
+    assert _suggested(result)[OPT_SOLAR_STATISTICS_ENABLED] is True
 
 
 async def test_options_flow_poll_interval_defaults_to_24(hass: HomeAssistant) -> None:
@@ -604,10 +617,13 @@ async def test_options_flow_poll_interval_defaults_to_24(hass: HomeAssistant) ->
         unique_id="opt-poll-default",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    from custom_components.haggle.config_flow import vol as flow_vol
+
+    result = await _open_options_step(hass, entry, "general")
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_POLL_INTERVAL_HOURS)
-    assert key.default() == DEFAULT_POLL_INTERVAL_HOURS
+    assert key.default is flow_vol.UNDEFINED
+    assert _suggested(result)[OPT_POLL_INTERVAL_HOURS] == DEFAULT_POLL_INTERVAL_HOURS
 
 
 async def test_options_flow_sets_poll_interval(hass: HomeAssistant) -> None:
@@ -623,7 +639,7 @@ async def test_options_flow_sets_poll_interval(hass: HomeAssistant) -> None:
         unique_id="opt-poll-set",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {OPT_SOLAR_STATISTICS_ENABLED: True, OPT_POLL_INTERVAL_HOURS: 72},
@@ -651,12 +667,225 @@ async def test_options_flow_rejects_out_of_range_poll_interval(
         unique_id=f"opt-poll-reject-{bad_value}",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     with pytest.raises(vol.Invalid):
         await hass.config_entries.options.async_configure(
             result["flow_id"],
             {OPT_SOLAR_STATISTICS_ENABLED: True, OPT_POLL_INTERVAL_HOURS: bad_value},
         )
+
+
+# -----------------------------------------------------------------------
+# #141: options menu + tariff windows (AC7)
+# -----------------------------------------------------------------------
+
+_BILL_TEXTS = {"peak": "15:00-21:00", "shoulder": "10:00-14:00"}
+
+
+def _options_entry(hass: HomeAssistant, options: dict | None = None) -> Any:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_CONTRACT_NUMBER: "9999999999", CONF_REFRESH_TOKEN: "v1.t"},
+        options=options or {},
+        unique_id="opt-tariff",
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+def _tariff_input(
+    mode: str = "windows",
+    residual: str = "offpeak",
+    rates: dict | None = None,
+    **texts: str,
+) -> dict[str, Any]:
+    return {"mode": mode, "residual": residual, **texts, "rates": rates or {}}
+
+
+def _suggested(result: Any) -> dict[str, Any]:
+    """The form's suggested values, section fields nested under their key."""
+    from homeassistant.data_entry_flow import section
+
+    out: dict[str, Any] = {}
+    for key, val in result["data_schema"].schema.items():
+        if isinstance(val, section):
+            out[key.schema] = {
+                k.schema: k.description["suggested_value"]
+                for k in val.schema.schema
+                if k.description and "suggested_value" in k.description
+            }
+        elif key.description and "suggested_value" in key.description:
+            out[key.schema] = key.description["suggested_value"]
+    return out
+
+
+async def _submit_tariff(hass: HomeAssistant, entry: Any, user_input: dict) -> Any:
+    result = await _open_options_step(hass, entry, "tariff_windows")
+    assert result["step_id"] == "tariff_windows"
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], user_input
+    )
+
+
+async def test_options_menu_offers_both_screens(hass: HomeAssistant) -> None:
+    entry = _options_entry(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    assert list(result["menu_options"]) == ["general", "tariff_windows"]
+
+
+async def test_general_step_merges_and_keeps_tariff_settings(
+    hass: HomeAssistant,
+) -> None:
+    """Regression: the pre-#141 single step REPLACED all options, so saving
+    the poll interval would wipe the tariff configuration."""
+    from custom_components.haggle.const import (
+        OPT_POLL_INTERVAL_HOURS,
+        OPT_SOLAR_STATISTICS_ENABLED,
+    )
+
+    tariff = {"version": 1, "mode": "flat"}
+    entry = _options_entry(hass, {"tariff_bands": tariff})
+    result = await _open_options_step(hass, entry, "general")
+    await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {OPT_SOLAR_STATISTICS_ENABLED: False, OPT_POLL_INTERVAL_HOURS: 48},
+    )
+    assert entry.options == {
+        "tariff_bands": tariff,
+        OPT_SOLAR_STATISTICS_ENABLED: False,
+        OPT_POLL_INTERVAL_HOURS: 48,
+    }
+
+
+async def test_tariff_step_round_trip_is_lossless(hass: HomeAssistant) -> None:
+    """Text -> canonical stored -> reopened form shows identical text ->
+    saving it unchanged leaves the options byte-identical."""
+    from custom_components.haggle.const import OPT_POLL_INTERVAL_HOURS
+
+    entry = _options_entry(hass, {OPT_POLL_INTERVAL_HOURS: 72})
+    result = await _submit_tariff(
+        hass,
+        entry,
+        _tariff_input(
+            peak="17:00-20:00 weekdays, 07:00-09:00 weekdays",
+            superoffpeak="11:00-14:00",
+            rates={"peak_rate": 44.17, "superoffpeak_rate": 0.5 + 0.5},
+        ),
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    stored = dict(entry.options)
+    assert stored[OPT_POLL_INTERVAL_HOURS] == 72  # merged
+    assert stored["tariff_bands"]["rates"] == {"peak": 0.4417, "superoffpeak": 0.01}
+    assert stored["tariff_bands"]["windows"][0] == {
+        "band": "peak",
+        "start": "07:00",
+        "end": "09:00",
+        "days": "weekdays",
+    }
+
+    form = await _open_options_step(hass, entry, "tariff_windows")
+    suggested = _suggested(form)
+    assert suggested == {
+        "mode": "windows",
+        "residual": "offpeak",
+        "peak": "07:00-09:00 weekdays, 17:00-20:00 weekdays",
+        "superoffpeak": "11:00-14:00",
+        "rates": {"peak_rate": 44.17, "superoffpeak_rate": 1.0},
+    }
+    result = await hass.config_entries.options.async_configure(
+        form["flow_id"], suggested
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert dict(entry.options) == stored
+
+
+async def test_clearing_a_field_clears_it(hass: HomeAssistant) -> None:
+    """M7: prefill uses suggested values, so an emptied band text or rate is
+    omitted from the submission and the band/rate is removed — a
+    ``default=`` would silently re-fill it."""
+    entry = _options_entry(hass)
+    await _submit_tariff(
+        hass, entry, _tariff_input(rates={"shoulder_rate": 30.0}, **_BILL_TEXTS)
+    )
+    form = await _open_options_step(hass, entry, "tariff_windows")
+    suggested = _suggested(form)
+    suggested.pop("shoulder")
+    suggested["rates"].pop("shoulder_rate")
+    await hass.config_entries.options.async_configure(form["flow_id"], suggested)
+    bands = {w["band"] for w in entry.options["tariff_bands"]["windows"]}
+    assert bands == {"peak"}
+    assert entry.options["tariff_bands"]["rates"] == {}
+
+
+async def test_not_configured_removes_the_key_and_flat_is_stored(
+    hass: HomeAssistant,
+) -> None:
+    from custom_components.haggle.const import OPT_POLL_INTERVAL_HOURS
+
+    entry = _options_entry(hass, {OPT_POLL_INTERVAL_HOURS: 48})
+    await _submit_tariff(hass, entry, _tariff_input(mode="flat", peak="garbage"))
+    assert entry.options["tariff_bands"] == {"version": 1, "mode": "flat"}
+    form = await _open_options_step(hass, entry, "tariff_windows")
+    assert _suggested(form)["mode"] == "flat"
+    await hass.config_entries.options.async_configure(
+        form["flow_id"], _tariff_input(mode="unconfigured")
+    )
+    assert entry.options == {OPT_POLL_INTERVAL_HOURS: 48}
+
+
+@pytest.mark.parametrize(
+    ("texts", "errors"),
+    [
+        ({"peak": "3pm-9pm"}, {"peak": "invalid_window_format"}),
+        ({"peak": "15:15-21:00"}, {"peak": "window_not_half_hour"}),
+        ({"shoulder": "10:00-10:00"}, {"shoulder": "window_empty"}),
+        (
+            {"offpeak": ", ".join(["01:00-01:30"] * 7)},
+            {"offpeak": "too_many_windows"},
+        ),
+        (
+            {"peak": "15:00-21:00", "shoulder": "20:00-22:00"},
+            {"base": "windows_overlap"},
+        ),
+        ({}, {"base": "no_windows"}),
+    ],
+)
+async def test_every_error_code_reachable(
+    hass: HomeAssistant, texts: dict, errors: dict
+) -> None:
+    entry = _options_entry(hass)
+    result = await _submit_tariff(hass, entry, _tariff_input(**texts))
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == errors
+    assert "tariff_bands" not in entry.options
+    if errors == {"base": "windows_overlap"}:
+        assert result["description_placeholders"] == {
+            "band_a": "peak",
+            "band_b": "shoulder",
+        }
+    # The rejected input is kept in the re-shown form.
+    assert _suggested(result).get("peak") == texts.get("peak")
+
+
+@pytest.mark.parametrize("cents", [0.5, 500.5, 4417])
+async def test_rate_out_of_bounds_rejected(hass: HomeAssistant, cents: float) -> None:
+    from homeassistant.data_entry_flow import InvalidData
+
+    entry = _options_entry(hass)
+    with pytest.raises(InvalidData):
+        await _submit_tariff(
+            hass, entry, _tariff_input(rates={"peak_rate": cents}, peak="15:00-21:00")
+        )
+    assert "tariff_bands" not in entry.options
+
+
+async def test_invalid_stored_settings_prefill_as_unconfigured(
+    hass: HomeAssistant,
+) -> None:
+    entry = _options_entry(hass, {"tariff_bands": {"version": 7}})
+    form = await _open_options_step(hass, entry, "tariff_windows")
+    assert _suggested(form)["mode"] == "unconfigured"
 
 
 # -----------------------------------------------------------------------

@@ -1402,8 +1402,9 @@ class TestDiagnosticsV4:
         with patch(_PATCH_GET_INSTANCE, MagicMock(return_value=instance)):
             result = await async_get_config_entry_diagnostics(hass, entry)
 
-        assert result["schema_version"] == 4
-        assert DIAGNOSTICS_SCHEMA_VERSION == 4
+        # v4 introduced tz_realign; later schema versions keep it (#141 → v5).
+        assert result["schema_version"] == DIAGNOSTICS_SCHEMA_VERSION
+        assert DIAGNOSTICS_SCHEMA_VERSION >= 4
         # tz_realign must be top-level.
         assert "tz_realign" in result
         assert result["tz_realign"] == realign_record

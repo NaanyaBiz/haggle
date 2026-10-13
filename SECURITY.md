@@ -118,6 +118,7 @@ reporter on request. The short version:
 |---|---|
 | AGL HTTPS API → HA coordinator | TLS + Trust-On-First-Use SPKI pinning (see below). |
 | HA user browser → config flow | OAuth state nonce + PKCE S256. |
+| HA admin → tariff-windows options (#141) | Bounded free text: at most 200 characters per band, a strict `HH:MM-HH:MM[ weekdays\|weekends]` grammar on half-hour boundaries, rates 1–500 c/kWh. Re-validated on every read, so a hand-edited or newer-version stored value fails safe to totals only; diagnostics publish only the canonical form or an enum error code, never the raw text (threat-model TB-2). |
 | AGL JSON → HA recorder/statistics | Allowlist-style parsing; numeric values clamped to non-negative finite floats bounded by `MAX_AGL_NUMERIC`; interval timestamps validated against the requested contract-local day, and duplicate slots within an import batch replaced rather than summed (threat-model T-4). |
 | GitHub Actions → HACS installers | All Actions SHA-pinned; release artefacts attested via `actions/attest-build-provenance`. HACS installs the attested zip itself (hacs.json `zip_release`); SPDX + CycloneDX SBOMs are attested against the same digest. |
 | HA diagnostics → public GitHub issue | Built to be public: refresh token redacted, account/contract HMAC-anonymised, final scrub pass + leak tests; parsed by the daily triage routine strictly as untrusted data. |
