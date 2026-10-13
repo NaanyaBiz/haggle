@@ -35,7 +35,12 @@ from custom_components.haggle.const import (
     CONF_ACCOUNT_NUMBER,
     CONF_CONTRACT_NUMBER,
     CONF_REFRESH_TOKEN,
+    CONF_TARIFF_BANDS_APPLIED,
+    CONF_TZ_REALIGN,
     DOMAIN,
+    TZ_REALIGN_COMPLETE,
+    TZ_REALIGN_DAYS,
+    TZ_REALIGN_DONE,
 )
 from custom_components.haggle.coordinator import HaggleCoordinator
 from tests.test_recorder_statistics import _read_series
@@ -887,3 +892,147 @@ async def test_ac10_one_state_read_per_import_with_five_bands(
     await coord._import_intervals([])
     assert len(state_reads) == 1
     assert state_reads[0] == set(_all_ids())
+
+
+# --- #292 re-alignment junction with derived bands (#141 P2-1) ---------------
+
+# Junction hour = the floor's 00:00-01:00 local (QLD-in-DST matched slots) /
+# 00:00 + 00:30 (SA: trimmed half + matched slot). The old-convention rows
+# below the window were stored under AGL's raw type (``_tou_band``: offpeak
+# there), so each variant decides which junction slots CHANGE band.
+_JUNCTION_KEEP = [  # every junction slot stays offpeak (the residual)
+    {"band": "peak", "start": "07:00", "end": "20:00", "days": "all"},
+]
+_JUNCTION_CHANGE = [  # every junction slot becomes superoffpeak
+    {"band": "peak", "start": "07:00", "end": "20:00", "days": "all"},
+    {"band": "superoffpeak", "start": "00:00", "end": "01:00", "days": "all"},
+]
+_JUNCTION_MIXED = [  # 00:00 keeps offpeak, 00:30 becomes superoffpeak
+    {"band": "peak", "start": "07:00", "end": "20:00", "days": "all"},
+    {"band": "superoffpeak", "start": "00:30", "end": "01:00", "days": "all"},
+]
+
+
+@pytest.mark.parametrize("tz", [_ADL, _BNE], ids=["SA", "QLD-sydney-dst"])
+@pytest.mark.parametrize(
+    "windows",
+    [_JUNCTION_KEEP, _JUNCTION_CHANGE, _JUNCTION_MIXED],
+    ids=["keep-band", "change-band", "mixed"],
+)
+async def test_realign_junction_subtracts_moved_slots_by_stored_type(
+    recorder_mock, hass: HomeAssistant, freezer, tz: ZoneInfo, windows: list[dict]
+) -> None:
+    """A configured entry runs the one-off #292 re-alignment: the junction
+    row below the window (``prev``) was written by pre-#141 code under AGL's
+    raw type, so the matched old-convention slots must leave the band that
+    HOLDS them — not their newly derived band — while the trimmed SA half
+    (a new row) lands in its derived band.
+
+    Pre-fix (subtract by derived band) the change-band / mixed variants
+    leave the moved slot in the stored offpeak row AND add it to its
+    derived band at its true hour: the band partition over-counts the
+    aggregate at ``prev`` by the matched slot(s) and the band totals end
+    above the aggregate. Aggregate stays exact either way.
+    """
+    from tests.test_tz_realign_recorder import (
+        _cycle,
+        _e2e_coordinator,
+        _history,
+        _seed_old,
+        _total,
+    )
+
+    freezer.move_to("2026-11-20T03:00:00+00:00")  # floor 2026-10-21: Sydney DST
+    coord, agl = _e2e_coordinator(hass, tz)
+    agl.tou = True
+    today = datetime.now(UTC).date()
+    floor = today - timedelta(days=TZ_REALIGN_DAYS)
+    days = _history(today)
+    await _seed_old(hass, coord, tz, days, tou=True)
+    hass.config_entries.async_update_entry(coord.config_entry, options=_opts(windows))
+
+    await _cycle(hass, coord)
+
+    assert (
+        coord.config_entry.data[CONF_TZ_REALIGN]["consumption"] == TZ_REALIGN_COMPLETE
+    )
+    assert coord._band_plan.mode == "derived"
+    snap = await _all_rows(hass)
+    _assert_chains(snap)
+    agg = snap[_sid("consumption")]
+    last = max(agg)
+    assert agg[last][1] == pytest.approx(_total(days, tz), abs=1e-6)
+
+    midnight = _local_midnight(floor, tz)
+    prev = _hour(midnight + timedelta(minutes=midnight.minute)) - timedelta(hours=1)
+    assert prev in agg
+    # Stats P3-3: the applied-history ``from`` is the junction import's real
+    # first hour — ``prev``, AFTER _realign_junction moved the cutoff down.
+    history = coord.config_entry.data[CONF_TARIFF_BANDS_APPLIED]
+    assert history[-1]["mode"] == "derived"
+    assert history[-1]["from"] == prev.isoformat()
+    # Exact partition (kWh and cost) at the junction hour and every later key.
+    _assert_partition(snap, {k for k in agg if k >= prev})
+    # ...and over the whole history: band totals end at the aggregate's.
+    for kind in ("consumption", "cost"):
+        bands_final = sum(
+            max(snap[_sid(kind, b)].items())[1][1]
+            for b in _ALL_BANDS
+            if snap[_sid(kind, b)]
+        )
+        agg_rows = snap[_sid(kind)]
+        assert bands_final == pytest.approx(agg_rows[max(agg_rows)][1], abs=1e-6), kind
+
+
+# --- legacy Repairs condition on stored band series (stats P3-1) -------------
+
+
+@pytest.mark.parametrize("stored_bands", [False, True], ids=["no-bands", "bands"])
+async def test_legacy_repairs_issue_follows_stored_band_series(
+    recorder_mock, hass: HomeAssistant, freezer, stored_bands: bool
+) -> None:
+    """D1 through the real cycle and the real recorder: a never-configured
+    entry gets the ``tariff_bands_legacy`` issue only when band series are
+    STORED (the batch itself is untyped here, so nothing else can open the
+    gate), and configuring windows deletes it."""
+    from homeassistant.helpers import issue_registry as ir
+
+    from tests.test_tz_realign_recorder import _cycle, _e2e_coordinator
+
+    freezer.move_to("2026-07-20T03:00:00+00:00")
+    coord, agl = _e2e_coordinator(
+        hass,
+        _BNE,
+        realign={
+            "state": TZ_REALIGN_DONE,
+            "zone": _BNE.key,
+            "reason": TZ_REALIGN_COMPLETE,
+        },
+    )
+    agl.tou = False  # every polled slot is "normal"
+    if stored_bands:
+        old = [date(2026, 7, 10), date(2026, 7, 11)]
+        await _import(
+            hass,
+            coord,
+            [r for d in old for r in _day_slots(d, _BNE, {36: "peak", 2: "offpeak"})],
+            set(old),
+        )
+        # Only the RECORDER may vouch for the bands: forget the in-memory
+        # set the seeding import grew (a restarted coordinator has none).
+        coord._active_tou_bands = set()
+    issue_id = f"tariff_bands_legacy_{coord.config_entry.entry_id}"
+
+    await _cycle(hass, coord)
+    assert coord._band_plan.mode == "legacy_type"
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+    if not stored_bands:
+        assert issue is None
+        return
+    assert issue is not None
+    assert issue.is_persistent is True
+
+    hass.config_entries.async_update_entry(coord.config_entry, options=_opts(_BILL_126))
+    await _cycle(hass, coord)
+    assert coord._band_plan.mode == "derived"
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
