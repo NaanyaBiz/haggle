@@ -71,6 +71,9 @@
       "unit_rate_shoulder": {
         "name": "Unit rate (shoulder)"
       },
+      "unit_rate_superoffpeak": {
+        "name": "Unit rate (super off-peak)"
+      },
       "supply_charge": {
         "name": "Supply charge"
       },
@@ -111,12 +114,31 @@
     "tz_history_before_realign": {
       "title": "Older statistics keep their old timestamps",
       "description": "For entry {entry}: AGL's timestamps put South Australian and Broken Hill readings 30 minutes early, and Queensland readings 1 hour early while New South Wales is on daylight saving. Statistics from {floor} onward are at the correct hours (except solar statistics, if solar statistics writing is turned off in the options). Statistics stored before {floor} by a Haggle version older than 0.5.0-beta.3 may keep the old timing: around midnight, the first part of a day can show at the end of the day before, but nothing is missing or counted twice. If this entry was set up with 0.5.0-beta.3 or later, its history was never affected and you can dismiss this notice. Do not delete the haggle:* statistics to force a rebuild: Haggle only backfills the most recent 30 days, so anything older would be lost for good."
+    },
+    "tariff_bands_legacy": {
+      "title": "Tariff bands follow AGL's unreliable tag",
+      "description": "For entry {entry}: Haggle writes your per-band statistics (Peak, Off-Peak, Shoulder, Anytime) by following the tariff tag AGL attaches to each half-hour reading. That tag often does not match your plan: peak-rate usage can show as Anytime, and a flat-rate plan can show a spurious Peak band. Your totals are still correct; only the split between bands is affected. To fix the split, open the integration's options, choose Tariff windows and enter your plan's time windows. If you do nothing, Haggle keeps the current behaviour for now, but this will change in a future release. See Learn more for which statistics to add to the Energy dashboard."
+    },
+    "tariff_bands_invalid": {
+      "title": "Tariff window settings could not be read",
+      "description": "For entry {entry}: the stored tariff window settings are not valid (they may have been edited by hand or saved by a newer Haggle version), so Haggle is writing only the total consumption and cost statistics, with no per-band statistics. Open the integration's options, choose Tariff windows and save your windows again to fix this."
+    },
+    "tariff_bands_suspended": {
+      "title": "Tariff bands paused: contract timezone unknown",
+      "description": "For entry {entry}: tariff windows are configured, but Haggle could not work out your contract's timezone from its service address, so it cannot tell which local half-hour each reading belongs to. Rather than put readings in the wrong band, Haggle is writing only the total consumption and cost statistics until the timezone is known. Per-band statistics for this period will be missing. If this notice persists, please open an issue and attach the integration's diagnostics file."
     }
   },
   "options": {
     "step": {
       "init": {
         "title": "Haggle options",
+        "menu_options": {
+          "general": "General",
+          "tariff_windows": "Tariff windows"
+        }
+      },
+      "general": {
+        "title": "General",
         "data": {
           "solar_statistics_enabled": "Write solar statistics (backfill and self-heal)",
           "poll_interval_hours": "Poll interval (hours)"
@@ -125,6 +147,61 @@
           "solar_statistics_enabled": "Turn off to freeze all solar statistics writes (backfill, self-heal, give-up markers) without uninstalling or downgrading. Existing statistics are untouched; the bill-period solar sensors read 'unknown' while disabled and the cumulative sensors keep their last stored values. Takes effect from the next poll. Consumption statistics are unaffected.",
           "poll_interval_hours": "How often to check AGL for new data. AGL's own feed lags 24-48h behind real-time, so anything below 24h has nothing new to find -- the integration enforces a 24h floor. Raise this if you want to reduce request volume. Takes effect from the next poll."
         }
+      },
+      "tariff_windows": {
+        "title": "Tariff windows",
+        "description": "Enter the times of day your plan charges each rate, as on your bill. Times are local wall-clock time in half-hour steps, for example 15:00-21:00. Separate several windows with commas, and add weekdays or weekends after a window that applies only on those days (for example 07:00-09:00 weekdays). A window may wrap past midnight (22:00-07:00). Any time not covered by a window counts as the fallback band. Public holidays count as ordinary days. Changes take effect from the next scheduled poll; statistics from before then keep their previous split.",
+        "data": {
+          "mode": "Plan structure",
+          "residual": "Fallback band (times outside your windows)",
+          "peak": "Peak windows",
+          "shoulder": "Shoulder windows",
+          "offpeak": "Off-Peak windows",
+          "superoffpeak": "Super Off-Peak windows"
+        },
+        "data_description": {
+          "mode": "Not configured keeps the current behaviour (bands follow AGL's own tag). Flat rate stops writing per-band statistics. Time-of-use windows assigns each half-hour to a band from its local time.",
+          "residual": "Choose Anytime for plans with one general rate plus cheaper windows (for example EV plans), or Off-Peak for peak/shoulder/off-peak plans.",
+          "superoffpeak": "For EV charging windows, or the free window of Victoria's Midday Power Saver tariff. Use Shoulder for its solar soak window."
+        },
+        "sections": {
+          "rates": {
+            "name": "Rates (optional)",
+            "description": "Your plan's rate for each band, in cents per kWh including GST (between 1 and 500), as printed on your bill. These only feed the rate sensors; cost statistics always use AGL's own amounts. Takes effect from the next scheduled poll.",
+            "data": {
+              "peak_rate": "Peak rate",
+              "shoulder_rate": "Shoulder rate",
+              "offpeak_rate": "Off-Peak rate",
+              "superoffpeak_rate": "Super Off-Peak rate"
+            }
+          }
+        }
+      }
+    },
+    "error": {
+      "invalid_window_format": "Use the format HH:MM-HH:MM, optionally followed by weekdays or weekends, with commas between windows.",
+      "window_not_half_hour": "Windows must start and end on the hour or half-hour (:00 or :30).",
+      "window_empty": "A window cannot start and end at the same time.",
+      "too_many_windows": "At most 6 windows per band.",
+      "windows_overlap": "Two windows overlap ({band_a} and {band_b}) on the same days. Each half-hour can belong to only one band.",
+      "no_windows": "Enter at least one window, or choose Flat rate.",
+      "rate_out_of_range": "Rates must be between 1 and 500 cents per kWh.",
+      "invalid_config": "These settings could not be read. Please re-enter them.",
+      "unsupported_version": "These settings were saved by a different Haggle version. Please re-enter them."
+    }
+  },
+  "selector": {
+    "tariff_mode": {
+      "options": {
+        "unconfigured": "Not configured (follow AGL's tag)",
+        "flat": "Flat rate (no per-band statistics)",
+        "windows": "Time-of-use windows"
+      }
+    },
+    "tariff_residual": {
+      "options": {
+        "offpeak": "Off-Peak",
+        "normal": "Anytime"
       }
     }
   }

@@ -151,6 +151,10 @@ TARIFF_PEAK: Final = "peak"
 TARIFF_OFFPEAK: Final = "offpeak"
 TARIFF_SHOULDER: Final = "shoulder"
 TARIFF_NORMAL: Final = "normal"
+# Fifth band for user-configured windows only (#141): EV night windows and
+# the Victorian Midday Power Saver "free" window. AGL never emits it as a
+# `consumption.type`, so the legacy (type-derived) path never writes it.
+TARIFF_SUPEROFFPEAK: Final = "superoffpeak"
 # Presence of ANY of these in interval data marks the contract as Time-of-Use.
 TOU_BANDS: Final = (TARIFF_PEAK, TARIFF_OFFPEAK, TARIFF_SHOULDER)
 # On a ToU contract, every tariff type that appears gets its own statistic
@@ -171,7 +175,73 @@ TARIFF_LABELS: Final = {
     TARIFF_OFFPEAK: "Off-Peak",
     TARIFF_SHOULDER: "Shoulder",
     TARIFF_NORMAL: "Anytime",
+    TARIFF_SUPEROFFPEAK: "Super Off-Peak",
 }
+# Every band a statistics series can exist for (#141). Derived mode buckets,
+# builds its series family and emits over THIS tuple, never over
+# TOU_SERIES_TARIFFS — a derived superoffpeak slot must land in a band. The
+# legacy (never-configured) path keeps TOU_SERIES_TARIFFS / TOU_BANDS
+# exactly as v0.5.0 (AC5).
+BAND_VOCAB: Final = (
+    TARIFF_PEAK,
+    TARIFF_OFFPEAK,
+    TARIFF_SHOULDER,
+    TARIFF_NORMAL,
+    TARIFF_SUPEROFFPEAK,
+)
+
+# User-configured ToU windows (#141), entry.options[OPT_TARIFF_BANDS]. The
+# canonical, JSON-safe value is written by the options flow and validated by
+# tariff_windows.validate on every read (a hand-edited value fails safe):
+#   {"version": 1, "mode": "windows"|"flat", "residual": "offpeak"|"normal",
+#    "windows": [{"band", "start": "HH:MM", "end": "HH:MM",
+#                 "days": "all"|"weekdays"|"weekends"}, ...],
+#    "rates": {band: AUD/kWh incl. GST}}
+# Key absent = never configured (legacy: bands follow AGL's consumption.type
+# exactly as v0.5.0). Read LIVE once per cycle — no reload listener.
+OPT_TARIFF_BANDS: Final = "tariff_bands"
+TARIFF_CONFIG_VERSION: Final = 1
+TARIFF_MODE_WINDOWS: Final = "windows"
+TARIFF_MODE_FLAT: Final = "flat"
+# Effective per-cycle modes (diagnostics `mode_effective`).
+BAND_MODE_LEGACY: Final = "legacy_type"
+BAND_MODE_DERIVED: Final = "derived"
+BAND_MODE_FLAT: Final = "flat"
+BAND_MODE_HELD: Final = "held_tz"
+BAND_MODE_SUSPENDED: Final = "suspended_tz"
+BAND_MODE_INVALID: Final = "invalid"
+# Bands a user can give windows (the residual band is chosen separately).
+WINDOW_BANDS: Final = (
+    TARIFF_PEAK,
+    TARIFF_SHOULDER,
+    TARIFF_OFFPEAK,
+    TARIFF_SUPEROFFPEAK,
+)
+RESIDUAL_BANDS: Final = (TARIFF_OFFPEAK, TARIFF_NORMAL)
+MAX_RANGES_PER_BAND: Final = 6
+# Rates are entered in c/kWh incl. GST (bills print c/kWh) and stored as
+# AUD/kWh. Outside [MIN, MAX] is rejected, never clamped.
+MIN_RATE_C_PER_KWH: Final = 1.0
+MAX_RATE_C_PER_KWH: Final = 500.0
+# Bounded history of applied tariff settings, entry.data — the
+# self-describing record of when each attribution basis started:
+#   [{"fingerprint": str, "mode": str, "from": ISO instant}, ...]
+# "Ever configured" = this list is non-empty OR a mode is configured now;
+# that is the ONLY thing that arms the BAND_VOCAB union and the
+# partition-exact band fill (D7), so a never-configured entry keeps v0.5.0's
+# exact output (AC5).
+CONF_TARIFF_BANDS_APPLIED: Final = "tariff_bands_applied"
+MAX_BAND_HISTORY: Final = 10
+# A configured entry whose contract zone is not address-derived holds its
+# consumption import (so the resume point stays behind) for at most this many
+# consecutive cycles, then writes the aggregate only (D6). In-memory counter.
+TARIFF_TZ_HOLD_MAX_CYCLES: Final = 3
+ISSUE_TARIFF_BANDS_LEGACY: Final = "tariff_bands_legacy"
+ISSUE_TARIFF_BANDS_INVALID: Final = "tariff_bands_invalid"
+ISSUE_TARIFF_BANDS_SUSPENDED: Final = "tariff_bands_suspended"
+ISSUE_TARIFF_LEARN_MORE_URL: Final = (
+    "https://github.com/NaanyaBiz/haggle/blob/main/docs/energy-dashboard.md"
+)
 
 # Config-entry keys.
 # CONF_EMAIL / CONF_PASSWORD are NOT used — auth is via refresh token.
@@ -318,6 +388,7 @@ DATA_SUPPLY_CHARGE: Final = "supply_charge_aud_per_day"  # AUD/day
 DATA_UNIT_RATE_PEAK: Final = "unit_rate_peak_aud_per_kwh"
 DATA_UNIT_RATE_OFFPEAK: Final = "unit_rate_offpeak_aud_per_kwh"
 DATA_UNIT_RATE_SHOULDER: Final = "unit_rate_shoulder_aud_per_kwh"
+DATA_UNIT_RATE_SUPEROFFPEAK: Final = "unit_rate_superoffpeak_aud_per_kwh"
 # Solar feed-in cumulatives — only populated/registered on hasSolar contracts.
 DATA_GENERATION_KWH: Final = "latest_generation_kwh"  # TOTAL_INCREASING sensor
 DATA_GENERATION_CREDIT: Final = "latest_generation_credit_aud"  # cumulative AUD

@@ -489,14 +489,15 @@ class TestDiagnosticsV3Timezone:
         entry.runtime_data = SimpleNamespace(coordinator=coordinator)
         return entry
 
-    async def test_schema_version_is_4(self, hass: HomeAssistant) -> None:
-        """DIAGNOSTICS_SCHEMA_VERSION is 4 in this build (#292 A7 → v3,
-        #292 PR2b top-level ``tz_realign`` → v4).
+    async def test_schema_version_is_5(self, hass: HomeAssistant) -> None:
+        """DIAGNOSTICS_SCHEMA_VERSION is 5 in this build (#292 A7 → v3,
+        #292 PR2b top-level ``tz_realign`` → v4, #141 ``tariff_bands`` +
+        ``coordinator.band_profile`` + ``entry.options`` → v5).
 
         Mutation: stays at 3 → triage routine parses by the wrong contract
         and misses the re-alignment record.
         """
-        assert DIAGNOSTICS_SCHEMA_VERSION == 4
+        assert DIAGNOSTICS_SCHEMA_VERSION == 5
 
     async def test_contract_timezone_field_present_and_correct(
         self, hass: HomeAssistant
