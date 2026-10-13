@@ -50,7 +50,14 @@ Examples:
 | Ausgrid-style 3-band (#126 bill) | Peak `15:00-21:00`, Shoulder `10:00-14:00` | Off-Peak |
 | EV plan (cheap overnight window) | Super Off-Peak `00:00-06:00` | Anytime |
 | Victorian Midday Power Saver | Peak `16:00-21:00`, Super Off-Peak `11:00-14:00` ("free"), Shoulder `14:00-16:00` ("solar soak") | Off-Peak |
+| South Australian plan with a cheap midday ("solar sponge") window | Peak and the midday window **as printed on your bill**; put the midday window in Shoulder, or in Super Off-Peak if its rate is your plan's cheapest | Off-Peak |
 | Weekday-only peak | Peak `16:00-20:00 weekdays` | Off-Peak |
+
+The #126 row is that customer's bill, where the windows apply every day.
+Many NSW network time-of-use tariffs apply peak (and sometimes shoulder)
+on weekdays only: check your bill and add `weekdays` where it says so.
+Always take the exact times from your own bill; the rows above are
+examples, not your network's tariff.
 
 How it behaves:
 
@@ -107,13 +114,22 @@ How it behaves:
     #300 safeguard, with a WARNING in the log), that day can mix old and
     new splits hour by hour.
   - When the one-off timezone re-alignment (#292) completes after you
-    configure windows, the hour just before its window can count up to
-    two half-hours twice in the band split (Queensland in Sydney
-    daylight saving; one in South Australia).
+    configure windows, the hour just before its window is exact in the
+    band split too, provided AGL's tag for the readings moved out of it
+    has not changed since they were stored. If AGL re-tagged them, that
+    hour can count at most those moved readings twice in the band split
+    (two half-hours in Queensland in Sydney daylight saving, one in South
+    Australia). The totals stay exact.
   - Downgrading to a release without tariff windows (v0.5.x): it does
     not know Super Off-Peak, so for the trailing week its band split
     counts those hours twice (once in Super Off-Peak, once in the
     tag-based band). No total steps down.
+  - Deleting the integration and adding it again: the new entry starts
+    out not configured, so it splits by AGL's tag and does not retire the
+    stored Super Off-Peak rows of the trailing week. For up to 7 days
+    those hours count twice in the band split (once in Super Off-Peak,
+    once in the tag-based band). No total steps down. Fix: configure your
+    tariff windows again on the new entry.
 
 ## What the sensor entities are for
 
@@ -169,6 +185,16 @@ the old statistic selectable. (Reported as
 Both the aggregate consumption series and the per-tariff series are added.
 They overlap by design — keep only the per-tariff series (ToU) or only the
 aggregate (flat rate).
+
+**After deleting and re-adding Haggle, the per-band series add up to
+more than the total for the last week.**
+A re-added entry starts out with tariff windows not configured, so it
+splits by AGL's tag again and leaves the stored Super Off-Peak rows of the
+trailing week in place: for up to 7 days those hours count in both Super
+Off-Peak and the tag-based band (no total steps down). Configure your
+tariff windows again on the new entry (**Configure → Tariff windows**);
+the next poll re-splits its window. The same applies after downgrading to
+a release without tariff windows (see [Limitations](#limitations)).
 
 **Solar sensors don't match the AGL app.**
 Compare like with like: the *period* sensors match the app's billing-period

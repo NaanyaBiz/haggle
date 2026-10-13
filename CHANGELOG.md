@@ -579,7 +579,16 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
   - **Known limitations.** Public holidays count as ordinary days (kWh can
     move between bands on about 10 days a year; cost totals are
     unaffected). Solar export is not split by band. Controlled load (#274)
-    is a separate meter channel, not a time window.
+    is a separate meter channel, not a time window. When the one-off
+    timezone re-alignment (#292) runs on a configured entry, the band split
+    of the hour below its window is exact, provided AGL's tag for the
+    readings moved out of that hour is unchanged since they were stored;
+    if AGL re-tagged them, at most those readings (one half-hour SA, two
+    QLD in Sydney daylight saving) count twice in the band split. On a
+    downgrade to v0.5.x, stored Super Off-Peak hours of the last week count
+    twice in the band split; after deleting and re-adding the integration
+    the same happens until you configure the windows again on the new
+    entry. No total steps down in either case.
   - **Nothing changes unless you configure it.** An entry that has never
     been configured writes exactly what v0.5.0 wrote (golden-tested). If
     it has per-band series, it gets one Repairs notice explaining that
