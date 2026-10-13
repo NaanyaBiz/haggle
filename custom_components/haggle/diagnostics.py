@@ -327,7 +327,7 @@ async def async_get_config_entry_diagnostics(
             # Implied-price profile of the last consumption import (#141,
             # v5): c/kWh (2 dp) by local half-hour with COARSE counts, per
             # band p10/median/p90 — no kWh, no timestamps.
-            "band_profile": coordinator.band_profile,
+            "band_profile": _round_floats(coordinator.band_profile),
         }
 
     result: dict[str, Any] = {

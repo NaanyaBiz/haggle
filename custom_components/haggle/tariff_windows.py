@@ -179,6 +179,10 @@ def _canonical_windows(raw: object) -> list[dict[str, str]]:
     """Re-validate stored windows through the text grammar, sorted."""
     if not isinstance(raw, list):
         raise WindowError("invalid_config")
+    # Bound the work before touching any item: a hand-edited value can hold
+    # any number of entries, and no valid config has more than this.
+    if len(raw) > MAX_RANGES_PER_BAND * len(WINDOW_BANDS):
+        raise WindowError("invalid_config")
     by_band: dict[str, list[str]] = {}
     for item in raw:
         if not isinstance(item, Mapping):
