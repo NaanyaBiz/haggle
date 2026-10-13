@@ -571,3 +571,160 @@ class TestDiagnosticsV3Timezone:
         assert _ACCOUNT not in blob
         # But the IANA key IS expected to appear (it's the contract_timezone).
         assert "Australia/Broken_Hill" in blob
+
+
+# ---------------------------------------------------------------------------
+# Schema v5: tariff_bands block, band_profile, allowlisted options (#141)
+# ---------------------------------------------------------------------------
+
+_TARIFF = {
+    "version": 1,
+    "mode": "windows",
+    "residual": "offpeak",
+    "windows": [{"band": "peak", "start": "15:00", "end": "21:00", "days": "all"}],
+    "rates": {"peak": 0.4417},
+}
+_HISTORY = [
+    {"fingerprint": "abc123def456", "mode": "derived", "from": "2026-07-01T14:00:00"}
+]
+
+
+async def _make_tariff_entry(
+    hass: HomeAssistant, options: dict, data: dict | None = None
+) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={**_ENTRY_DATA, **(data or {})},
+        options=options,
+        unique_id=f"{_ACCOUNT}_{_CONTRACT}",
+    )
+    entry.add_to_hass(hass)
+    coordinator = HaggleCoordinator(hass, entry, AsyncMock(), _CONTRACT)
+    coordinator.client.tz_is_contract = True
+    coordinator._band_plan = coordinator._resolve_band_plan()
+    coordinator.data = _data()
+    coordinator.data.rate_sources = {"peak": "configured", "offpeak": "plan"}
+    coordinator.band_profile = {
+        "slots": [
+            {"slot": "15:00", "band": "peak", "n": "4+", "median_c_per_kwh": 44.17}
+        ],
+        "bands": {"peak": {"n": 9, "p10": 44.0, "median": 44.17, "p90": 44.2}},
+        "raw_type_counts": {"normal": 40, "peak": 8},
+    }
+    entry.runtime_data = SimpleNamespace(coordinator=coordinator)
+    return entry
+
+
+class TestDiagnosticsV5Tariff:
+    async def test_tariff_bands_block_shape(self, hass: HomeAssistant) -> None:
+        from custom_components.haggle.tariff_windows import fingerprint
+
+        entry = await _make_tariff_entry(
+            hass,
+            {"tariff_bands": _TARIFF, "poll_interval_hours": 48},
+            {"tariff_bands_applied": _HISTORY},
+        )
+        rows = {f"{DOMAIN}:consumption_peak_{_CONTRACT}": _DEFAULT_ROWS}
+
+        instance = MagicMock()
+
+        async def _exec(func, hass_arg, start, end, ids, *rest):
+            return {i: rows.get(i, []) for i in ids}
+
+        instance.async_add_executor_job = AsyncMock(side_effect=_exec)
+        with patch(
+            "homeassistant.helpers.recorder.get_instance",
+            MagicMock(return_value=instance),
+        ):
+            result = await async_get_config_entry_diagnostics(hass, entry)
+
+        block = result["tariff_bands"]
+        assert block == {
+            "configured": _TARIFF,
+            "mode_effective": "derived",
+            "validation_error": None,
+            "fingerprint": fingerprint(_TARIFF),
+            "applied_history": _HISTORY,
+            "stored_bands": ["peak"],
+            "configured_bands": ["offpeak", "peak"],
+            "rate_sources": {"peak": "configured", "offpeak": "plan"},
+        }
+        # Applied history moved out of entry.data; options allowlisted.
+        assert "tariff_bands_applied" not in result["entry"]["data"]
+        assert result["entry"]["options"] == {"poll_interval_hours": 48}
+        assert result["coordinator"]["band_profile"]["bands"]["peak"]["n"] == 9
+        # Every BAND_VOCAB series is covered once configured.
+        for band in ("peak", "offpeak", "shoulder", "normal", "superoffpeak"):
+            assert any(f"consumption_{band}_" in k for k in result["statistics"])
+
+    async def test_invalid_settings_never_echo_raw_text(
+        self, hass: HomeAssistant
+    ) -> None:
+        hostile = {
+            "version": 1,
+            "mode": "windows",
+            "residual": "offpeak",
+            "windows": [
+                {"band": "peak", "start": f"HOSTILE-{_CONTRACT}", "end": "21:00"}
+            ],
+        }
+        entry = await _make_tariff_entry(
+            hass,
+            {"tariff_bands": hostile},
+            {
+                "tariff_bands_applied": [
+                    {"fingerprint": "x" * 500, "mode": "derived", "evil": "y"},
+                    "z",
+                ]
+            },
+        )
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        block = result["tariff_bands"]
+        assert block["configured"] is None
+        assert block["mode_effective"] == "invalid"
+        assert block["validation_error"] == "invalid_window_format"
+        assert block["applied_history"] == [
+            {"fingerprint": "x" * 40, "mode": "derived"}
+        ]
+        blob = json.dumps(result)
+        assert "HOSTILE" not in blob
+        assert _CONTRACT not in blob
+        assert '"evil"' not in blob
+
+    async def test_unconfigured_entry_block(self, hass: HomeAssistant) -> None:
+        entry = await _make_entry(hass)
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        block = result["tariff_bands"]
+        assert block["configured"] is None
+        assert block["mode_effective"] == "legacy_type"
+        assert block["applied_history"] == []
+        assert block["stored_bands"] == ["offpeak", "peak"]
+        assert result["coordinator"]["band_profile"] is None
+        assert result["entry"]["options"] == {}
+
+    async def test_leaks_still_blocked_with_profile_and_options(
+        self, hass: HomeAssistant
+    ) -> None:
+        entry = await _make_tariff_entry(
+            hass, {"tariff_bands": _TARIFF}, {"tariff_bands_applied": _HISTORY}
+        )
+        with _patched_stats():
+            result = await async_get_config_entry_diagnostics(hass, entry)
+        blob = json.dumps(result)
+        for secret in (_TOKEN, _CONTRACT, _ACCOUNT, _SPKI_AUTH, _SPKI_BFF):
+            assert secret not in blob
+
+    async def test_runtime_unavailable_block(self, hass: HomeAssistant) -> None:
+        entry = MockConfigEntry(
+            domain=DOMAIN,
+            data=_ENTRY_DATA,
+            options={"tariff_bands": _TARIFF},
+            unique_id="x",
+        )
+        entry.add_to_hass(hass)
+        result = await async_get_config_entry_diagnostics(hass, entry)
+        assert result["tariff_bands"]["configured"] == _TARIFF
+        assert result["tariff_bands"]["mode_effective"] is None
+        assert result["tariff_bands"]["stored_bands"] == []

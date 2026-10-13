@@ -409,3 +409,138 @@ class TestExtraStateAttributes:
         data = self._full_data()
         sensor = self._sensor_for_key(hass, DATA_UNIT_RATE, data)
         assert sensor.extra_state_attributes is None
+
+
+# ---------------------------------------------------------------------------
+# #141: configured tariff windows drive the rate-sensor set
+# ---------------------------------------------------------------------------
+
+_EV = {
+    "version": 1,
+    "mode": "windows",
+    "residual": "normal",
+    "windows": [{"band": "superoffpeak", "start": "00:00", "end": "06:00"}],
+}
+_BILL = {
+    "version": 1,
+    "mode": "windows",
+    "residual": "offpeak",
+    "windows": [
+        {"band": "peak", "start": "15:00", "end": "21:00"},
+        {"band": "shoulder", "start": "10:00", "end": "14:00"},
+    ],
+}
+
+
+async def _setup_configured(
+    hass: HomeAssistant, tariff: dict | None, data: HaggleData
+) -> tuple[MockConfigEntry, list[str]]:
+    entry = _make_entry_with_coordinator(hass, data)
+    if tariff is not None:
+        hass.config_entries.async_update_entry(entry, options={"tariff_bands": tariff})
+    coordinator = entry.runtime_data.coordinator
+    coordinator._band_plan = coordinator._resolve_band_plan()
+    captured: list[HaggleEnergySensor] = []
+    await async_setup_entry(hass, entry, captured.extend)  # type: ignore[arg-type]
+    return entry, [e.entity_description.key for e in captured]
+
+
+def _rate_entity(hass: HomeAssistant, entry: MockConfigEntry, key: str) -> str:
+    from homeassistant.helpers import entity_registry as er
+
+    return (
+        er.async_get(hass)
+        .async_get_or_create(
+            "sensor", DOMAIN, f"{entry.entry_id}_{key}", config_entry=entry
+        )
+        .entity_id
+    )
+
+
+class TestConfiguredRateSensors:
+    async def test_windows_register_configured_bands(self, hass: HomeAssistant) -> None:
+        # AGL tagged nothing ToU (active empty): the configuration decides.
+        entry, keys = await _setup_configured(hass, _BILL, _data(frozenset()))
+        assert {
+            DATA_UNIT_RATE_PEAK,
+            DATA_UNIT_RATE_SHOULDER,
+            DATA_UNIT_RATE_OFFPEAK,
+        } <= (set(keys))
+        assert entry.runtime_data.coordinator.rate_bands_registered == (
+            "configured",
+            frozenset({"peak", "shoulder", "offpeak"}),
+        )
+
+    async def test_ev_registers_superoffpeak_only(self, hass: HomeAssistant) -> None:
+        from custom_components.haggle.const import DATA_UNIT_RATE_SUPEROFFPEAK
+
+        _, keys = await _setup_configured(
+            hass, _EV, _data(frozenset({"peak", "offpeak"}))
+        )
+        assert set(keys) == _BASE_KEYS | {DATA_UNIT_RATE_SUPEROFFPEAK}
+
+    async def test_flat_registers_none(self, hass: HomeAssistant) -> None:
+        _, keys = await _setup_configured(
+            hass, {"version": 1, "mode": "flat"}, _data(frozenset({"peak"}))
+        )
+        assert set(keys) == _BASE_KEYS
+
+    async def test_legacy_never_registers_superoffpeak(
+        self, hass: HomeAssistant
+    ) -> None:
+        from custom_components.haggle.const import DATA_UNIT_RATE_SUPEROFFPEAK
+
+        _, keys = await _setup_configured(
+            hass,
+            None,
+            _data(frozenset({"peak", "offpeak", "shoulder", "normal", "superoffpeak"})),
+        )
+        assert DATA_UNIT_RATE_SUPEROFFPEAK not in keys
+        assert len(keys) == len(SENSOR_DESCRIPTIONS) + 3
+
+    async def test_configured_removes_stale_rate_entities(
+        self, hass: HomeAssistant
+    ) -> None:
+        """D8: the spurious #224 "Unit rate (peak)" is removed from the entity
+        registry when the user configures an EV window — before entities are
+        added; a configured band's entity is kept."""
+        from homeassistant.helpers import entity_registry as er
+
+        from custom_components.haggle.const import DATA_UNIT_RATE_SUPEROFFPEAK
+
+        entry = _make_entry_with_coordinator(hass, _data(frozenset({"peak"})))
+        peak = _rate_entity(hass, entry, DATA_UNIT_RATE_PEAK)
+        sop = _rate_entity(hass, entry, DATA_UNIT_RATE_SUPEROFFPEAK)
+        hass.config_entries.async_update_entry(entry, options={"tariff_bands": _EV})
+        coordinator = entry.runtime_data.coordinator
+        coordinator._band_plan = coordinator._resolve_band_plan()
+        await async_setup_entry(hass, entry, lambda _e: None)  # type: ignore[arg-type]
+        registry = er.async_get(hass)
+        assert registry.async_get(peak) is None
+        assert registry.async_get(sop) is not None
+
+    async def test_legacy_never_removes(self, hass: HomeAssistant) -> None:
+        from homeassistant.helpers import entity_registry as er
+
+        entry = _make_entry_with_coordinator(hass, _data(frozenset()))
+        peak = _rate_entity(hass, entry, DATA_UNIT_RATE_PEAK)
+        await async_setup_entry(hass, entry, lambda _e: None)  # type: ignore[arg-type]
+        assert er.async_get(hass).async_get(peak) is not None
+
+
+class TestRateSourceAttribute:
+    async def test_rate_source_attribute(self, hass: HomeAssistant) -> None:
+        data = _data(frozenset({"peak", "offpeak"}), peak=0.44)
+        data.rate_sources = {"peak": "configured", "offpeak": "plan"}
+        entry = _make_entry_with_coordinator(hass, data)
+        coordinator = entry.runtime_data.coordinator
+        by_key = {desc.key: desc for desc in TOU_RATE_DESCRIPTIONS.values()}
+        peak = HaggleEnergySensor(coordinator, entry, by_key[DATA_UNIT_RATE_PEAK])
+        offpeak = HaggleEnergySensor(coordinator, entry, by_key[DATA_UNIT_RATE_OFFPEAK])
+        shoulder = HaggleEnergySensor(
+            coordinator, entry, by_key[DATA_UNIT_RATE_SHOULDER]
+        )
+        assert peak.extra_state_attributes == {"rate_source": "configured"}
+        assert offpeak.extra_state_attributes == {"rate_source": "plan"}
+        assert shoulder.extra_state_attributes == {"rate_source": "none"}
+        assert peak.native_value == 0.44
