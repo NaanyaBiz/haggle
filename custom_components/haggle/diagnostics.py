@@ -40,20 +40,29 @@ from .const import (
     CONF_REFRESH_TOKEN,
     CONF_SOLAR_HEAL,
     CONF_SOLAR_STALL_SPANS,
+    CONF_TARIFF_BANDS_APPLIED,
     CONF_TZ_REALIGN,
     DOMAIN,
+    OPT_POLL_INTERVAL_HOURS,
+    OPT_SOLAR_STATISTICS_ENABLED,
+    OPT_TARIFF_BANDS,
     STAT_CONSUMPTION,
     STAT_COST,
 )
+from .tariff_windows import configured_bands, fingerprint, validate
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from . import HaggleConfigEntry
 
-DIAGNOSTICS_SCHEMA_VERSION = 4
+DIAGNOSTICS_SCHEMA_VERSION = 5
 
 _TO_REDACT = {CONF_REFRESH_TOKEN}
+# entry.options keys published verbatim (schema v5). The tariff settings are
+# NOT here: they appear only in validated, canonical form in `tariff_bands`.
+_OPTIONS_ALLOWLIST = (OPT_SOLAR_STATISTICS_ENABLED, OPT_POLL_INTERVAL_HOURS)
+_HISTORY_FIELDS = ("fingerprint", "mode", "from")
 
 
 def _anon_ref(value: str, key: str) -> str:
@@ -155,6 +164,55 @@ async def _series_coverage(
     return coverage
 
 
+def _applied_history(raw: object) -> list[dict[str, str]]:
+    """CONF_TARIFF_BANDS_APPLIED, allowlisted field by field (hand-edit safe)."""
+    if not isinstance(raw, list):
+        return []
+    return [
+        {k: str(item[k])[:40] for k in _HISTORY_FIELDS if k in item}
+        for item in raw
+        if isinstance(item, dict)
+    ]
+
+
+def _tariff_bands_block(
+    entry: HaggleConfigEntry,
+    coordinator: Any,
+    statistics: dict[str, dict[str, Any]],
+    contract: str,
+) -> dict[str, Any]:
+    """Schema v5 `tariff_bands` block (#141).
+
+    ``configured`` is the VALIDATED canonical settings or null — windows and
+    rates are plan facts, not personal data — and ``validation_error`` an
+    enum code, never the stored text. ``mode_effective`` is the last
+    cycle's snapshot (null while runtime is unavailable).
+    """
+    raw = entry.options.get(OPT_TARIFF_BANDS)
+    config, error = validate(raw) if raw is not None else (None, None)
+    plan = getattr(coordinator, "_band_plan", None)
+    data = getattr(coordinator, "data", None)
+    stored = sorted(
+        stat_id.removeprefix(f"{DOMAIN}:{STAT_CONSUMPTION}_").removesuffix(
+            f"_{contract}"
+        )
+        for stat_id, cov in statistics.items()
+        if stat_id.startswith(f"{DOMAIN}:{STAT_CONSUMPTION}_")
+        and stat_id != f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}"
+        and cov.get("row_count")
+    )
+    return {
+        "configured": config,
+        "mode_effective": getattr(plan, "mode", None),
+        "validation_error": error,
+        "fingerprint": fingerprint(config) if config is not None else None,
+        "applied_history": _applied_history(entry.data.get(CONF_TARIFF_BANDS_APPLIED)),
+        "stored_bands": stored,
+        "configured_bands": sorted(configured_bands(config)),
+        "rate_sources": dict(getattr(data, "rate_sources", {}) or {}),
+    }
+
+
 async def async_get_config_entry_diagnostics(
     hass: HomeAssistant, entry: HaggleConfigEntry
 ) -> dict[str, Any]:
@@ -193,6 +251,9 @@ async def async_get_config_entry_diagnostics(
     # counts and enum strings — no identifiers; the final scrub applies
     # regardless. None = never evaluated (pre-beta.5 or no poll yet).
     tz_realign = entry_data.pop(CONF_TZ_REALIGN, None)
+    # Applied tariff-settings history (#141, schema v5) moves to the
+    # `tariff_bands` block, field-allowlisted.
+    entry_data.pop(CONF_TARIFF_BANDS_APPLIED, None)
     # CONF_LOCAL_TZ deliberately stays in entry_data (`entry.data.local_tz`):
     # the persisted contract-zone authority, "" = never derived (#268 class).
     # An IANA key is non-identifying — Australia/Broken_Hill is the finest
@@ -217,7 +278,10 @@ async def async_get_config_entry_diagnostics(
             f"{DOMAIN}:{STAT_CONSUMPTION}_{contract}",
             f"{DOMAIN}:{STAT_COST}_{contract}",
         ]
-        for band in sorted(coordinator._active_tou_bands):
+        # Every band an import may have written (#141): the legacy active
+        # bands, plus the whole BAND_VOCAB once tariff windows were ever
+        # configured — that is what `tariff_bands.stored_bands` reads.
+        for band in coordinator.diagnostic_bands():
             stat_ids.extend(coordinator._tariff_stat_ids(band))
         if coordinator._has_solar:
             stat_ids.extend(coordinator._generation_stat_ids())
@@ -260,6 +324,10 @@ async def async_get_config_entry_diagnostics(
                 else None
             ),
             "data": _round_floats(data_block),
+            # Implied-price profile of the last consumption import (#141,
+            # v5): c/kWh (2 dp) by local half-hour with COARSE counts, per
+            # band p10/median/p90 — no kWh, no timestamps.
+            "band_profile": coordinator.band_profile,
         }
 
     result: dict[str, Any] = {
@@ -273,6 +341,11 @@ async def async_get_config_entry_diagnostics(
         "timezone": hass.config.time_zone,
         "entry": {
             "data": entry_data,
+            "options": {
+                key: entry.options[key]
+                for key in _OPTIONS_ALLOWLIST
+                if key in entry.options
+            },
             "unique_id": entry.unique_id,
             "pin_present_auth": pin_auth,
             "pin_present_bff": pin_bff,
@@ -280,6 +353,7 @@ async def async_get_config_entry_diagnostics(
         "solar_heal": solar_heal,
         "stall_give_up_spans": stall_spans,
         "tz_realign": tz_realign,
+        "tariff_bands": _tariff_bands_block(entry, coordinator, statistics, contract),
         "coordinator": coordinator_block,
         "statistics": statistics,
     }

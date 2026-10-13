@@ -554,6 +554,15 @@ async def test_serviceable_filter_is_case_insensitive(hass: HomeAssistant) -> No
     assert kept == ["1", "2", "5"]
 
 
+async def _open_options_step(hass: HomeAssistant, entry: Any, step: str) -> Any:
+    """Open the options flow and pick ``step`` from the #141 menu."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.MENU
+    return await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": step}
+    )
+
+
 async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:
     """The options flow exposes and persists the solar-writes toggle (CO-10.3)."""
     from custom_components.haggle.const import OPT_SOLAR_STATISTICS_ENABLED
@@ -564,9 +573,9 @@ async def test_options_flow_toggles_solar_writes(hass: HomeAssistant) -> None:
         unique_id="opt-test",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
+    assert result["step_id"] == "general"
     result = await hass.config_entries.options.async_configure(
         result["flow_id"], {OPT_SOLAR_STATISTICS_ENABLED: False}
     )
@@ -584,7 +593,7 @@ async def test_options_flow_defaults_to_enabled(hass: HomeAssistant) -> None:
         unique_id="opt-default",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_SOLAR_STATISTICS_ENABLED)
     assert key.default() is True
@@ -604,7 +613,7 @@ async def test_options_flow_poll_interval_defaults_to_24(hass: HomeAssistant) ->
         unique_id="opt-poll-default",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_POLL_INTERVAL_HOURS)
     assert key.default() == DEFAULT_POLL_INTERVAL_HOURS
@@ -623,7 +632,7 @@ async def test_options_flow_sets_poll_interval(hass: HomeAssistant) -> None:
         unique_id="opt-poll-set",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {OPT_SOLAR_STATISTICS_ENABLED: True, OPT_POLL_INTERVAL_HOURS: 72},
@@ -651,7 +660,7 @@ async def test_options_flow_rejects_out_of_range_poll_interval(
         unique_id=f"opt-poll-reject-{bad_value}",
     )
     entry.add_to_hass(hass)
-    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await _open_options_step(hass, entry, "general")
     with pytest.raises(vol.Invalid):
         await hass.config_entries.options.async_configure(
             result["flow_id"],
