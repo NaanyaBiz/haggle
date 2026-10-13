@@ -123,10 +123,10 @@ def _parse_one(part: str, band: str) -> dict[str, str]:
         raise WindowError(err.code, (band,)) from None
     if start == _DAY_MINUTES:
         raise WindowError("invalid_window_format", (band,))
+    if start == end:  # before normalising: "00:00-00:00" is empty too
+        raise WindowError("window_empty", (band,))
     if end == 0:
         end = _DAY_MINUTES  # "00:00" as an end means end of day
-    if start == end:
-        raise WindowError("window_empty", (band,))
     return {"band": band, "start": _fmt(start), "end": _fmt(end), "days": days}
 
 
