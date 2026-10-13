@@ -83,6 +83,14 @@ scrub pass (`diagnostics.py::_scrub`). Enforced by the leak tests in
   validated on the pasted callback.
 - **Assumption to question**: no host/scheme validation on the pasted
   callback URL (threat S-3 — accepted defence-in-depth gap).
+- **Options input surface (#141)**: the Tariff windows screen is admin-only
+  (HA options flow) and takes bounded free text — at most 200 characters
+  and 6 ranges per band, a strict `HH:MM-HH:MM[ days]` grammar on
+  half-hour boundaries, rates 1–500 c/kWh — parsed by the pure
+  `tariff_windows` module; the stored value is re-validated on every read
+  (a hand-edited or newer-version value fails safe to "totals only"), and
+  diagnostics publish only the canonical form or an enum error code, never
+  the raw text.
 
 ### TB-3: AGL JSON → HA recorder / statistics
 - **Controls**: typed dataclass parsing, field allowlists, numeric guards,

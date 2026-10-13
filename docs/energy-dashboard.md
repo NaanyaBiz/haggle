@@ -19,11 +19,101 @@ Find your exact statistic IDs under **Developer Tools → Statistics**
 | Your plan | Grid consumption | Return to grid (solar) | Do **not** add |
 |---|---|---|---|
 | **Flat rate** | `haggle:consumption_<contract>` — "AGL Electricity Consumption (…)" | — | any `sensor.…` entity |
-| **Time-of-Use** | the per-tariff series only: `haggle:consumption_peak_…`, `…_offpeak_…`, `…_shoulder_…`, `…_normal_…` ("AGL Electricity Consumption Peak/Off-Peak/Shoulder/Anytime (…)") | — | the aggregate `haggle:consumption_<contract>` **as well** — the per-tariff series are a partition of it, so adding both counts every kWh twice |
+| **Time-of-Use** | the per-tariff series only: `haggle:consumption_peak_…`, `…_offpeak_…`, `…_shoulder_…`, `…_normal_…`, `…_superoffpeak_…` ("AGL Electricity Consumption Peak/Off-Peak/Shoulder/Anytime/Super Off-Peak (…)"), every one that has data — retired ones included (see [Tariff windows](#tariff-windows-time-of-use-plans)) | — | the aggregate `haggle:consumption_<contract>` **as well** — the per-tariff series are a partition of it, so adding both counts every kWh twice |
 | **Solar** (either plan type) | as above for your plan type | `haggle:generation_<contract>` — "AGL Solar Generation (…)" | any `sensor.…` entity |
 
 Each consumption series has a matching cost series (`haggle:cost_…`,
 `haggle:generation_credit_…`) if you use the dashboard's cost tracking.
+
+## Tariff windows (time-of-use plans)
+
+AGL attaches a tariff tag to every half-hour reading, and Haggle used to
+split the per-band series by that tag. The tag often does not match the
+plan: peak-rate usage arrives tagged "Anytime", and some flat-rate plans
+show a spurious Peak band (#126, #224, #292). You can now tell Haggle
+your plan's times instead.
+
+**Set it up:** Settings → Devices & services → Haggle → **Configure** →
+**Tariff windows**.
+
+| Field | What to enter |
+|---|---|
+| Plan structure | **Time-of-use windows** for a ToU or EV plan; **Flat rate** for a single-rate plan (no per-band series); **Not configured** keeps the old tag-based split. |
+| Fallback band | Where any time not covered by a window goes: **Off-Peak** for peak/shoulder/off-peak plans, **Anytime** for "one general rate plus cheaper windows" plans (most EV plans). |
+| Peak / Shoulder / Off-Peak / Super Off-Peak windows | Times from your bill, local wall-clock time, half-hour steps: `15:00-21:00`. Separate several with commas. Add `weekdays` or `weekends` after a window that applies only on those days: `07:00-09:00 weekdays, 17:00-20:00 weekdays`. A window may wrap past midnight: `22:00-07:00`. |
+| Rates (optional) | c/kWh including GST, as printed on the bill. They only feed the rate sensors (with a `rate_source` attribute); cost statistics always use AGL's own per-reading amounts. |
+
+Examples:
+
+| Plan | Windows | Fallback |
+|---|---|---|
+| Ausgrid-style 3-band (#126 bill) | Peak `15:00-21:00`, Shoulder `10:00-14:00` | Off-Peak |
+| EV plan (cheap overnight window) | Super Off-Peak `00:00-06:00` | Anytime |
+| Victorian Midday Power Saver | Peak `16:00-21:00`, Super Off-Peak `11:00-14:00` ("free"), Shoulder `14:00-16:00` ("solar soak") | Off-Peak |
+| Weekday-only peak | Peak `16:00-20:00 weekdays` | Off-Peak |
+
+How it behaves:
+
+- **From the next scheduled poll.** Saving changes nothing straight away.
+  The next poll recalculates its own window (normally the last 7 days) in
+  place. Hours before that keep their previous split. Changing the
+  settings twice between polls applies only the last.
+- **A band you stop using flatlines.** Its history stays and its total
+  stops growing. Nothing is deleted, and no total ever steps down.
+- **Statistic IDs never change**, so the dashboard entries you already
+  have keep working.
+- **Times are the contract's local time**, worked out from the service
+  address (daylight saving handled). If the timezone cannot be worked
+  out, Haggle holds the consumption import for up to 3 polls, then writes
+  only the totals and raises a Repairs issue.
+
+### Which series to add after configuring
+
+- **Add every per-band consumption series that has ever had data,
+  including retired ones** (for example "Anytime" after you configure
+  Peak/Off-Peak windows). Hours before the change are in the old bands,
+  hours after it in the new ones, and together they always add up to the
+  total for every hour.
+- **Never add the aggregate `haggle:consumption_<contract>` as well**; it
+  double-counts every kWh.
+- **Flat rate**: add only the aggregate.
+
+### Limitations
+
+- **Public holidays count as ordinary days.** On a plan whose weekday peak
+  is free on public holidays, that day's peak-time kWh is counted as peak
+  (about 10 days a year). Cost totals are unaffected: band cost is AGL's
+  own per-reading amount.
+- **History before the change keeps its old split.** A one-off
+  recalculation of the last 30 days is a possible follow-up.
+- **Solar export is not split by band.** AGL's per-reading feed-in amount
+  already makes the credit right in total.
+- **Controlled load** (hot-water tariffs, #274) is a separate meter
+  channel, not a time window, and is not covered.
+- **AGL's per-reading amounts may not be priced by time of use.** In the
+  one real capture committed to the repo
+  (`tests/fixtures/solar_hourly_response.json`), the "peak"-tagged slot at
+  2026-07-01T07:30Z is priced at the same 0.37115 AUD/kWh as every
+  "normal" slot. If that holds for your account, each band's cost is
+  AGL's figure at the average rate. The diagnostics `band_profile` shows
+  the implied c/kWh per half-hour, which makes this (and a wrong window)
+  visible.
+- **Rare per-band side effects, totals always exact.**
+  - When a day errors on the first poll after configuring, that day's
+    hours keep their old split. If they never had a split (a flat-rate
+    history), the bands are empty for those hours and add up to less than
+    the total there.
+  - On a day where AGL returns less energy than is stored (a separate
+    #300 safeguard, with a WARNING in the log), that day can mix old and
+    new splits hour by hour.
+  - When the one-off timezone re-alignment (#292) completes after you
+    configure windows, the hour just before its window can count up to
+    two half-hours twice in the band split (Queensland in Sydney
+    daylight saving; one in South Australia).
+  - Downgrading to a release without tariff windows (v0.5.x): it does
+    not know Super Off-Peak, so for the trailing week its band split
+    counts those hours twice (once in Super Off-Peak, once in the
+    tag-based band). No total steps down.
 
 ## What the sensor entities are for
 
@@ -37,7 +127,7 @@ not for the Energy dashboard:
 | **Consumption cost** | AUD so far in the current billing period. |
 | **Bill projection** | AGL's own forecast for the current bill, read from the account overview. **Solar contracts:** AGL uses that slot for "Sold To Grid" instead, so no projection is available and this sensor stays `unknown` — it deliberately shows nothing rather than the wrong number ([#253](https://github.com/NaanyaBiz/haggle/issues/253)). Read `unknown` on a non-solar contract in v0.4.0 and earlier; fixed in v0.5.0. |
 | **Unit rate / Supply charge** | Your plan's c/kWh (as AUD/kWh) and daily supply charge. |
-| **Unit rate (peak / off-peak / shoulder)** | Per-band rates — ToU contracts only. |
+| **Unit rate (peak / off-peak / shoulder / super off-peak)** | Per-band rates. Unconfigured entries: peak/off-peak/shoulder on ToU contracts only. With tariff windows: one per configured band (none for Flat), using your entered rate, else the plan's, else `unknown`; the `rate_source` attribute says which. |
 | **Solar generation / Solar feed-in credit** | Cumulative exported kWh / credited AUD ever imported — solar contracts only. Like **Consumption**, these are running totals: do not compare them to the app's billing-period tile. **Solar generation** is not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). |
 | **Solar sold this period / Solar feed-in credit this period** | Exported kWh / credited AUD in the current billing period — these are the numbers that match the AGL app's "Sold To Grid" tile. **Solar sold this period** is not selectable in the Energy dashboard (de-listed, [#147](https://github.com/NaanyaBiz/haggle/issues/147)). Caveat: on **quarterly billing**, a period that started more than 30 days ago predates the backfill window, so these cover only the stored 30-day history and will read lower than the app until a new period starts. |
 | **Solar feed-in rate** | Your feed-in tariff in AUD/kWh. |
