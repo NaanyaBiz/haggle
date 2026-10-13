@@ -625,6 +625,9 @@ class TestDiagnosticsV5Tariff:
             {"tariff_bands_applied": _HISTORY},
         )
         rows = {f"{DOMAIN}:consumption_peak_{_CONTRACT}": _DEFAULT_ROWS}
+        # An unrounded float in the profile is published at 3 dp, like the
+        # rest of the coordinator block (security P3).
+        entry.runtime_data.coordinator.band_profile["bands"]["peak"]["p90"] = 44.2000004
 
         instance = MagicMock()
 
@@ -638,6 +641,7 @@ class TestDiagnosticsV5Tariff:
         ):
             result = await async_get_config_entry_diagnostics(hass, entry)
 
+        assert result["coordinator"]["band_profile"]["bands"]["peak"]["p90"] == 44.2
         block = result["tariff_bands"]
         assert block == {
             "configured": _TARIFF,

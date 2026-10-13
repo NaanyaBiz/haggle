@@ -144,6 +144,23 @@ class TestGrammar:
 
 
 class TestValidate:
+    def test_oversized_window_list_rejected_before_any_item_is_read(self) -> None:
+        """Security P3: a hand-edited list of 10,000 windows fails safe to
+        invalid_config on its length alone — no item is inspected."""
+
+        class _Untouchable(dict):
+            def get(self, *_a, **_k):  # pragma: no cover - must never run
+                raise AssertionError("item read before the length guard")
+
+        item = _Untouchable(band="peak", start="15:00", end="21:00", days="all")
+        raw = {
+            "version": 1,
+            "mode": "windows",
+            "residual": "offpeak",
+            "windows": [item] * 10_000,
+        }
+        assert validate(raw) == (None, "invalid_config")
+
     def test_flat(self) -> None:
         assert validate({"version": 1, "mode": "flat", "rates": {"peak": 9}}) == (
             {"version": 1, "mode": "flat"},
