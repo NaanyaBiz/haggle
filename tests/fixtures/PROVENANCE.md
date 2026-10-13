@@ -61,3 +61,13 @@ identifiers, (2) a documented reconciliation purpose that anonymised data
 cannot serve, and (3) a provenance entry here linking the account
 holder's own public contribution (or recording their explicit consent).
 Otherwise use the placeholders.
+
+## golden_legacy_v050.json
+
+Synthetic, not an API capture. It is the AC5 golden snapshot for #141: the
+recorder rows (hour offset, state, sum per series) that the v0.5.0-beta.5
+code (commit e8b7a73) writes for the never-configured legacy scenario in
+`tests/test_tariff_recorder.py::test_ac5_never_configured_entry_matches_v050_golden`.
+It was generated BEFORE any #141 production change, by running that test
+with `HAGGLE_REGEN_GOLDEN=1`. Never regenerate it to make a failing test
+pass: a diff means the legacy (unconfigured) write path changed.
