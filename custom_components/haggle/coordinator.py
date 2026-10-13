@@ -919,7 +919,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 DOMAIN,
                 issue_id,
                 is_fixable=False,
-                is_persistent=False,
+                is_persistent=True,
                 severity=ir.IssueSeverity.WARNING,
                 translation_key=key,
                 translation_placeholders={"entry": self.config_entry.title},
@@ -3361,6 +3361,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         intervals = _dedupe_slots(intervals)
         raw_types = Counter(r.rate_type for r in intervals)
+        # AGL's own tag per slot, before re-banding: the old-convention rows
+        # below a re-alignment window were stored under it (#141 P2-1).
+        raw_type = {r.dt: r.rate_type for r in intervals}
         # #141: from here on, inside this import, `rate_type` means the
         # STATISTICS band — AGL's tag on the legacy path, the locally derived
         # band otherwise — so bucketing, the junction picks and the re-key
@@ -3383,7 +3386,6 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # returns the cumulative sum at the last hour strictly before it, so the
         # to-be-overwritten rewindow rows are excluded regardless of timezone/DST.
         cutoff = min(hour_cons)
-        self._last_cons_cutoff = cutoff
         self.band_profile = band_profile(
             intervals,
             raw_types,
@@ -3402,7 +3404,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # reads the stored rows first: its verdict decides the cutoff.
         if junction:
             cutoff, stored = await self._realign_junction(
-                series, intervals, cutoff, kwh_id=stat_id_cons, picks=picks
+                series,
+                intervals,
+                cutoff,
+                kwh_id=stat_id_cons,
+                picks=picks,
+                stored_type=raw_type,
             )
             (initial_cons_sum, initial_cost_sum), band_sums = await asyncio.gather(
                 self._get_baseline_sums(stat_id_cons, stat_id_cost, cutoff),
@@ -3418,6 +3425,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 self._get_tariff_baseline_sums(band_ids, cutoff),
                 self._stored_hourly_states(series, cutoff),
             )
+        # The applied-history ``from`` is the import's REAL first hour — after
+        # a re-alignment junction has moved the cutoff down to ``prev``.
+        self._last_cons_cutoff = cutoff
         series = self._stale_key_fill(
             series,
             stored,
@@ -3579,6 +3589,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         *,
         kwh_id: str,
         picks: Mapping[str, _SeriesPick],
+        stored_type: Mapping[datetime, str] | None = None,
     ) -> tuple[datetime, dict[str, dict[datetime, float]]]:
         """Rewrite the hour below a re-alignment window (#292 PR2b R1).
 
@@ -3606,11 +3617,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         never stored.
 
         Cost and ToU bands follow the aggregate-kWh verdict, never their
-        own, and subtract the matched slots at the batch's CURRENT value and
-        band: a state that would go negative (a re-price up, the new band of
-        a re-typed slot) is clamped at 0 (DEBUG-logged), never a reason to
-        double-count the aggregate; a re-price down, or the old band of a
-        re-typed slot, keeps at most one moved slot of over-count. A series
+        own, and subtract the matched slots at the batch's CURRENT value.
+        Bands subtract them under the type they were STORED under —
+        ``stored_type``, AGL's raw tag per slot, since the old-convention
+        rows predate #141's derived bands — so a slot whose derived band
+        differs leaves the band that holds it, while the trimmed half (new
+        rows) keeps its derived band (#141 P2-1). A state that would go
+        negative (a re-price up, or AGL re-typed a slot since it was stored)
+        is clamped at 0 (DEBUG-logged), never a reason to double-count the
+        aggregate; a re-price down, or the old band of a slot AGL re-typed,
+        keeps at most the matched slots of over-count. A series
         with neither a stored ``prev`` row nor trimmed slots is skipped; a
         band holding a trimmed slot gains its ``prev`` key (the restored
         00:00 slot), and no other key is created. Not confirmed (history
@@ -3633,6 +3649,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 for stat_id, rows in stored.items()
             }
         trimmed = [r for r in intervals if r.dt < cutoff]
+        if stored_type is not None:
+            matched = [
+                dataclasses.replace(r, rate_type=stored_type.get(r.dt, r.rate_type))
+                for r in matched
+            ]
         for stat_id, pick in picks.items():
             row = stored.get(stat_id, {}).get(prev)
             if row is None and not pick.members(trimmed):
@@ -3799,7 +3820,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         self,
         series: Mapping[str, dict[datetime, float]],
         band_sums: Mapping[str, float],
-        bands: Iterable[str] = TOU_SERIES_TARIFFS,
+        bands: Iterable[str],
     ) -> None:
         """Emit each per-tariff consumption/cost series that has rows to write.
 
