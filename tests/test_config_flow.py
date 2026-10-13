@@ -636,10 +636,14 @@ async def test_options_flow_defaults_to_enabled(hass: HomeAssistant) -> None:
         unique_id="opt-default",
     )
     entry.add_to_hass(hass)
+    from custom_components.haggle.config_flow import vol as flow_vol
+
     result = await _open_options_step(hass, entry, "general")
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_SOLAR_STATISTICS_ENABLED)
-    assert key.default() is True
+    # Prefilled as a suggested value, not a voluptuous default (HA P3-1).
+    assert key.default is flow_vol.UNDEFINED
+    assert _suggested(result)[OPT_SOLAR_STATISTICS_ENABLED] is True
 
 
 async def test_options_flow_poll_interval_defaults_to_24(hass: HomeAssistant) -> None:
@@ -656,10 +660,13 @@ async def test_options_flow_poll_interval_defaults_to_24(hass: HomeAssistant) ->
         unique_id="opt-poll-default",
     )
     entry.add_to_hass(hass)
+    from custom_components.haggle.config_flow import vol as flow_vol
+
     result = await _open_options_step(hass, entry, "general")
     schema = result["data_schema"].schema
     key = next(k for k in schema if k.schema == OPT_POLL_INTERVAL_HOURS)
-    assert key.default() == DEFAULT_POLL_INTERVAL_HOURS
+    assert key.default is flow_vol.UNDEFINED
+    assert _suggested(result)[OPT_POLL_INTERVAL_HOURS] == DEFAULT_POLL_INTERVAL_HOURS
 
 
 async def test_options_flow_sets_poll_interval(hass: HomeAssistant) -> None:

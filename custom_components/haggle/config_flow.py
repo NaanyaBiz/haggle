@@ -934,31 +934,38 @@ class HaggleOptionsFlow(OptionsFlow):
     async def async_step_general(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Solar statistics toggle + poll interval."""
+        """Solar statistics toggle + poll interval.
+
+        Prefilled with suggested values, never ``default=`` (M7, HA P3-1):
+        same pattern as the tariff-windows step. A field left out of the
+        submission keeps its stored value (the save merges).
+        """
         if user_input is not None:
             return self._save(user_input)
+        options = self.config_entry.options
         return self.async_show_form(
             step_id="general",
-            data_schema=vol.Schema(
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Optional(OPT_SOLAR_STATISTICS_ENABLED): bool,
+                        vol.Optional(OPT_POLL_INTERVAL_HOURS): vol.All(
+                            vol.Coerce(int),
+                            vol.Range(
+                                min=MIN_POLL_INTERVAL_HOURS,
+                                max=MAX_POLL_INTERVAL_HOURS,
+                            ),
+                        ),
+                    }
+                ),
                 {
-                    vol.Required(
-                        OPT_SOLAR_STATISTICS_ENABLED,
-                        default=self.config_entry.options.get(
-                            OPT_SOLAR_STATISTICS_ENABLED, True
-                        ),
-                    ): bool,
-                    vol.Required(
-                        OPT_POLL_INTERVAL_HOURS,
-                        default=self.config_entry.options.get(
-                            OPT_POLL_INTERVAL_HOURS, DEFAULT_POLL_INTERVAL_HOURS
-                        ),
-                    ): vol.All(
-                        vol.Coerce(int),
-                        vol.Range(
-                            min=MIN_POLL_INTERVAL_HOURS, max=MAX_POLL_INTERVAL_HOURS
-                        ),
+                    OPT_SOLAR_STATISTICS_ENABLED: options.get(
+                        OPT_SOLAR_STATISTICS_ENABLED, True
                     ),
-                }
+                    OPT_POLL_INTERVAL_HOURS: options.get(
+                        OPT_POLL_INTERVAL_HOURS, DEFAULT_POLL_INTERVAL_HOURS
+                    ),
+                },
             ),
         )
 
