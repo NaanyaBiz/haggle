@@ -545,6 +545,18 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
 ## [Unreleased]
 
+### Changed
+
+- **Dev-dependency bump** (`homeassistant` 2026.10.2, `aiohttp` 3.14.5,
+  `pytest-homeassistant-custom-component` 0.13.373, `ruff` 0.17.1,
+  `pre-commit` 4.7.0, `zizmor` 1.31.1; `certifi` 2026.10.23 via the
+  lockfile): routine floors-and-lockfile roll, no code changes. The
+  `aiohttp` floor hold from the two previous cycles (#311, #313) is
+  lifted — `homeassistant` 2026.10.2 moved its own exact pin to 3.14.5,
+  so the >=3.14.5 floor resolves cleanly again. All dev-only —
+  `manifest.json` ships no requirements, so nothing reaches a user's HA
+  install.
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
