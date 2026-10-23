@@ -545,6 +545,132 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
 ## [Unreleased]
 
+### Targets for next sprint
+
+- #141 — user-configured ToU windows: derive tariff bands locally from
+  interval timestamps instead of trusting `consumption.type` (decision on
+  #126, 2026-07-03).
+- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
+  capture (reduced priority: #141's manual rate entry demotes the heuristic
+  to a default-prefill role).
+
+## [0.5.0] - 2026-10-23
+
+**Escaped defects closed this release:** 0. (The 0.5.0 beta line closed
+eleven — #126, #241, #242, #243, #246, #247, #253, #275, #292, #300,
+#303 — each counted in its own beta entry below.)
+
+Stable promotion of the 0.5.0 beta line (zero integration-code diff from
+v0.5.0-beta.5). The entries under [0.5.0-beta.1] through [0.5.0-beta.5]
+carry the full mechanics; this section consolidates what changes for a
+user upgrading from v0.4.0.
+
+### Acceptance evidence
+
+- **Beta soak**: v0.5.0-beta.5 published 2026-10-12 → 11 days in the wild,
+  zero regressions reported by volunteer beta testers (RA-16 — the
+  maintainer no longer holds a live AGL account). The confirming Adelaide
+  install (#292) upgraded 0.4.0 → beta.5 on 2026-10-22; the maintainer
+  accepted the soak on the strength of the full-window reconciliation
+  below (decision recorded 2026-10-23).
+- **App reconciliation**: 2026-10-23, @stuarthallows on #292 — 571/572
+  consumption hours and 353/353 export hours match the AGL portal CSV to
+  the watt-hour at Adelaide local time across the re-aligned window
+  (2026-09-22 → 2026-10-21); export total exact at 971.144 kWh. The one
+  open consumption hour is the live half-hour straddle bucket, completed
+  by the next poll. Far inside the ≤0.05 kWh/day threshold.
+- **Beta blockers**: 0 open (`beta-blocker` label) — #292, #300, #303 all
+  closed, #292 confirmed end-to-end on a real Adelaide meter.
+- **Downgrade test**: not performed for the 0.5.0 line — no volunteer has
+  run it (RA-16). Recorded as an explicit gap per the maintainer's
+  decision (2026-10-23), rather than blocking the release or fabricating
+  a result. Follow-up: ask a volunteer beta tester to run it post-release
+  and record the result retroactively.
+
+### Fixed
+
+- **Interval timestamps were 30 minutes early for South Australian and
+  Broken Hill contracts all year, and one hour early for Queensland
+  contracts while Sydney is on daylight saving** (#292; escaped, sev:high —
+  present in every release since v0.1.0; also closes #268). AGL's API
+  labels each slot with the meter's local wall-clock time converted to UTC
+  through `Australia/Sydney` whatever the contract's zone. The parser now
+  inverts that conversion into the contract's own zone — keyed on the
+  response's declared `timeZone`, so it self-corrects if AGL ever converts
+  per contract — and a **one-off re-alignment moves the last 30 days of
+  stored history to the corrected hours, in place** (two stages:
+  consumption, then solar; at most ~41 requests per stage poll; an exact
+  bar-by-bar junction where the window meets older history). Rows older
+  than the window keep the old timing and are covered by a one-time
+  Repairs notice. NSW/VIC/TAS/ACT were never affected. **NT and WA are
+  deliberately excluded from the history re-alignment** (shift over one
+  hour; recorded risk RA-19). **Upgrading from v0.4.0 on an affected
+  zone:** expect one or two larger polls (~40 requests), the last 30 days
+  of hourly bars moving 30 minutes (SA) or one hour (QLD) later, the
+  "this period" solar sensors reading `unknown` during the solar-stage
+  poll, and one Repairs notice if older shifted history exists. **Do not
+  delete the `haggle:*` statistics to force a rebuild** — only 30 days
+  can be re-fetched; older rows are correct in total, just early.
+  Confirmed on a real Adelaide meter (Acceptance evidence above);
+  Queensland confirmed from raw captures. Mechanics, residuals and edge
+  cases: [0.5.0-beta.3] through [0.5.0-beta.5].
+- **Half-hour zones (SA / Broken Hill / NT) no longer lose one 30-minute
+  slot per day** at the shared local-midnight statistics bucket: an
+  overlap-day fetch plus a content-derived trim keeps the boundary bucket
+  whole on every sliding rewindow, chunk boundary and resume
+  ([0.5.0-beta.3]).
+- **Reconfigure now exists and re-pins AGL's TLS certificate
+  fingerprints, and reauthentication can now succeed** (#275; escaped,
+  sev:high). AGL rotated its certificates on 2026-09-08 and every pinned
+  install showed "AGL certificate changed" with no in-product remedy;
+  reauth had ended "already configured" in every prior release. Settings
+  → Devices & services → AGL Haggle → ⋮ → **Reconfigure** logs in again,
+  re-pins, and dismisses the notice; reauth repairs the sign-in only and
+  never touches stored pins. The warning no longer repeats on every
+  connection (#280), and the reauth prompt now explains itself (#284).
+- **Bill projection no longer reads `unknown` on non-solar contracts**
+  (#253; escaped, sev:med — it had never worked in any release). Now read
+  label-keyed from the overview response. On solar contracts AGL fills
+  that slot with "Sold To Grid", so no projection is available there and
+  the sensor stays `unknown` by design.
+- **Setup no longer offers, or silently auto-selects, a gas contract it
+  cannot serve** (#260): non-electricity contracts are filtered before
+  both the picker and the single-contract fast path; a gas-only account
+  aborts with a clear message.
+- **A failed first poll no longer leaks the HTTP session** (#247;
+  escaped): setup closes its session and connector on any failure, so
+  Home Assistant's setup-retry backoff cannot strand connections.
+
+### Added
+
+- **User-configurable poll interval** (#228): the integration's Options
+  expose a poll-interval throttle (default 24 h, up to 168 h / 7 days).
+  It only ever lengthens the cadence — the 24 h floor is enforced twice.
+- **`period_start` / `covered_from` (and `truncated`) attributes on the
+  "this period" sensors** (#214), making the quarterly-bill
+  under-coverage limitation self-describing instead of silent.
+- **The contract's timezone is stored on the config entry** (#268;
+  config-entry minor version 1 → 2, downgrade-safe), derived from the
+  service address and refined every overview cycle.
+- **Diagnostics schema v4** (v3 added the timezone triple; v4 the
+  `tz_realign` re-alignment record) — anonymised and public-safe as
+  before.
+
+### Security
+
+- Runtime hardening, all escaped and closed in [0.5.0-beta.2]:
+  `safe_float` now bounds magnitude, not just finiteness (#241); interval
+  timestamps are validated against the requested day's window (#242);
+  malformed-but-200 OAuth responses degrade to structured, retryable
+  errors instead of leaking payload text into notifications and
+  diagnostics (#243).
+- Repo/supply-chain hardening (no runtime exposure): the release zip
+  fails closed on symlinks (#246); Claude Code hook execution is
+  TOFU-pinned and ref names sanitised (#244/#245); the gitleaks self-test
+  now regression-tests this repo's own rules (#248); the licence gate is
+  narrowed to network copyleft with its limitations recorded (RA-17,
+  #262).
+
 ### Changed
 
 - **Dev-dependency bump** (`homeassistant` 2026.10.2, `aiohttp` 3.14.5,
@@ -555,16 +681,14 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
   lifted — `homeassistant` 2026.10.2 moved its own exact pin to 3.14.5,
   so the >=3.14.5 floor resolves cleanly again. All dev-only —
   `manifest.json` ships no requirements, so nothing reaches a user's HA
-  install.
-
-### Targets for next sprint
-
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
-- #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
-  capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
+  install. (Earlier cycles' rollups are in the beta entries below.)
+- **Half-hour-zone contracts make one extra AGL request per series per
+  poll** (`3 + 8 + 8` on a solar contract instead of `3 + 7 + 7`);
+  whole-hour zones unchanged.
+- **Acceptance posture** (RA-16): the maintainer no longer holds a live
+  AGL account, so beta-soak acceptance, reconciliation, downgrade tests
+  and diagnostics verification depend on volunteer beta testers reporting
+  on GitHub issues ([0.5.0-beta.1]).
 
 ## [0.5.0-beta.5] - 2026-10-12
 
