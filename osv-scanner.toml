@@ -202,3 +202,13 @@ reason = "Transitive via homeassistant's exact pin (Pillow==12.3.0, still pinned
 id = "GHSA-xvh5-g6gv-559v"  # pillow 12.3.0
 ignoreUntil = 2027-01-24T00:00:00Z
 reason = "Transitive via homeassistant's exact pin (Pillow==12.3.0, still pinned in 2026.10.3); dev/test lockfile only, manifest requirements are []; tests parse no images. Clears when HA moves to Pillow >= 13.0.0. RA-20."
+
+[[IgnoredVulns]]
+id = "GHSA-5x8w-8jj5-q52h"  # pillow 12.3.0
+ignoreUntil = 2027-01-24T00:00:00Z
+reason = "Transitive via homeassistant's exact pin (Pillow==12.3.0, still pinned in 2026.10.3); dev/test lockfile only, manifest requirements are []; tests parse no images. Clears when HA moves to Pillow >= 13.0.0. RA-20."
+
+[[IgnoredVulns]]
+id = "GHSA-654x-cwwv-5j9c"  # pillow 12.3.0
+ignoreUntil = 2027-01-24T00:00:00Z
+reason = "Transitive via homeassistant's exact pin (Pillow==12.3.0, still pinned in 2026.10.3); dev/test lockfile only, manifest requirements are []; tests parse no images. Clears when HA moves to Pillow >= 13.0.0. RA-20."
