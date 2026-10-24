@@ -71,6 +71,17 @@ Homepage = "https://github.com/NaanyaBiz/haggle"
 Issues = "https://github.com/NaanyaBiz/haggle/issues"
 Changelog = "https://github.com/NaanyaBiz/haggle/blob/main/CHANGELOG.md"
 
+[tool.uv]
+# Dev-environment override, NOT a runtime requirement (manifest.json ships
+# none). homeassistant==2026.10.2 pins uv==0.12.23, which carries
+# GHSA-hq85-5cpj-mr62 (bundled CA store trusts a compromised emSign root).
+# That copy is NOT inert here: inside `uv run`, a nested `uv` resolves to
+# .venv/bin/uv, so the pre-commit `uv run ruff`/`uv run mypy` hooks execute
+# it and it can fetch from PyPI. Remove this override once the lock reaches
+# homeassistant>=2026.10.3 (pins uv==0.13.5) — blocked only on a matching
+# pytest-homeassistant-custom-component release (2026-10-24).
+override-dependencies = ["uv>=0.13.4"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["custom_components/haggle"]
 

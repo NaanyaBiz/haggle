@@ -155,6 +155,7 @@ scripts/
 
 # Repo-root posture files
 .gitleaks.toml           # repo-specific secret rules (Auth0 refresh tokens, real AGL account/contract numbers) layered on gitleaks defaults
+osv-scanner.toml         # per-advisory, expiring lockfile-advisory exceptions read by OSV-Scanner + Scorecard Vulnerabilities (admission rule: SECURITY.md § Supply chain, RA-20)
 SECURITY.md              # disclosure path + threat-model summary
 CONTRIBUTING.md          # dev loop + commit conventions + PR checklist
 CODE_OF_CONDUCT.md       # Contributor Covenant 2.1
@@ -1691,6 +1692,16 @@ The HA Energy dashboard requires:
   2026.10 (the runtime floor is 2026.7.0). Keep the try/except compat import
   until the floor reaches 2026.10, then drop the fallback (#294). The weekly
   `compat.yml` run is pytest-only and did not catch this type-level break.
+- **Don't assume a transitive dev dependency is inert because haggle never
+  imports it.** Inside `uv run`, `PATH` puts `.venv/bin` first, so a nested
+  `uv` call (every `uv run ruff` / `uv run mypy` pre-commit hook, when
+  pre-commit itself is run via `uv run`) executes HA's pinned `uv` from the
+  lockfile, not your standalone one, and it can fetch from PyPI. That is why
+  uv GHSA-hq85-5cpj-mr62 was fixed with a `[tool.uv] override-dependencies`
+  entry rather than listed in `osv-scanner.toml`. Before listing ANY
+  advisory there, check it against what the dev loop and CI actually
+  execute (SECURITY.md § Supply chain admission rule), and list it per
+  advisory ID with an `ignoreUntil` expiry, never per package.
 - **Don't re-add the remote ruff/mypy pre-commit hooks**
   (`astral-sh/ruff-pre-commit`, `pre-commit/mirrors-mypy`). Those hooks run
   a SECOND copy of the toolchain that drifts from `uv.lock` (they had
