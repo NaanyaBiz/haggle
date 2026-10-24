@@ -23,7 +23,8 @@ from homeassistant.components.sensor import (
     SensorEntityDescription,
     SensorStateClass,
 )
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import Platform, UnitOfEnergy
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -42,10 +43,12 @@ from .const import (
     DATA_UNIT_RATE_OFFPEAK,
     DATA_UNIT_RATE_PEAK,
     DATA_UNIT_RATE_SHOULDER,
+    DATA_UNIT_RATE_SUPEROFFPEAK,
     DOMAIN,
     TARIFF_OFFPEAK,
     TARIFF_PEAK,
     TARIFF_SHOULDER,
+    TARIFF_SUPEROFFPEAK,
 )
 from .coordinator import HaggleCoordinator
 
@@ -207,23 +210,60 @@ TOU_RATE_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement="AUD/kWh",
     ),
+    # Only ever registered for a configured entry whose windows use the band
+    # (#141): tariff_windows.desired_rate_bands never offers it in legacy.
+    TARIFF_SUPEROFFPEAK: SensorEntityDescription(
+        key=DATA_UNIT_RATE_SUPEROFFPEAK,
+        translation_key="unit_rate_superoffpeak",
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement="AUD/kWh",
+    ),
+}
+# Rate-sensor key -> band, for the `rate_source` attribute.
+_RATE_KEY_BANDS: dict[str, str] = {
+    desc.key: band for band, desc in TOU_RATE_DESCRIPTIONS.items()
 }
 
 
+def _remove_unwanted_rate_entities(
+    hass: HomeAssistant, entry: HaggleConfigEntry, desired: frozenset[str]
+) -> None:
+    """Drop registry entries for rate sensors a configured entry no longer
+    has (D8) — e.g. the spurious "Unit rate (peak)" of #224 once a user
+    configures Flat or an EV window. Runs BEFORE async_add_entities, so it
+    cannot race the entities being added. A renamed entity id or customisation
+    on a removed sensor is lost (CHANGELOG)."""
+    registry = er.async_get(hass)
+    for band, desc in TOU_RATE_DESCRIPTIONS.items():
+        if band in desired:
+            continue
+        entity_id = registry.async_get_entity_id(
+            Platform.SENSOR, DOMAIN, f"{entry.entry_id}_{desc.key}"
+        )
+        if entity_id is not None:
+            registry.async_remove(entity_id)
+
+
 async def async_setup_entry(
-    _hass: HomeAssistant,
+    hass: HomeAssistant,
     entry: HaggleConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up haggle sensor entities for the entry."""
     coordinator = entry.runtime_data.coordinator
     descriptions = list(SENSOR_DESCRIPTIONS)
-    # Add per-tariff rate sensors only for the bands this contract actually
-    # uses. active_tariffs is populated by the coordinator's first refresh,
-    # which runs before this platform setup.
+    # Per-tariff rate sensors: legacy entries register the bands this
+    # contract has been seen using (active_tariffs, populated by the first
+    # refresh, which runs before this platform setup) — v0.5.0 behaviour; a
+    # configured entry registers its configured rate bands (#141). The SAME
+    # function drives the coordinator's reload comparator (M4).
     active = coordinator.data.active_tariffs if coordinator.data else frozenset()
+    kind, desired = coordinator.desired_rate_sensors(active)
+    if kind == "configured":
+        _remove_unwanted_rate_entities(hass, entry, desired)
+    coordinator.rate_bands_registered = (kind, desired)
     descriptions.extend(
-        desc for band, desc in TOU_RATE_DESCRIPTIONS.items() if band in active
+        desc for band, desc in TOU_RATE_DESCRIPTIONS.items() if band in desired
     )
     # Solar generation sensors only for contracts that report hasSolar.
     if coordinator.data and coordinator.data.has_solar:
@@ -282,9 +322,15 @@ class HaggleEnergySensor(CoordinatorEntity[HaggleCoordinator], SensorEntity):
         covered_from there and `truncated` never appears.
         Returns None (no attributes) for every other sensor, and while the
         underlying "this period" value has not yet published (still None).
+
+        Per-band rate sensors expose `rate_source` (#141 AC8): "configured"
+        (entered in Options), "plan" (the plan-text heuristic, #90) or
+        "none" (unavailable).
         """
         data = self.coordinator.data
         key = self.entity_description.key
+        if key in _RATE_KEY_BANDS:
+            return {"rate_source": data.rate_sources.get(_RATE_KEY_BANDS[key], "none")}
         if key == DATA_CONSUMPTION_PERIOD:
             period_start = data.consumption_period_start
             covered_from = data.consumption_period_covered_from

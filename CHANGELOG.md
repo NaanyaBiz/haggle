@@ -545,14 +545,98 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
 ## [Unreleased]
 
+### Added
+
+- **Tariff windows: per-band statistics follow your plan's times, not
+  AGL's tag** (#141). AGL's per-reading tariff tag often does not match
+  the plan: peak-rate usage arrives tagged "Anytime", and flat-rate plans
+  grow a spurious Peak band (#126, #224, #292). The integration's Options
+  now open on a menu with a new **Tariff windows** screen:
+  - **Plan structure**: Not configured (the current behaviour), Flat
+    rate (no per-band statistics) or Time-of-use windows.
+  - **Windows per band** in local wall-clock time and half-hour steps,
+    for example peak `15:00-21:00` and shoulder `10:00-14:00`. A window
+    can wrap past midnight (`22:00-07:00`) and can apply to `weekdays` or
+    `weekends` only (`07:00-09:00 weekdays`). Overlaps on the same days
+    are rejected; any time not covered goes to the fallback band you pick
+    (Off-Peak or Anytime).
+  - A fifth band, **Super Off-Peak**, for EV charging windows and the
+    "free" window of Victoria's Midday Power Saver tariff (put its "solar
+    soak" window in Shoulder). It gets its own series and rate sensor.
+  - **Optional rates** in c/kWh including GST (1–500), feeding the rate
+    sensors. Each rate sensor gains a `rate_source` attribute:
+    `configured`, `plan` (the plan-text heuristic, #90) or `none`.
+
+  Each half-hour reading is assigned a band from its corrected (#292)
+  start time in the contract's own timezone, DST-aware. Statistic IDs do
+  not change, so existing Energy dashboards keep working. Band cost stays
+  AGL's own per-reading amount, so band totals always add up to the bill.
+  Settings take effect from the next scheduled poll: that poll's window
+  (normally the last 7 days) is recalculated in place; earlier hours keep
+  their previous split. A band you stop using flatlines from that point
+  and is never deleted, and no sum ever steps down. See
+  `docs/energy-dashboard.md` for which series to add.
+  - **Known limitations.** Public holidays count as ordinary days (kWh can
+    move between bands on about 10 days a year; cost totals are
+    unaffected). Solar export is not split by band. Controlled load (#274)
+    is a separate meter channel, not a time window. When the one-off
+    timezone re-alignment (#292) runs on a configured entry, the band split
+    of the hour below its window is exact, provided AGL's tag for the
+    readings moved out of that hour is unchanged since they were stored;
+    if AGL re-tagged them, at most those readings (one half-hour SA, two
+    QLD in Sydney daylight saving) count twice in the band split. On a
+    downgrade to v0.5.x, stored Super Off-Peak hours of the last week count
+    twice in the band split; after deleting and re-adding the integration
+    the same happens until you configure the windows again on the new
+    entry. No total steps down in either case.
+  - **Nothing changes unless you configure it.** An entry that has never
+    been configured writes exactly what v0.5.0 wrote (golden-tested). If
+    it has per-band series, it gets one Repairs notice explaining that
+    AGL's tag is unreliable; this default will change in a future release.
+- **Repairs issues** `tariff_bands_legacy`, `tariff_bands_invalid` (the
+  stored settings failed validation, so only the totals are written) and
+  `tariff_bands_suspended` (see Changed). Each is created once and
+  removed when its condition clears.
+- **Diagnostics schema v5**: a top-level `tariff_bands` block (validated
+  settings, effective mode, validation error code, fingerprint, history of
+  setting changes, stored and configured bands, rate sources),
+  `coordinator.band_profile` (implied c/kWh by local half-hour and by band,
+  rounded to 2 dp with coarse counts, so a tester's file shows whether the
+  windows match the bill; no kWh values, no timestamps) and allowlisted
+  `entry.options`. See `docs/diagnostics.md`.
+
+### Changed
+
+- **Rate sensors follow the tariff settings.** A configured entry
+  registers a rate sensor for each configured band (none for Flat), and
+  the entry reloads once when that set changes. **Rate sensors for bands
+  you no longer use are removed from the entity registry**: a renamed
+  entity ID, customisation or automation that targets a removed sensor
+  (for example the spurious "Unit rate (peak)" from #224) is lost.
+  Unconfigured entries keep today's sensors.
+- **Configured entry, contract timezone unknown**: rather than put
+  readings in the wrong band, the consumption import is held (up to 3
+  polls, so the days are re-fetched once the zone is known). After that,
+  or at once if the service address cannot be parsed, only the totals are
+  written and the `tariff_bands_suspended` Repairs issue is raised. Solar
+  statistics are never held.
+
+### Fixed
+
+- **Saving the options no longer drops settings from another screen.**
+  The single options step used to replace every stored option with the
+  form's own fields; every step now merges into the existing options.
+
 ### Targets for next sprint
 
-- #141 — user-configured ToU windows: derive tariff bands locally from
-  interval timestamps instead of trusting `consumption.type` (decision on
-  #126, 2026-07-03).
 - #90 — validate the ToU plan rate-mapping heuristic against a real ToU plan
   capture (reduced priority: #141's manual rate entry demotes the heuristic
-  to a default-prefill role).
+  to a fallback).
+- #141 follow-ups (deferred by design): a one-off 30-day re-derive when the
+  settings change, a manual contract-timezone override, a public-holiday
+  calendar, a generation band split, controlled load (#274).
+- #141 AC12 soak: diagnostics from one volunteer on a 3-band plan and one
+  on an EV or Super Off-Peak plan whose `band_profile` matches the bill.
 
 ## [0.5.0] - 2026-10-23
 
