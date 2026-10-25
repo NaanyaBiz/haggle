@@ -190,6 +190,12 @@ def _local_tz_key(address: str) -> str:
     return getattr(tz, "key", "") if tz is not None else ""
 
 
+def _warm_tz_keys(addresses: list[str]) -> None:
+    """Resolve each address's zone once, off the event loop (#298)."""
+    for address in addresses:
+        _local_tz_key(address)
+
+
 def _pin_updates(
     source: str | None,
     stored: Mapping[str, Any],
@@ -534,6 +540,12 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         # empty-discovery branch below, or empty discovery would still route
         # to entry creation.
         if self.source in (SOURCE_REAUTH, SOURCE_RECONFIGURE):
+            # The update step must stay synchronous (it reads the LIVE
+            # entry.data), so warm the zone cache here instead: the first
+            # ZoneInfo(key) per key reads tzdata from disk (#298).
+            await self.hass.async_add_executor_job(
+                _warm_tz_keys, [c.address for c in self._contracts]
+            )
             return self._async_update_existing_entry()
         return await self._async_select_new_contract(user_input)
 
@@ -541,8 +553,12 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         self, user_input: dict[str, Any] | None
     ) -> ConfigFlowResult:
         """SOURCE_USER tail of Step 3: create an entry or show the picker."""
+        # Zero discovered contracts (or every contract dropped by the parse
+        # guards) used to create an entry with contract_number="" that failed
+        # every later call with no explanation (#267). Abort with a clear
+        # reason instead, mirroring the gas-only abort below.
         if not self._contracts:
-            return await self._async_create_entry(contract_number="", account_number="")
+            return self.async_abort(reason="no_contracts")
 
         # Filter to serviceable contracts before BOTH paths below (#260).
         serviceable = _serviceable_contracts(self._contracts)
@@ -745,8 +761,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         async_create_entry raises HomeAssistantError in those sources.
 
         `address` is the selected contract's service address; its state and
-        postcode give CONF_LOCAL_TZ ("" when it does not parse — the
-        empty-discovery path has no contract at all).
+        postcode give CONF_LOCAL_TZ ("" when it does not parse).
         """
         # Fall back to a SHA-256 hash of the refresh token (one-way) so the
         # entity registry — written as plaintext JSON — never sees raw token
@@ -762,6 +777,8 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
             unique_id = "unknown"
         await self.async_set_unique_id(unique_id)
         self._abort_if_unique_id_configured()
+        # Executor: first ZoneInfo(key) per key reads tzdata from disk (#298).
+        local_tz = await self.hass.async_add_executor_job(_local_tz_key, address)
         _LOGGER.info(
             "Creating haggle entry: account=%s contract=%s pin_auth=%s pin_bff=%s",
             # Class B identifiers (docs/threat-model.md §2): log last-4 only.
@@ -780,7 +797,7 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
                 CONF_ACCOUNT_NUMBER: account_number,
                 CONF_PINNED_SPKI_AUTH: self._auth_spki,
                 CONF_PINNED_SPKI_BFF: self._bff_spki,
-                CONF_LOCAL_TZ: _local_tz_key(address),
+                CONF_LOCAL_TZ: local_tz,
             },
         )
 

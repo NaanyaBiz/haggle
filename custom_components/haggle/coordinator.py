@@ -722,7 +722,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 # the parser to undo AGL's Sydney conversion (#292); the key
                 # is persisted so the NEXT setup starts corrected from its
                 # first chunk, overview reachable or not (#268).
-                tz = tz_for_address(contract.address)
+                # Executor: a zone the setup pre-warm did not cache reads
+                # tzdata from disk on first ZoneInfo(key) (#298).
+                tz = await self.hass.async_add_executor_job(
+                    tz_for_address, contract.address
+                )
                 if tz is not None:
                     self.client.set_contract_tz(tz)
                     self._persist_contract_tz(tz)
