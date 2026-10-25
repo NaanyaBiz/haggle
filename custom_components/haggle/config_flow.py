@@ -58,10 +58,21 @@ from homeassistant.config_entries import (
     OptionsFlow,
 )
 from homeassistant.core import callback
+from homeassistant.data_entry_flow import section
+from homeassistant.helpers.selector import (
+    NumberSelector,
+    NumberSelectorConfig,
+    NumberSelectorMode,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
+    TextSelector,
+)
 from homeassistant.helpers.typing import UNDEFINED, UndefinedType
 
 from .agl.client import AGLAuthError, AGLError, _plausible_token
 from .agl.parser import parse_overview, tz_for_address
+from .tariff_windows import build_config, render_ranges, validate
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -91,10 +102,18 @@ from .const import (
     DEFAULT_POLL_INTERVAL_HOURS,
     DOMAIN,
     MAX_POLL_INTERVAL_HOURS,
+    MAX_RATE_C_PER_KWH,
     MIN_POLL_INTERVAL_HOURS,
+    MIN_RATE_C_PER_KWH,
     OPT_POLL_INTERVAL_HOURS,
     OPT_SOLAR_STATISTICS_ENABLED,
+    OPT_TARIFF_BANDS,
     PIN_MISMATCH_NOTIFICATION_ID,
+    RESIDUAL_BANDS,
+    TARIFF_MODE_FLAT,
+    TARIFF_MODE_WINDOWS,
+    TARIFF_OFFPEAK,
+    WINDOW_BANDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -802,46 +821,191 @@ class HaggleConfigFlow(ConfigFlow, domain=DOMAIN):
         )
 
 
+# Tariff-windows options form (#141). "unconfigured" removes the stored key
+# (legacy: AGL's consumption.type decides the band, exactly as v0.5.0).
+TARIFF_FORM_MODE = "mode"
+TARIFF_FORM_RESIDUAL = "residual"
+TARIFF_FORM_RATES = "rates"
+TARIFF_MODE_UNCONFIGURED = "unconfigured"
+_TARIFF_MODES = (TARIFF_MODE_UNCONFIGURED, TARIFF_MODE_FLAT, TARIFF_MODE_WINDOWS)
+
+
+def _rate_field(band: str) -> str:
+    return f"{band}_rate"
+
+
+def _tariff_schema() -> vol.Schema:
+    """The tariff form. Window texts and rates are Optional with NO default:
+    prefill goes through suggested values, so clearing a field really
+    clears it (M7 — a ``default=`` would re-fill an emptied field)."""
+    rate = NumberSelector(
+        NumberSelectorConfig(
+            min=MIN_RATE_C_PER_KWH,
+            max=MAX_RATE_C_PER_KWH,
+            step=0.01,
+            mode=NumberSelectorMode.BOX,
+            unit_of_measurement="c/kWh",
+        )
+    )
+    fields: dict[Any, Any] = {
+        vol.Required(TARIFF_FORM_MODE): SelectSelector(
+            SelectSelectorConfig(
+                options=list(_TARIFF_MODES),
+                mode=SelectSelectorMode.LIST,
+                translation_key="tariff_mode",
+            )
+        ),
+        vol.Required(TARIFF_FORM_RESIDUAL): SelectSelector(
+            SelectSelectorConfig(
+                options=list(RESIDUAL_BANDS),
+                mode=SelectSelectorMode.DROPDOWN,
+                translation_key="tariff_residual",
+            )
+        ),
+    }
+    for band in WINDOW_BANDS:
+        fields[vol.Optional(band)] = TextSelector()
+    fields[vol.Required(TARIFF_FORM_RATES)] = section(
+        vol.Schema({vol.Optional(_rate_field(band)): rate for band in WINDOW_BANDS}),
+        {"collapsed": True},
+    )
+    return vol.Schema(fields)
+
+
+def _tariff_form_values(stored: object) -> dict[str, Any]:
+    """Render the stored option back into form values (lossless round-trip:
+    the canonical text is a fixed point of the parser)."""
+    config, _ = validate(stored) if stored is not None else (None, None)
+    if config is None:
+        return {
+            TARIFF_FORM_MODE: TARIFF_MODE_UNCONFIGURED,
+            TARIFF_FORM_RESIDUAL: TARIFF_OFFPEAK,
+            TARIFF_FORM_RATES: {},
+        }
+    values: dict[str, Any] = {
+        TARIFF_FORM_MODE: config["mode"],
+        TARIFF_FORM_RESIDUAL: config.get("residual", TARIFF_OFFPEAK),
+        TARIFF_FORM_RATES: {
+            _rate_field(band): round(aud * 100.0, 4)
+            for band, aud in config.get("rates", {}).items()
+        },
+    }
+    for band in WINDOW_BANDS:
+        text = render_ranges(config.get("windows", []), band)
+        if text:
+            values[band] = text
+    return values
+
+
 class HaggleOptionsFlow(OptionsFlow):
-    """Options: solar statistics-writing off-switch + poll-interval throttle.
+    """Options menu: General (solar toggle, poll interval) + Tariff windows.
 
     CO-10.3: statistics writes are the one semi-irreversible effect this
     integration has; the solar toggle lets a user freeze the
     highest-blast-radius writer (solar backfill / heal / give-up markers)
     without downgrading. The poll interval (#228) lets a user throttle back
     AGL request volume — floored at MIN_POLL_INTERVAL_HOURS, below which AGL
-    genuinely has no newer data to return. Both are read live by the
-    coordinator — no reload listener (see OPT_SOLAR_STATISTICS_ENABLED /
-    OPT_POLL_INTERVAL_HOURS in const.py); applies from the next poll.
+    genuinely has no newer data to return. Tariff windows (#141) make the
+    band of each half-hour a local function of its time instead of AGL's
+    unreliable consumption.type. All are read live by the coordinator — no
+    reload listener (see OPT_* in const.py); applies from the next poll.
+
+    Every step MERGES its changes into the existing options: saving one
+    screen never drops another screen's settings (the pre-#141 single step
+    replaced the whole dict).
     """
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Single-step options form."""
+        """Menu: which settings to edit."""
+        return self.async_show_menu(
+            step_id="init", menu_options=["general", "tariff_windows"]
+        )
+
+    def _save(
+        self, changes: Mapping[str, Any], *, drop: str | None = None
+    ) -> ConfigFlowResult:
+        options = {**self.config_entry.options, **changes}
+        if drop is not None:
+            options.pop(drop, None)
+        return self.async_create_entry(data=options)
+
+    async def async_step_general(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Solar statistics toggle + poll interval.
+
+        Prefilled with suggested values, never ``default=`` (M7, HA P3-1):
+        same pattern as the tariff-windows step. A field left out of the
+        submission keeps its stored value (the save merges).
+        """
         if user_input is not None:
-            return self.async_create_entry(data=user_input)
+            return self._save(user_input)
+        options = self.config_entry.options
         return self.async_show_form(
-            step_id="init",
-            data_schema=vol.Schema(
+            step_id="general",
+            data_schema=self.add_suggested_values_to_schema(
+                vol.Schema(
+                    {
+                        vol.Optional(OPT_SOLAR_STATISTICS_ENABLED): bool,
+                        vol.Optional(OPT_POLL_INTERVAL_HOURS): vol.All(
+                            vol.Coerce(int),
+                            vol.Range(
+                                min=MIN_POLL_INTERVAL_HOURS,
+                                max=MAX_POLL_INTERVAL_HOURS,
+                            ),
+                        ),
+                    }
+                ),
                 {
-                    vol.Required(
-                        OPT_SOLAR_STATISTICS_ENABLED,
-                        default=self.config_entry.options.get(
-                            OPT_SOLAR_STATISTICS_ENABLED, True
-                        ),
-                    ): bool,
-                    vol.Required(
-                        OPT_POLL_INTERVAL_HOURS,
-                        default=self.config_entry.options.get(
-                            OPT_POLL_INTERVAL_HOURS, DEFAULT_POLL_INTERVAL_HOURS
-                        ),
-                    ): vol.All(
-                        vol.Coerce(int),
-                        vol.Range(
-                            min=MIN_POLL_INTERVAL_HOURS, max=MAX_POLL_INTERVAL_HOURS
-                        ),
+                    OPT_SOLAR_STATISTICS_ENABLED: options.get(
+                        OPT_SOLAR_STATISTICS_ENABLED, True
                     ),
-                }
+                    OPT_POLL_INTERVAL_HOURS: options.get(
+                        OPT_POLL_INTERVAL_HOURS, DEFAULT_POLL_INTERVAL_HOURS
+                    ),
+                },
             ),
+        )
+
+    async def async_step_tariff_windows(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Tariff windows: structure, residual band, per-band windows, rates."""
+        errors: dict[str, str] = {}
+        placeholders = {"band_a": "", "band_b": ""}
+        if user_input is not None:
+            mode = user_input[TARIFF_FORM_MODE]
+            if mode == TARIFF_MODE_UNCONFIGURED:
+                return self._save({}, drop=OPT_TARIFF_BANDS)
+            rates = user_input.get(TARIFF_FORM_RATES) or {}
+            config, errors, bands = build_config(
+                mode,
+                user_input[TARIFF_FORM_RESIDUAL],
+                {band: user_input.get(band) or "" for band in WINDOW_BANDS},
+                {band: rates.get(_rate_field(band)) for band in WINDOW_BANDS},
+            )
+            if config is not None:
+                return self._save({OPT_TARIFF_BANDS: config})
+            # The rate selector already bounds input; a rate error from the
+            # pure validator (belt and braces) is reported form-wide.
+            errors = {
+                ("base" if key.endswith("_rate") else key): code
+                for key, code in errors.items()
+            }
+            if len(bands) == 2:
+                placeholders = {"band_a": bands[0], "band_b": bands[1]}
+        suggested = (
+            user_input
+            if user_input is not None
+            else _tariff_form_values(self.config_entry.options.get(OPT_TARIFF_BANDS))
+        )
+        return self.async_show_form(
+            step_id="tariff_windows",
+            data_schema=self.add_suggested_values_to_schema(
+                _tariff_schema(), suggested
+            ),
+            errors=errors,
+            description_placeholders=placeholders,
         )

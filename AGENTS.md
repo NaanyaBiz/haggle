@@ -63,10 +63,11 @@ custom_components/haggle/
 ├── __init__.py          # async_setup_entry / async_unload_entry / async_remove_entry + HaggleRuntimeData; _check_pin reads pins live from entry.data; async_migrate_entry (minor 1→2: CONF_LOCAL_TZ derived from the entry title, #268); setup resolves the contract tz CONF_LOCAL_TZ → HA tz (fallback flagged tz_is_contract=False)
 ├── manifest.json        # HACS/HA metadata; hassfest validates this
 ├── const.py             # all constants — DOMAIN, API hosts, config-entry keys (incl. CONF_LOCAL_TZ, the contract-tz authority), AGL_API_TZ_KEY (the zone AGL converts dateTime through, #292), CONF_TZ_REALIGN + TZ_REALIGN_* / MAX_TZ_REALIGN_* (the one-off timezone history re-alignment record contract, #292), data keys
-├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth via its own `reauth_confirm` step (#284; token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow (solar statistics-writes toggle, poll-interval throttle); MINOR_VERSION 2 — stores CONF_LOCAL_TZ from the selected contract's address at creation (fast path + picker) and refreshes it on reauth/reconfigure (#292/#268)
-├── diagnostics.py       # anonymized config-entry diagnostics (schema v4 — v3 added coordinator.contract_timezone + entry.data.local_tz, v4 the top-level tz_realign record) — public-safe; parsed by the triage routine (docs/diagnostics.md)
-├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals + half-hour-zone straddle guard (overlap day + content-derived trim, #292) + contract-local midnight helper _local_midnight_utc (#268) + stale-key fill on every import (_stale_key_fill: provenance-gated zero / carry-forward re-chain of stored rows the batch has no value for, #300) + one-off 30-day timezone history re-alignment (_plan_tz_realign / _settle_tz_realign, CONF_TZ_REALIGN: zone-gated (shift scanned over a year, NT/WA excluded in every season), two stages, bar-exact floor junction _realign_junction (rewrites the hour below the window), pure re-key recognition _rekey_matches on realign imports (#303), incomplete sweep degrades to a normal cycle, #292)
-├── sensor.py            # 14 SensorEntityDescription entries (3 conditional ToU rate sensors, 5 conditional solar sensors); HaggleEnergySensor
+├── config_flow.py       # PKCE authorize URL → user pastes callback → exchange → select_contract (electricity-only via _serviceable_contracts, #260); reauth via its own `reauth_confirm` step (#284; token only, fills missing pins) + reconfigure (token + re-pin, dismisses pin-mismatch notices): entry contract matched by number, no picker, async_update_reload_and_abort(data_updates=…) (#275); options flow = a menu (#141): General (solar statistics-writes toggle, poll-interval throttle) + Tariff windows (structure, fallback band, per-band window text, optional c/kWh rates in a collapsed section; prefill via suggested values so a cleared field clears); every step MERGES into the existing options; MINOR_VERSION 2 — stores CONF_LOCAL_TZ from the selected contract's address at creation (fast path + picker) and refreshes it on reauth/reconfigure (#292/#268)
+├── diagnostics.py       # anonymized config-entry diagnostics (schema v5 — v3 added coordinator.contract_timezone + entry.data.local_tz, v4 the top-level tz_realign record, v5 the tariff_bands block + coordinator.band_profile + allowlisted entry.options, #141) — public-safe; parsed by the triage routine (docs/diagnostics.md)
+├── coordinator.py       # HaggleCoordinator: 30-day backfill (throttled, 429-aware, per-series ranges) + incremental statistics import (aggregate + per-tariff ToU series + solar generation/credit on hasSolar contracts) + bill-period solar totals + half-hour-zone straddle guard (overlap day + content-derived trim, #292) + contract-local midnight helper _local_midnight_utc (#268) + stale-key fill on every import (_stale_key_fill: provenance-gated zero / carry-forward re-chain of stored rows the batch has no value for, #300) + one-off 30-day timezone history re-alignment (_plan_tz_realign / _settle_tz_realign, CONF_TZ_REALIGN: zone-gated (shift scanned over a year, NT/WA excluded in every season), two stages, bar-exact floor junction _realign_junction (rewrites the hour below the window), pure re-key recognition _rekey_matches on realign imports (#303), incomplete sweep degrades to a normal cycle, #292) + user-configured ToU windows (#141): one _BandPlan snapshot per cycle (_resolve_band_plan: legacy_type / derived / flat / held_tz / suspended_tz / invalid), _attribute_bands (derived band from the corrected slot start in the contract zone), BAND_VOCAB family for configured modes, partition-exact band fill only for ever-configured entries, D6 hold bound, Repairs issues, applied-settings history, rate sources, implied-price band_profile, rate-sensor reload comparator
+├── sensor.py            # 15 SensorEntityDescription entries (4 conditional ToU rate sensors incl. superoffpeak — legacy: active type bands; configured: tariff_windows.desired_rate_bands, stale registry entries removed before add (#141); `rate_source` attribute; 5 conditional solar sensors); HaggleEnergySensor
+├── tariff_windows.py    # pure #141 logic, no HA imports: window grammar (HH:MM-HH:MM[ weekdays|weekends]), validate (fail-safe on hand-edited/newer values), compiled (weekday, weekend) 48-slot table, band_of (contract-local wall clock), fingerprint (rates excluded), desired_rate_bands, implied-price band_profile
 ├── agl/
 │   ├── __init__.py
 │   ├── client.py        # AglAuth (JWT expiry + token rotation) + AglClient (HTTP methods; local_tz + tz_is_contract, set_contract_tz)
@@ -88,9 +89,10 @@ tests/
 │   ├── solar_hourly_response.json   # REAL full-day ElectricitySolar capture (2026-07-01, app-reconciled) — provenance + consent: fixtures/PROVENANCE.md
 │   ├── solar_plan_response.json     # solar plan — feed-in rate in gstExclusiveRates
 │   ├── overview_solar_response.json # /v3/overview variant with hasSolar: true
-│   └── bill_period_response.json    # usage summary
+│   ├── bill_period_response.json    # usage summary
+│   └── golden_legacy_v050.json      # AC5 golden: v0.5.0-beta.5 legacy band writes (3 scenarios), generated by tests/test_legacy_golden.py on e8b7a73 (PROVENANCE.md) — never regenerate to make a test pass
 ├── test_init.py                     # setup/unload smoke tests + minor-version migration (CONF_LOCAL_TZ from title) + stored-tz resolution at setup
-├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract) + reauth/reconfigure update-in-place + CONF_LOCAL_TZ stored on creation/reauth/reconfigure
+├── test_config_flow.py              # PKCE step navigation (user → exchange → select_contract) + reauth/reconfigure update-in-place + CONF_LOCAL_TZ stored on creation/reauth/reconfigure + options menu / merge regression / tariff-windows round-trip, clearing, error codes (#141)
 ├── test_agl_client.py               # AglAuth token rotation + AglClient HTTP methods + pin-check wiring
 ├── test_const.py                    # base64 sanity-check on AGL_AUTH0_CLIENT
 ├── test_parser.py                   # parse_interval_readings, parse_overview, parse_plan, ToU rate mapping, safe_float, relocalise_agl_timestamp zone/DST vectors + window interaction (#292)
@@ -102,20 +104,24 @@ tests/
 ├── test_tz_realign.py               # #292 timezone history re-alignment state machine (gates incl. NT/WA unsupported_shift checked first, with no Repairs issue, floor freeze, stages, halts vs attempts, C2 inclusive horizon, give-up, zone change, notice floor = swept start, Repairs issues, period gate, diagnostics v4, request ceiling, junction old-convention classifier TestRealignJunctionMatch)
 ├── test_tz_realign_recorder.py      # re-alignment end to end vs the REAL recorder — bar-exact floor junction (consumption + generation, sum and floor-day bar), stage order/budget, C1 degrade == plain normal poll, give-up and NT/WA (RA-19) junction residuals, C10, junction cost/bands/credit, interior check past a flat night, #303/R2 re-key through the cycle (consumption family incl. ToU bands, and generation)
 ├── test_recorder_statistics.py      # sum-chain scenarios vs the REAL recorder (recorder_mock) — spike/#114/ToU-partition/half-hour-straddle classes + #300 stale-key fill (SA/QLD-DST/generation convention re-key with stale keys asserted 0, per-day gate incl. generation error day, wholly-absent ToU band, provenance gate, straddle both-days, conservation guard, read budget on the real recorder read)
-├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration
+├── test_sensor.py                   # sensor descriptions + conditional ToU rate-sensor registration + #141 config-driven registration, D8 registry removal, rate_source
+├── test_tariff_windows.py           # #141 pure module: grammar, validation, per-day-class overlaps, 48-slot tables, DST folds/gaps, local-weekday rows, fingerprint, desired_rate_bands, band_profile
+├── test_legacy_golden.py            # #141 AC5 golden vs the REAL recorder: never-configured == v0.5.0-beta.5 for Brisbane direct imports, an Adelaide straddle-trim scenario and a real-cycle #292 realign junction; imports nothing #141 added, so the SAME file regenerates the fixture on e8b7a73 (never on branch code)
+├── test_tariff_recorder.py          # #141 vs the REAL recorder: partition on Sydney DST days / Adelaide / weekday-weekend, superoffpeak in a band, every AC3 transition (no step, before-cutoff untouched, retired bands flatline), M1 empty partition, slack-key partition rule, suspended totals-only, one state read, #292 realign junction with derived bands (moved slots subtracted by stored type, SA + QLD-DST, keep/change/mixed), legacy Repairs issue follows stored band series
+├── test_tariff_coordinator.py       # #141 cycle wiring (mocked recorder): mode table, D6 hold bound/suspend/recover, Repairs, applied history, rate sources, mid-fetch options snapshot, rate-sensor reload comparator
 ├── test_claude_hooks.py             # hook sanitization (#244), guard robustness, TOFU verify-wiring fail-closed (#245) — executes the literal shipped scripts/commands
 ├── test_provenance_hook.py          # executes scripts/check_provenance_trailer.sh against sample messages (any-vendor Co-Authored-By / AI-Assisted: none / merge skip)
-└── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v4 shape (tz_realign)
+└── test_diagnostics.py              # leak tests (token/contract/account/SPKI never serialize) + schema v4 shape (tz_realign) + v5 tariff_bands/band_profile/options
 
 docs/
 ├── compliance/
 │   ├── secure-sdlc-standard.md  # the standard this repo operates under — 19 COs / 94 statements, industry-agnostic (v1.0)
 │   └── conformance.md           # statement-level conformance map: mechanism per statement + RA-xx exceptions — update rows in the SAME PR as any control-surface change
-├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, sensor glossary, troubleshooting (#137 footgun)
+├── energy-dashboard.md  # user guide — which haggle:* statistics to add per plan type, tariff windows setup + limitations (#141), sensor glossary, troubleshooting (#137 footgun)
 ├── delivery-metrics.md  # quarterly delivery-metrics process + recorded time-to-restore exception (CO-18.3)
 ├── releasing.md         # release acceptance policy — beta-soak rule, hotfix evidence rule, downgrade test, acceptance record
 ├── testing.md           # test strategy — four layers, coverage floor, when live-HA manual testing is required
-├── diagnostics.md       # diagnostics schema v3 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
+├── diagnostics.md       # diagnostics schema v5 reference — users + triage routine (bump with DIAGNOSTICS_SCHEMA_VERSION)
 ├── threat-model.md      # living threat model — trust boundaries, STRIDE register + dispositions, AI agents, regulatory scope, resilience targets
 └── agents/
     ├── triage-routine.md    # authoritative spec of the haggle-triage routine (repo-first change control, CO-12.8) — edit HERE, then sync the platform copy
@@ -403,7 +409,12 @@ quarterly delivery metrics (see `docs/delivery-metrics.md`).
   and the Sydney re-localisation must NOT be applied. `parse_daily_readings`
   is unused at runtime — `AglClient` has no Daily method.
 - **`consumption.type`**: `normal` | `peak` | `offpeak` | `shoulder` | `none`
-  (filter out `none` — future-dated or unavailable intervals)
+  (filter out `none` — future-dated or unavailable intervals). **Not a
+  reliable tariff indicator** (#126: peak-rate usage tagged `normal`; #224:
+  a spurious `peak` on a flat/EV plan; #292: an Adelaide Night Saver EV
+  account where `peak` covered ~74 of 192 kWh of peak-rate usage). A
+  configured entry (#141) uses it only as a status filter and derives the
+  band from the slot time; only never-configured entries still split by it.
 - **Zero-on-zero filter**: AGL also returns intervals with non-`none` type
   but both `quantity` and `amount` equal to 0 for days where the AEMO feed
   hasn't yet delivered the meter reads. The parser drops these (they would
@@ -839,13 +850,17 @@ complete stage's import only, `junction=True`, for the consumption family
 - Cost, credit and bands follow the aggregate-kWh verdict, never their own
   (falling back to "not confirmed" would double-count the aggregate). Each
   series subtracts its share of the matched slots at the batch's CURRENT
-  value and band, so a re-price or band re-type since storage is not
-  neutralised: a state that would go negative (a price increase, the new
-  band of a re-typed slot) is written as 0 (DEBUG-logged); a price
-  decrease, or the OLD band of a re-typed slot, keeps at most one moved
-  slot's worth of over-count in that cost, credit or band row. The
-  aggregate kWh stays exact; only cost and the band partition can be off
-  by that slot. A series is skipped only when it has neither a stored
+  value; bands take the matched slots under the type they were STORED
+  under (AGL's raw tag, `stored_type`, #141 — with derived bands the
+  current band of a moved slot is not the band holding it). So a re-price,
+  or AGL re-typing a slot since storage, is not neutralised: a state that
+  would go negative (a price increase, the new band of a slot AGL
+  re-typed) is written as 0 (DEBUG-logged); a price decrease, or the OLD
+  band of a slot AGL re-typed, keeps at most the matched slots' worth of
+  over-count in that cost, credit or band row. The band partition is
+  exact provided AGL's type for those slots is unchanged since they were
+  stored. The aggregate kWh stays exact; only cost and the band
+  partition can be off by the matched slots. A series is skipped only when it has neither a stored
   `prev` row nor a trimmed slot; a band that holds a trimmed slot but has
   no stored `prev` row gains a key at `prev` (the restored 00:00 slot in
   its true hour). No other key is created.
@@ -1222,6 +1237,44 @@ The HA Energy dashboard requires:
     both counts every kWh twice. Flat-rate users add only the aggregate (no per-tariff series
     exist for them). Each band uses a stable, band-labelled `StatisticMetaData.name`
     (`TARIFF_LABELS` in `const.py`) so the picker can tell them apart.
+- **User-configured tariff windows** (#141, `OPT_TARIFF_BANDS`): a configured
+  entry writes the SAME `haggle:consumption_<band>_<contract>` /
+  `haggle:cost_<band>_<contract>` IDs, with `<band>` derived from the slot's
+  corrected start in the contract zone (`tariff_windows.band_of`) and the
+  vocabulary widened to `BAND_VOCAB` (adds `superoffpeak`, "Super Off-Peak").
+  Every band series is a member of the family on every configured import, so
+  a band the new settings do not produce enters empty and the #300 fill
+  re-chains its stored rows (zero from the cutoff): it flatlines, never steps,
+  and no series is ever created without data. At every key where the
+  aggregate has a BATCH value, band kWh and cost states sum to it exactly;
+  carried-forward keys keep their stored split (empty for history that never
+  had bands). Rows before the import cutoff keep their old basis, so the sum
+  of EVERY band series ever written equals the aggregate hour by hour: users
+  add every band series that has data (retired ones included), never the
+  aggregate as well. Flat mode writes no band rows (all stored bands retire).
+  Band cost is always AGL's per-slot `consumption.amount`; entered rates feed
+  the rate sensors only. A never-configured entry is on v0.5.0's exact path
+  (`TOU_SERIES_TARIFFS`, the `& TOU_BANDS` gate) — golden-tested.
+  - **#292 re-alignment junction with derived bands**: the stored `prev`
+    row below the window was written before #141, under AGL's raw type, so
+    `_import_intervals` captures `raw_type` BEFORE `_attribute_bands` and
+    `_realign_junction(stored_type=…)` subtracts the MATCHED slots from the
+    band they are stored under; the trimmed half (new rows) keeps its
+    derived band. The band partition at `prev` is then exact, provided
+    AGL's type for those slots is unchanged since they were stored; if AGL
+    re-typed them, it can over-count by at most the matched slots (one SA,
+    two QLD-in-Sydney-DST). Aggregate always exact; never a step. The
+    applied-history `from` is the cutoff AFTER the junction moved it
+    (`prev`).
+  - **Downgrade to v0.5.x** (m4): the older build does not know
+    `superoffpeak`, so for the trailing `REWINDOW_DAYS` its band partition
+    counts those hours twice (Super Off-Peak + the tag-based band); no step.
+  - **Delete + re-add** (stats P3-2): the new entry is never-configured
+    (`CONF_TARIFF_BANDS_APPLIED` lives in the deleted entry's data), so it
+    is on the legacy path and does not retire the stored `superoffpeak`
+    rows in the rewindow: the band partition double-counts those hours for
+    up to `REWINDOW_DAYS`, with no step. The user's fix is to configure the
+    windows again (docs/energy-dashboard.md, Troubleshooting).
 - Resume point: `get_last_statistics(hass, 1, stat_id, True, {"start", "sum"})` — returns
   the last-imported hour so incremental updates don't re-import already-stored rows.
 - Each import call is idempotent: `(statistic_id, start)` updates in place.
@@ -1419,7 +1472,52 @@ The HA Energy dashboard requires:
   neighbour's trailing-slack row is not evidence that a day's stored kWh
   is gone; carry its stored state forward instead. Never let the fill
   create a key or a band series, and never arm it under the HA-timezone
-  fallback (`tz_is_contract is True` only).
+  fallback (`tz_is_contract is True` only). One narrow exception (#141,
+  D7): for the BAND series of an entry that has EVER been configured
+  (`CONF_TARIFF_BANDS_APPLIED` non-empty or a mode configured), a stale
+  key is also zeroed wherever the aggregate has a BATCH value — the batch
+  speaks for that key's total, so the bands must partition it (otherwise
+  an old band carries forward beside the re-attributed one and the split
+  counts it twice). Aggregate and cost series keep the provenance rule
+  unchanged, and a never-configured entry never gets the exception.
+- **Don't derive a tariff band from anything but the CORRECTED slot start
+  in the CONTRACT zone, and never derive one under the HA-timezone
+  fallback.** `_attribute_bands` runs inside `_import_intervals` on the
+  parser's #292-corrected timestamps, using `_contract_tz()`, and derived
+  mode is resolved only when `tz_is_contract is True`. UTC, HA's zone, or
+  the uncorrected AGL instant would put SA readings 30 min / QLD-in-DST
+  readings 1 h into the wrong band, silently — the partition still sums,
+  so no check catches it. A configured entry whose zone is unknown HOLDS
+  the whole consumption import (aggregate included, max
+  `TARIFF_TZ_HOLD_MAX_CYCLES`, none for an unparseable address) so the
+  resume point stays behind and the days are re-fetched later; only then
+  does it fall back to totals-only. Suspending only the bands would leave
+  a permanent band hole older than the rewindow (critic M6).
+- **Don't let any #141 behaviour reach a never-configured entry.** The
+  `BAND_VOCAB` family, the partition-exact band fill, the applied-history
+  record and the rate-sensor registry removal are all gated on "ever
+  configured" / a configured mode. The legacy gate stays exactly
+  `(known | batch) & TOU_BANDS`, the legacy seed reads only
+  peak/offpeak/shoulder, and legacy rate sensors only peak/offpeak/
+  shoulder. `tests/test_legacy_golden.py` (Brisbane, Adelaide straddle,
+  real cycle with a realign junction) compares against a snapshot
+  generated by that same file on the v0.5.0-beta.5 code (e8b7a73, a
+  scratch worktree); never regenerate it from branch code to make a
+  change pass.
+- **Don't save an options step with `async_create_entry(data=user_input)`.**
+  That REPLACES every option, so saving one screen wiped the other's
+  settings (the pre-#141 single step did exactly this; harmless only while
+  there was one screen). Merge: `{**self.config_entry.options, **changes}`,
+  and pop a key explicitly when the user unsets it. Prefill clearable
+  fields with suggested values (`add_suggested_values_to_schema`), never
+  `default=` — a default silently re-fills a field the user emptied.
+- **Don't read `entry.options[OPT_TARIFF_BANDS]` more than once per cycle,
+  or without `tariff_windows.validate`.** `_resolve_band_plan` takes ONE
+  snapshot after the overview refresh; the import, `HaggleData` rate
+  sources and the applied history all use it, so an Options save
+  mid-fetch cannot split one cycle across two configurations. A
+  hand-edited or newer-version value must fail safe to `invalid`
+  (totals only, Repairs issue), never be half-understood.
 - **Don't retry a convention-changing sweep day by day, and don't import
   a partial one.** In a half-hour zone, a batch that starts mid-history
   has no overlap day: it is past the retention guard, so the batch

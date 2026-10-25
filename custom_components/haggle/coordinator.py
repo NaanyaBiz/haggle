@@ -23,8 +23,10 @@ recorder is idempotent on (statistic_id, start), so the overwrite is safe.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import TYPE_CHECKING, Any, NamedTuple
@@ -55,15 +57,28 @@ from .const import (
     BACKFILL_CHUNK_DAYS,
     BACKFILL_DAYS,
     BACKFILL_INTER_REQUEST_DELAY,
+    BAND_MODE_DERIVED,
+    BAND_MODE_FLAT,
+    BAND_MODE_HELD,
+    BAND_MODE_INVALID,
+    BAND_MODE_LEGACY,
+    BAND_MODE_SUSPENDED,
+    BAND_VOCAB,
     CONF_LOCAL_TZ,
     CONF_SOLAR_HEAL,
     CONF_SOLAR_STALL_SPANS,
+    CONF_TARIFF_BANDS_APPLIED,
     CONF_TZ_REALIGN,
     DEFAULT_POLL_INTERVAL_HOURS,
     DOMAIN,
     ISSUE_LEARN_MORE_URL,
+    ISSUE_TARIFF_BANDS_INVALID,
+    ISSUE_TARIFF_BANDS_LEGACY,
+    ISSUE_TARIFF_BANDS_SUSPENDED,
+    ISSUE_TARIFF_LEARN_MORE_URL,
     ISSUE_TZ_HISTORY_BEFORE_REALIGN,
     ISSUE_TZ_REALIGN_GAVE_UP,
+    MAX_BAND_HISTORY,
     MAX_POLL_INTERVAL_HOURS,
     MAX_SOLAR_HEAL_ATTEMPTS,
     MAX_STALL_SPAN_RECORDS,
@@ -72,6 +87,7 @@ from .const import (
     MIN_POLL_INTERVAL_HOURS,
     OPT_POLL_INTERVAL_HOURS,
     OPT_SOLAR_STATISTICS_ENABLED,
+    OPT_TARIFF_BANDS,
     RECORDER_DRAIN_TIMEOUT,
     RETRY_INTERVAL_ON_ERROR,
     REWINDOW_DAYS,
@@ -83,9 +99,12 @@ from .const import (
     STAT_GENERATION,
     STAT_GENERATION_CREDIT,
     TARIFF_LABELS,
+    TARIFF_MODE_FLAT,
     TARIFF_OFFPEAK,
     TARIFF_PEAK,
     TARIFF_SHOULDER,
+    TARIFF_SUPEROFFPEAK,
+    TARIFF_TZ_HOLD_MAX_CYCLES,
     TOU_BANDS,
     TOU_SERIES_TARIFFS,
     TZ_REALIGN_COMPLETE,
@@ -102,6 +121,16 @@ from .const import (
     TZ_REALIGN_REASON_UNSUPPORTED_SHIFT,
     TZ_REALIGN_SHIFT_SCAN_DAYS,
     TZ_REALIGN_SKIPPED,
+)
+from .tariff_windows import (
+    RATE_BANDS,
+    Table,
+    band_of,
+    band_profile,
+    compile_table,
+    desired_rate_bands,
+    fingerprint,
+    validate,
 )
 
 if TYPE_CHECKING:
@@ -231,6 +260,29 @@ class _RealignSweep(NamedTuple):
     ignore: frozenset[date] = frozenset()
 
 
+class _BandPlan(NamedTuple):
+    """One cycle's tariff-band attribution snapshot (#141).
+
+    Resolved ONCE per cycle in _fetch_and_import (after the overview has
+    refined the contract zone) so an Options save mid-cycle cannot split one
+    cycle across two configurations. ``mode`` is a BAND_MODE_* value;
+    ``config`` is the validated canonical options value (None for legacy and
+    invalid); ``table`` is set only when bands are derived; ``ever_configured``
+    arms the BAND_VOCAB family and the partition-exact band fill (D7) — False
+    keeps a never-configured entry on v0.5.0's exact write path (AC5).
+    """
+
+    mode: str = BAND_MODE_LEGACY
+    config: Mapping[str, Any] | None = None
+    table: Table | None = None
+    fingerprint: str | None = None
+    ever_configured: bool = False
+    error: str | None = None
+
+
+_LEGACY_PLAN = _BandPlan()
+
+
 class _SeriesPick(NamedTuple):
     """The readings and value one statistics series sums (#292 PR2b R1).
 
@@ -289,6 +341,11 @@ class HaggleData:
     unit_rate_peak_aud_per_kwh: float | None = None
     unit_rate_offpeak_aud_per_kwh: float | None = None
     unit_rate_shoulder_aud_per_kwh: float | None = None
+    # Super Off-Peak rate (#141): only ever a configured rate (the plan
+    # heuristic has no such band). rate_sources maps each rate band to
+    # "configured" | "plan" | "none" (the sensor's `rate_source` attribute).
+    unit_rate_superoffpeak_aud_per_kwh: float | None = None
+    rate_sources: dict[str, str] = field(default_factory=dict)
     # Coverage attributes for the consumption_period sensor (#214). Sourced
     # from AGL's own bill-summary endpoint (consumption_period_kwh above),
     # which AGL computes itself and is NEVER locally truncated — so these are
@@ -379,6 +436,24 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             frozenset(),
             frozenset(),
         )
+        # Tariff-band snapshot for this cycle (#141); legacy until the first
+        # cycle resolves the options, so a direct _import_intervals caller
+        # gets v0.5.0 behaviour.
+        self._band_plan: _BandPlan = _LEGACY_PLAN
+        # D6: consecutive cycles a configured entry held its consumption
+        # import waiting for the contract zone (in-memory; restart resets).
+        self._tz_hold_cycles = 0
+        # True once the overview returned this contract with an address
+        # tz_for_address cannot parse — the zone will never resolve.
+        self._address_unparseable = False
+        # The first hour of this cycle's consumption import (None = no
+        # import), for the applied-settings history.
+        self._last_cons_cutoff: datetime | None = None
+        # Implied-price profile of the last consumption import (diagnostics).
+        self.band_profile: dict[str, Any] | None = None
+        # (kind, bands) of the ToU rate sensors sensor.py registered at the
+        # last platform setup — the reload comparator (M4). None until then.
+        self.rate_bands_registered: tuple[str, frozenset[str]] | None = None
 
     def _tariff_stat_ids(self, tariff: str) -> tuple[str, str]:
         """Return (consumption_id, cost_id) for a per-tariff series."""
@@ -451,6 +526,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         summary = await self.client.async_get_usage_summary(self.contract_number)
         plan = await self.client.async_get_plan(self.contract_number)
         await self._refresh_from_overview()
+        # Tariff-band snapshot (#141): after the overview (which settles
+        # tz_is_contract), before any import — one configuration per cycle.
+        band_plan = self._band_plan = self._resolve_band_plan()
 
         bill_start = self.last_bill_start = summary.start
 
@@ -508,6 +586,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         cons_range, solar_range = self._realign_ranges(
             realign, cons_range, solar_range, yesterday
         )
+        if band_plan.mode == BAND_MODE_HELD:
+            # D6: a configured entry must never write band rows in the wrong
+            # zone, and suspending only the bands would leave a permanent
+            # hole once the zone resolves. Skip the consumption import
+            # outright (no request): its resume point stays behind and the
+            # normal rewindow/big-gap logic re-fetches the days later.
+            cons_range = None
 
         fetch_complete = await self._fetch_with_heal_accounting(
             cons_range,
@@ -521,6 +606,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             realign=realign,
         )
         realign_complete = await self._settle_tz_realign(realign, today, last_gen_date)
+        self._settle_band_cycle(band_plan)
 
         # Extract rates from plan.
         unit_rate_aud: float | None = None
@@ -534,11 +620,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         if plan.supply_charge_cents_per_day:
             supply_charge_aud = plan.supply_charge_cents_per_day / 100.0
 
-        # Per-tariff rates: cents/kWh → AUD/kWh. Absent bands stay None (the
-        # sensor reads `unavailable`), never a misleading 0.0.
-        def _tou_rate(tariff: str) -> float | None:
-            cents = plan.tou_unit_rates.get(tariff)
-            return cents / 100.0 if cents is not None else None
+        # Per-tariff rates (AUD/kWh): the configured rate, else the plan
+        # heuristic (#90), else None (`unavailable`), never a misleading 0.0.
+        band_rates, rate_sources = self._band_rates(band_plan, plan.tou_unit_rates)
 
         feed_in_cents = plan.feed_in_rate_cents_per_kwh
         feed_in_rate_aud = feed_in_cents / 100.0 if feed_in_cents is not None else None
@@ -612,9 +696,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             supply_charge_aud_per_day=supply_charge_aud,
             latest_cumulative_kwh=self._latest_cumulative_kwh,
             active_tariffs=frozenset(self._active_tou_bands),
-            unit_rate_peak_aud_per_kwh=_tou_rate(TARIFF_PEAK),
-            unit_rate_offpeak_aud_per_kwh=_tou_rate(TARIFF_OFFPEAK),
-            unit_rate_shoulder_aud_per_kwh=_tou_rate(TARIFF_SHOULDER),
+            unit_rate_peak_aud_per_kwh=band_rates[TARIFF_PEAK],
+            unit_rate_offpeak_aud_per_kwh=band_rates[TARIFF_OFFPEAK],
+            unit_rate_shoulder_aud_per_kwh=band_rates[TARIFF_SHOULDER],
+            unit_rate_superoffpeak_aud_per_kwh=band_rates[TARIFF_SUPEROFFPEAK],
+            rate_sources=rate_sources,
             # AGL computes period_kwh itself over the FULL nominal bill
             # period, so the covered window is never locally truncated —
             # period_start and covered_from are always bill_start (#214).
@@ -677,6 +763,169 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         done = fetch_complete if heal_ctx is not None else realign_complete
         return done and await self._recorder_drained()
 
+    def _resolve_band_plan(self) -> _BandPlan:
+        """This cycle's tariff-band snapshot (#141), from entry.options.
+
+        | options            | contract zone        | mode              |
+        |--------------------|----------------------|-------------------|
+        | absent             | either               | legacy_type       |
+        | invalid            | either               | invalid (no band) |
+        | windows / flat     | address-derived      | derived / flat    |
+        | windows / flat     | HA fallback          | held_tz, then     |
+        |                    |                      | suspended_tz (D6) |
+
+        ``tz_is_contract is True`` is the identity check the #300 fill uses:
+        bands are derived from contract-local wall-clock time, and the fill
+        that retires re-attributed rows only runs on the contract zone.
+        """
+        self._last_cons_cutoff = None
+        options = self.config_entry.options
+        applied = bool(self.config_entry.data.get(CONF_TARIFF_BANDS_APPLIED))
+        if OPT_TARIFF_BANDS not in options:
+            self._tz_hold_cycles = 0
+            return _BandPlan(ever_configured=applied)
+        config, error = validate(options[OPT_TARIFF_BANDS])
+        if config is None:
+            return _BandPlan(BAND_MODE_INVALID, ever_configured=True, error=error)
+        fp = fingerprint(config)
+        if not self._fill_active():
+            mode = self._tz_hold_mode()
+            return _BandPlan(mode, config, None, fp, ever_configured=True)
+        self._tz_hold_cycles = 0
+        if config["mode"] == TARIFF_MODE_FLAT:
+            return _BandPlan(BAND_MODE_FLAT, config, None, fp, ever_configured=True)
+        return _BandPlan(
+            BAND_MODE_DERIVED, config, compile_table(config), fp, ever_configured=True
+        )
+
+    def _tz_hold_mode(self) -> str:
+        """D6: hold the consumption import while the contract zone is unknown,
+        at most TARIFF_TZ_HOLD_MAX_CYCLES consecutive cycles — or not at all
+        for an address that cannot parse (permanent) — then write the
+        aggregate only."""
+        if self._address_unparseable or (
+            self._tz_hold_cycles >= TARIFF_TZ_HOLD_MAX_CYCLES
+        ):
+            _LOGGER.warning(
+                "Tariff windows are configured but the contract timezone is "
+                "unknown; writing the aggregate statistics only, no band "
+                "series (#141)"
+            )
+            return BAND_MODE_SUSPENDED
+        self._tz_hold_cycles += 1
+        _LOGGER.info(
+            "Tariff windows are configured but the contract timezone is not "
+            "known yet; holding the consumption import (cycle %d of %d, #141)",
+            self._tz_hold_cycles,
+            TARIFF_TZ_HOLD_MAX_CYCLES,
+        )
+        return BAND_MODE_HELD
+
+    @staticmethod
+    def _band_rates(
+        band_plan: _BandPlan, plan_cents: Mapping[str, float]
+    ) -> tuple[dict[str, float | None], dict[str, str]]:
+        """Per-band unit rates (AUD/kWh) and their source (AC8).
+
+        A configured rate wins; else the plan-text heuristic (#90, never for
+        superoffpeak); else None and source "none". A flat config has no band
+        rates at all.
+        """
+        config = band_plan.config
+        flat = config is not None and config["mode"] == TARIFF_MODE_FLAT
+        configured: Mapping[str, float] = (
+            config.get("rates", {}) if config is not None else {}
+        )
+        rates: dict[str, float | None] = {}
+        sources: dict[str, str] = {}
+        for band in RATE_BANDS:
+            cents = plan_cents.get(band)
+            if flat:
+                rates[band], sources[band] = None, "none"
+            elif band in configured:
+                rates[band], sources[band] = configured[band], "configured"
+            elif cents is not None:
+                rates[band], sources[band] = cents / 100.0, "plan"
+            else:
+                rates[band], sources[band] = None, "none"
+        return rates, sources
+
+    def _settle_band_cycle(self, band_plan: _BandPlan) -> None:
+        """After the fetch: record the applied basis, sync the Repairs."""
+        self._record_band_basis(band_plan)
+        self._sync_tariff_issues(band_plan)
+
+    def _record_band_basis(self, band_plan: _BandPlan) -> None:
+        """Append the applied attribution basis after a consumption import.
+
+        entry.data[CONF_TARIFF_BANDS_APPLIED] is the self-describing record
+        of when each basis started: one ``{fingerprint, mode, from}`` entry
+        per change, ``from`` the import's first hour (rows before it keep the
+        previous attribution). A return to legacy is recorded only on an
+        entry that has history, so a never-configured entry never gets one
+        (AC5). Written like the heal record — no reload listener fires.
+        """
+        cutoff = self._last_cons_cutoff
+        if cutoff is None:
+            return
+        stored = self.config_entry.data.get(CONF_TARIFF_BANDS_APPLIED)
+        history = list(stored) if isinstance(stored, list) else []
+        if band_plan.mode in (BAND_MODE_DERIVED, BAND_MODE_FLAT):
+            fp, mode = band_plan.fingerprint, band_plan.mode
+        elif band_plan.mode == BAND_MODE_LEGACY and history:
+            fp, mode = BAND_MODE_LEGACY, BAND_MODE_LEGACY
+        else:
+            return
+        last = history[-1] if history else None
+        if isinstance(last, dict) and last.get("fingerprint") == fp:
+            return
+        history.append({"fingerprint": fp, "mode": mode, "from": cutoff.isoformat()})
+        _LOGGER.info(
+            "Tariff band settings changed (%s); band statistics re-derived from "
+            "%s; earlier hours keep the previous attribution (#141)",
+            mode,
+            cutoff.isoformat(),
+        )
+        self.hass.config_entries.async_update_entry(
+            self.config_entry,
+            data={
+                **self.config_entry.data,
+                CONF_TARIFF_BANDS_APPLIED: history[-MAX_BAND_HISTORY:],
+            },
+        )
+
+    def _sync_tariff_issues(self, band_plan: _BandPlan) -> None:
+        """Create/delete the three tariff Repairs issues idempotently (m9).
+
+        - legacy: an unconfigured entry WITH band series is told AGL's tag is
+          unreliable and where to configure windows (D1);
+        - invalid: the stored settings failed validation (no band rows);
+        - suspended: configured, but the contract zone never resolved, so
+          only the aggregate is written (D6).
+        Each is deleted as soon as its condition clears.
+        """
+        legacy = band_plan.mode == BAND_MODE_LEGACY and bool(self._active_tou_bands)
+        for key, active in (
+            (ISSUE_TARIFF_BANDS_LEGACY, legacy),
+            (ISSUE_TARIFF_BANDS_INVALID, band_plan.mode == BAND_MODE_INVALID),
+            (ISSUE_TARIFF_BANDS_SUSPENDED, band_plan.mode == BAND_MODE_SUSPENDED),
+        ):
+            issue_id = f"{key}_{self.config_entry.entry_id}"
+            if not active:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+                continue
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                is_persistent=True,
+                severity=ir.IssueSeverity.WARNING,
+                translation_key=key,
+                translation_placeholders={"entry": self.config_entry.title},
+                learn_more_url=ISSUE_TARIFF_LEARN_MORE_URL,
+            )
+
     async def _refresh_from_overview(self) -> None:
         """Update the solar flag and bill projection from /v3/overview.
 
@@ -727,6 +976,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 tz = await self.hass.async_add_executor_job(
                     tz_for_address, contract.address
                 )
+                self._address_unparseable = tz is None
                 if tz is not None:
                     self.client.set_contract_tz(tz)
                     self._persist_contract_tz(tz)
@@ -891,28 +1141,70 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         return {tariff: hourly for tariff, hourly in trimmed.items() if hourly}
 
     def _maybe_reload_for_new_tariffs(self) -> None:
-        """Schedule a reload when a ToU band first appears after first refresh.
+        """Schedule a reload when the rate-sensor set (or solar) must change.
 
-        ToU rate sensors are registered conditionally at platform setup from
-        `active_tariffs`, so a flat-rate contract that later switches to a ToU
-        plan would not surface the new rate sensors until the entry reloads.
-        We schedule one then. Loop-safe: `_active_tou_bands` only ever grows
-        (it is seeded from stored statistics), so the growth condition fires at
-        most once per band. The very first refresh (`self.data is None`) never
-        reloads — the platform is set up fresh straight after it.
+        ToU rate sensors are registered conditionally at platform setup, so
+        a change only surfaces after a reload. Legacy (unconfigured) entries
+        keep v0.5.0's GROWTH trigger: a ToU band first appearing after the
+        first refresh. Loop-safe: `_active_tou_bands` only ever grows (it is
+        seeded from stored statistics), so it fires at most once per band.
+        Configured entries (#141, M4) compare the desired set — the same pure
+        function sensor.py registers from — with what the platform actually
+        registered, and reload on ANY difference (a band added or removed, or
+        a switch between legacy and configured); after the reload the two are
+        equal, so it cannot loop. The very first refresh (`self.data is
+        None`) never reloads — the platform is set up fresh straight after.
         """
         new_bands = self._active_tou_bands - self._prev_active_tou_bands
         solar_appeared = self._has_solar and not self._prev_has_solar
         self._prev_active_tou_bands = set(self._active_tou_bands)
         self._prev_has_solar = self._has_solar
-        if self.data is not None and (new_bands or solar_appeared):
+        kind, _ = self.desired_rate_sensors(self._active_tou_bands)
+        if kind == "configured":
+            new_bands = set()
+        rate_change = self._rate_sensors_changed()
+        if self.data is not None and (new_bands or solar_appeared or rate_change):
             _LOGGER.info(
-                "New ToU tariff band(s) %s / solar_appeared=%s detected; "
-                "scheduling reload to add sensors",
+                "New ToU tariff band(s) %s / solar_appeared=%s / rate sensors "
+                "changed=%s detected; scheduling reload to update sensors",
                 sorted(new_bands),
                 solar_appeared,
+                rate_change,
             )
             self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
+
+    def desired_rate_sensors(
+        self, active_tou_bands: Iterable[str]
+    ) -> tuple[str, frozenset[str]]:
+        """``(kind, bands)``: the ToU rate sensors this entry should have.
+
+        ``kind`` is "configured" for a valid tariff config (any effective
+        mode — rates do not depend on the zone) and "legacy" otherwise
+        (unconfigured, or an invalid stored value). The set comes from
+        tariff_windows.desired_rate_bands, the one function sensor.py also
+        registers from (M4).
+        """
+        config = self._band_plan.config
+        kind = "configured" if config is not None else "legacy"
+        return kind, desired_rate_bands(config, active_tou_bands)
+
+    def diagnostic_bands(self) -> list[str]:
+        """Bands whose series diagnostics reports coverage for (#141): the
+        legacy active bands, or every BAND_VOCAB band once configured."""
+        if self._band_plan.ever_configured:
+            return list(BAND_VOCAB)
+        return sorted(self._active_tou_bands)
+
+    def _rate_sensors_changed(self) -> bool:
+        """Whether the registered rate sensors differ from the desired set:
+        any difference for a configured entry, a kind switch for legacy."""
+        registered = self.rate_bands_registered
+        if registered is None:
+            return False
+        kind, desired = self.desired_rate_sensors(self._active_tou_bands)
+        if kind == "configured":
+            return registered != (kind, desired)
+        return registered[0] != kind
 
     def _resolve_fetch_start(
         self,
@@ -2735,6 +3027,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
     @staticmethod
     def _bucket_hourly(
         intervals: list[IntervalReading],
+        vocab: Collection[str] = TOU_SERIES_TARIFFS,
     ) -> tuple[
         dict[datetime, float],
         dict[datetime, float],
@@ -2745,7 +3038,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         """Bucket 30-min intervals into hourly aggregate + per-tariff sums.
 
         Returns (hour_cons, hour_cost, band_cons, band_cost, bands_this_batch).
-        Per-tariff buckets are only populated for TOU_SERIES_TARIFFS rate types.
+        Per-tariff buckets are only populated for ``vocab`` rate types:
+        TOU_SERIES_TARIFFS on the legacy path (v0.5.0), BAND_VOCAB for derived
+        bands (#141, M5 — superoffpeak must land in a band), none for flat.
         """
         hour_cons: dict[datetime, float] = {}
         hour_cost: dict[datetime, float] = {}
@@ -2756,7 +3051,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             h = r.dt.replace(minute=0, second=0, microsecond=0)
             hour_cons[h] = hour_cons.get(h, 0.0) + r.kwh
             hour_cost[h] = hour_cost.get(h, 0.0) + r.cost_aud
-            if r.rate_type in TOU_SERIES_TARIFFS:
+            if r.rate_type in vocab:
                 bc = band_cons.setdefault(r.rate_type, {})
                 bk = band_cost.setdefault(r.rate_type, {})
                 bc[h] = bc.get(h, 0.0) + r.kwh
@@ -2843,6 +3138,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         reading_days: Collection[date] | None,
         since: datetime,
         rekey: bool = False,
+        partition_ids: Collection[str] = frozenset(),
     ) -> dict[str, dict[datetime, float]]:
         """Rewrite every stored key at/after ``since`` the batch has no value for.
 
@@ -2880,6 +3176,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         is such a key passes, while a genuine regression on another key of
         the same day still carries forward with the WARNING. Never on a
         normal import.
+
+        ``partition_ids`` (#141, D7 — band series of an entry that has EVER
+        been configured; empty otherwise, so v0.5.0 output is unchanged):
+        such a series' stale key is ALSO zeroed wherever the aggregate kWh
+        series has a BATCH value — the batch speaks for that key's total, so
+        the bands must partition it, even on a day that is not authoritative
+        (a trailing-slack slot of an errored day). Without it the old band
+        carries forward beside the new one: counted twice in the partition.
+        Still re-chained, so still monotone; the fill still never creates a
+        key, so a key no band ever stored keeps an empty partition (M1).
         """
         if not stored:
             return series
@@ -2911,8 +3217,13 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 len(rekeyed),
             )
             zero_ok |= rekeyed
+        batch_keys = set(series[kwh_id]) if partition_ids else set()
         return {
-            stat_id: self._fill_series(hourly, stored.get(stat_id, {}), zero_ok)
+            stat_id: self._fill_series(
+                hourly,
+                stored.get(stat_id, {}),
+                zero_ok | batch_keys if stat_id in partition_ids else zero_ok,
+            )
             for stat_id, hourly in series.items()
         }
 
@@ -3050,12 +3361,24 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
 
         stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
         stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
+        band_plan = self._band_plan
 
         intervals = _dedupe_slots(intervals)
+        raw_types = Counter(r.rate_type for r in intervals)
+        # AGL's own tag per slot, before re-banding: the old-convention rows
+        # below a re-alignment window were stored under it (#141 P2-1).
+        raw_type = {r.dt: r.rate_type for r in intervals}
+        # #141: from here on, inside this import, `rate_type` means the
+        # STATISTICS band — AGL's tag on the legacy path, the locally derived
+        # band otherwise — so bucketing, the junction picks and the re-key
+        # all read ONE attribution.
+        intervals = self._attribute_bands(intervals, band_plan)
 
         # Aggregate hourly buckets (all intervals) + per-tariff hourly buckets.
         buckets = self._trimmed_buckets(
-            intervals, self._straddle_trim_before(intervals)
+            intervals,
+            self._straddle_trim_before(intervals),
+            self._bucket_vocab(band_plan),
         )
         hour_cons = buckets[0]
 
@@ -3067,9 +3390,15 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # returns the cumulative sum at the last hour strictly before it, so the
         # to-be-overwritten rewindow rows are excluded regardless of timezone/DST.
         cutoff = min(hour_cons)
+        self.band_profile = band_profile(
+            intervals,
+            raw_types,
+            self._contract_tz(),
+            (band_plan.config or {}).get("rates", {}),
+        )
 
-        series, picks, band_ids, tou_seen = self._consumption_series(
-            buckets, known_bands
+        series, picks, band_ids, tou_seen, bands = self._consumption_series(
+            buckets, known_bands, band_plan
         )
 
         # Aggregate + per-tariff baselines and the stored rows for the fill,
@@ -3079,7 +3408,12 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         # reads the stored rows first: its verdict decides the cutoff.
         if junction:
             cutoff, stored = await self._realign_junction(
-                series, intervals, cutoff, kwh_id=stat_id_cons, picks=picks
+                series,
+                intervals,
+                cutoff,
+                kwh_id=stat_id_cons,
+                picks=picks,
+                stored_type=raw_type,
             )
             (initial_cons_sum, initial_cost_sum), band_sums = await asyncio.gather(
                 self._get_baseline_sums(stat_id_cons, stat_id_cost, cutoff),
@@ -3095,6 +3429,9 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 self._get_tariff_baseline_sums(band_ids, cutoff),
                 self._stored_hourly_states(series, cutoff),
             )
+        # The applied-history ``from`` is the import's REAL first hour — after
+        # a re-alignment junction has moved the cutoff down to ``prev``.
+        self._last_cons_cutoff = cutoff
         series = self._stale_key_fill(
             series,
             stored,
@@ -3103,6 +3440,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             reading_days=reading_days,
             since=cutoff,
             rekey=junction,
+            partition_ids=band_ids if band_plan.ever_configured else frozenset(),
         )
 
         kwh = UnitOfEnergy.KILO_WATT_HOUR
@@ -3126,55 +3464,118 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
             initial_sum=initial_cost_sum,
         )
 
-        # Per-tariff series (ToU contracts only).
-        if tou_seen:
-            self._active_tou_bands |= tou_seen
-            self._emit_tariff_series(series, band_sums)
+        # Per-tariff series (ToU contracts / configured bands only).
+        self._active_tou_bands |= tou_seen
+        if bands:
+            self._emit_tariff_series(series, band_sums, bands)
 
         # Update the in-memory cumulative for the TOTAL_INCREASING sensor.
         # hour_cons is non-empty here (we returned early otherwise).
         self._latest_cumulative_kwh = cons_sum
 
     def _consumption_series(
-        self, buckets: _HourlyBuckets, known_bands: frozenset[str]
+        self,
+        buckets: _HourlyBuckets,
+        known_bands: frozenset[str],
+        band_plan: _BandPlan = _LEGACY_PLAN,
     ) -> tuple[
         dict[str, dict[datetime, float]],
         dict[str, _SeriesPick],
         set[str],
         set[str],
+        tuple[str, ...],
     ]:
         """Every series one consumption import may emit, keyed by statistic id.
 
-        Returns (series, picks, band_ids, tou_seen). Per-tariff series join
-        only on a ToU contract; a band absent from this batch enters EMPTY so
-        the stale-key fill can still rewrite its stored rows (#300) — an
-        empty band that has none is never emitted. ``picks`` says what each
-        series sums, for the re-alignment junction (#292 PR2b R1).
+        Returns (series, picks, band_ids, tou_seen, bands). Per-tariff series
+        join for the band family (_band_family); a band absent from this
+        batch enters EMPTY so the stale-key fill can still rewrite — retire —
+        its stored rows (#300, #141) — an empty band that has none is never
+        emitted. ``picks`` says what each series sums, for the re-alignment
+        junction (#292 PR2b R1).
         """
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = buckets
         stat_id_cons = f"{DOMAIN}:{STAT_CONSUMPTION}_{self.contract_number}"
         stat_id_cost = f"{DOMAIN}:{STAT_COST}_{self.contract_number}"
-        tou_seen = (set(known_bands) | bands_this_batch) & set(TOU_BANDS)
+        bands, tou_seen = self._band_family(band_plan, known_bands, bands_this_batch)
         series = {stat_id_cons: hour_cons, stat_id_cost: hour_cost}
         picks = {stat_id_cons: _SeriesPick(), stat_id_cost: _SeriesPick(cost=True)}
         band_ids: set[str] = set()
-        if tou_seen:
-            for tariff in TOU_SERIES_TARIFFS:
-                cons_id, cost_id = self._tariff_stat_ids(tariff)
-                series[cons_id] = band_cons.get(tariff, {})
-                series[cost_id] = band_cost.get(tariff, {})
-                picks[cons_id] = _SeriesPick(tariff)
-                picks[cost_id] = _SeriesPick(tariff, cost=True)
-                band_ids.update((cons_id, cost_id))
-        return series, picks, band_ids, tou_seen
+        for tariff in bands:
+            cons_id, cost_id = self._tariff_stat_ids(tariff)
+            series[cons_id] = band_cons.get(tariff, {})
+            series[cost_id] = band_cost.get(tariff, {})
+            picks[cons_id] = _SeriesPick(tariff)
+            picks[cost_id] = _SeriesPick(tariff, cost=True)
+            band_ids.update((cons_id, cost_id))
+        return series, picks, band_ids, tou_seen, bands
+
+    @staticmethod
+    def _band_family(
+        band_plan: _BandPlan,
+        known_bands: frozenset[str],
+        bands_this_batch: set[str],
+    ) -> tuple[tuple[str, ...], set[str]]:
+        """(bands this import emits, legacy tou_seen).
+
+        Legacy keeps v0.5.0's gate EXACTLY (M3): bands are written only on a
+        contract seen using peak/offpeak/shoulder, over TOU_SERIES_TARIFFS; an
+        entry that was ever configured also carries superoffpeak so a return
+        to legacy retires it. Derived and flat modes carry every BAND_VOCAB
+        band (M5): configured bands take the batch, the rest enter empty and
+        the fill retires whatever they have stored at/after the cutoff —
+        without the family depending on a stored-band read. Held, suspended
+        and invalid modes write no band rows at all (AC6).
+        """
+        if band_plan.mode == BAND_MODE_LEGACY:
+            tou_seen = (set(known_bands) | bands_this_batch) & set(TOU_BANDS)
+            if not tou_seen:
+                return (), tou_seen
+            if not band_plan.ever_configured:
+                return TOU_SERIES_TARIFFS, tou_seen
+            return BAND_VOCAB, tou_seen
+        if band_plan.mode in (BAND_MODE_DERIVED, BAND_MODE_FLAT):
+            return BAND_VOCAB, set()
+        return (), set()
+
+    @staticmethod
+    def _bucket_vocab(band_plan: _BandPlan) -> tuple[str, ...]:
+        """Rate types bucketed into band series (see _bucket_hourly)."""
+        if band_plan.mode == BAND_MODE_DERIVED:
+            return BAND_VOCAB
+        if band_plan.mode == BAND_MODE_LEGACY:
+            return TOU_SERIES_TARIFFS
+        return ()
+
+    def _attribute_bands(
+        self, intervals: list[IntervalReading], band_plan: _BandPlan
+    ) -> list[IntervalReading]:
+        """Derived mode: copies with ``rate_type`` set to the local band (AC1).
+
+        The band comes from the slot's CORRECTED (#292) start in the contract
+        zone — derived mode is only ever resolved with ``tz_is_contract is
+        True`` — and AGL's ``consumption.type`` plays no part. Every other
+        mode returns the readings unchanged.
+        """
+        table = band_plan.table
+        if band_plan.mode != BAND_MODE_DERIVED or table is None:
+            return intervals
+        tz = self._contract_tz()
+        return [
+            dataclasses.replace(r, rate_type=band_of(r.dt, tz, table))
+            for r in intervals
+        ]
 
     @classmethod
     def _trimmed_buckets(
-        cls, intervals: list[IntervalReading], trim_before: datetime | None
+        cls,
+        intervals: list[IntervalReading],
+        trim_before: datetime | None,
+        vocab: Collection[str] = TOU_SERIES_TARIFFS,
     ) -> _HourlyBuckets:
         """_bucket_hourly with the A4 straddle trim applied to every series."""
         hour_cons, hour_cost, band_cons, band_cost, bands_this_batch = (
-            cls._bucket_hourly(intervals)
+            cls._bucket_hourly(intervals, vocab)
         )
         if trim_before is not None:
             hour_cons = cls._drop_before(hour_cons, trim_before)
@@ -3192,6 +3593,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         *,
         kwh_id: str,
         picks: Mapping[str, _SeriesPick],
+        stored_type: Mapping[datetime, str] | None = None,
     ) -> tuple[datetime, dict[str, dict[datetime, float]]]:
         """Rewrite the hour below a re-alignment window (#292 PR2b R1).
 
@@ -3219,11 +3621,16 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         never stored.
 
         Cost and ToU bands follow the aggregate-kWh verdict, never their
-        own, and subtract the matched slots at the batch's CURRENT value and
-        band: a state that would go negative (a re-price up, the new band of
-        a re-typed slot) is clamped at 0 (DEBUG-logged), never a reason to
-        double-count the aggregate; a re-price down, or the old band of a
-        re-typed slot, keeps at most one moved slot of over-count. A series
+        own, and subtract the matched slots at the batch's CURRENT value.
+        Bands subtract them under the type they were STORED under —
+        ``stored_type``, AGL's raw tag per slot, since the old-convention
+        rows predate #141's derived bands — so a slot whose derived band
+        differs leaves the band that holds it, while the trimmed half (new
+        rows) keeps its derived band (#141 P2-1). A state that would go
+        negative (a re-price up, or AGL re-typed a slot since it was stored)
+        is clamped at 0 (DEBUG-logged), never a reason to double-count the
+        aggregate; a re-price down, or the old band of a slot AGL re-typed,
+        keeps at most the matched slots of over-count. A series
         with neither a stored ``prev`` row nor trimmed slots is skipped; a
         band holding a trimmed slot gains its ``prev`` key (the restored
         00:00 slot), and no other key is created. Not confirmed (history
@@ -3246,6 +3653,11 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
                 for stat_id, rows in stored.items()
             }
         trimmed = [r for r in intervals if r.dt < cutoff]
+        if stored_type is not None:
+            matched = [
+                dataclasses.replace(r, rate_type=stored_type.get(r.dt, r.rate_type))
+                for r in matched
+            ]
         for stat_id, pick in picks.items():
             row = stored.get(stat_id, {}).get(prev)
             if row is None and not pick.members(trimmed):
@@ -3412,6 +3824,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         self,
         series: Mapping[str, dict[datetime, float]],
         band_sums: Mapping[str, float],
+        bands: Iterable[str],
     ) -> None:
         """Emit each per-tariff consumption/cost series that has rows to write.
 
@@ -3422,7 +3835,7 @@ class HaggleCoordinator(DataUpdateCoordinator[HaggleData]):
         from homeassistant.const import UnitOfEnergy
 
         contract = self.contract_number
-        for tariff in TOU_SERIES_TARIFFS:
+        for tariff in bands:
             cons_id, cost_id = self._tariff_stat_ids(tariff)
             label = TARIFF_LABELS.get(tariff, tariff.title())
             for stat_id, name, unit, unit_class in (
