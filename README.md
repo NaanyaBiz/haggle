@@ -47,6 +47,13 @@ your smart-meter intervals, and feeds them into Home Assistant's long-term
 statistics so the Energy dashboard shows your usage on the hours it actually
 happened.
 
+**It's a history tool, not a live monitor.** AGL publishes meter data 24–48 h
+late (the national meter-data feed is behind), so yesterday's usage is the
+newest you'll see, and no polling setting can change that. For real-time
+power, use a local energy monitor (CT clamp, smart-meter reader, or your
+inverter's integration). Haggle gives you the billed, AGL-matched history
+alongside it.
+
 ## Install
 
 Haggle is in the [HACS](https://hacs.xyz/) default store:
