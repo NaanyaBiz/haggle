@@ -64,6 +64,13 @@ jobs:
       - name: Pytest vs latest
         run: uv run --no-sync pytest --no-cov
 
+      # #294: HA 2026.10's voluptuous -> probatio switch broke mypy, not
+      # pytest, so a pytest-only run missed it. Type-check too, even when
+      # pytest already failed, so both signals reach the tracking issue.
+      - name: Mypy vs latest
+        if: ${{ !cancelled() }}
+        run: uv run --no-sync mypy custom_components/haggle
+
   report:
     name: Open/refresh ha-compat issue
     # gh CLI only — no actions at all in the one job holding a write scope

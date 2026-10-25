@@ -227,7 +227,7 @@ async def test_fetch_contracts_failure_shows_cannot_connect(
 
 
 async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> None:
-    """When _fetch_contracts returns nothing, unique_id must be a hash, not a token prefix.
+    """With no account number, unique_id must be a hash, not a token prefix.
 
     SAST-001 / SEC-001: HA's entity registry is plaintext JSON on disk; a leaked
     refresh-token prefix from there could be correlated against captured token
@@ -252,7 +252,19 @@ async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> N
         patch(
             "custom_components.haggle.config_flow._fetch_contracts",
             new_callable=AsyncMock,
-            return_value=([], "cafef00d" * 8),  # no contracts → fallback path
+            # A contract with no account number takes the hash fallback.
+            return_value=(
+                [
+                    Contract(
+                        contract_number="9999999999",
+                        account_number="",
+                        address="1 Sample Street SUBURB QLD 4000",
+                        fuel_type="electricityContract",
+                        status="active",
+                    )
+                ],
+                "cafef00d" * 8,
+            ),
         ),
         patch(
             "custom_components.haggle.async_setup_entry",
@@ -272,6 +284,37 @@ async def test_unique_id_fallback_hashes_refresh_token(hass: HomeAssistant) -> N
     assert entry.unique_id == expected_hash
     assert entry.unique_id != refresh_token[:16]
     assert refresh_token[:8] not in (entry.unique_id or "")
+
+
+async def test_zero_contracts_aborts_instead_of_creating_entry(
+    hass: HomeAssistant,
+) -> None:
+    """#267: an empty discovery aborts; it never creates contract_number="" ."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    callback_url = _make_callback_url(
+        result["description_placeholders"]["authorize_url"]
+    )
+    with (
+        patch(
+            "custom_components.haggle.config_flow._exchange_code",
+            new_callable=AsyncMock,
+            return_value=("access_tok", "v1.refresh_FAKE", "deadbeef" * 8),
+        ),
+        patch(
+            "custom_components.haggle.config_flow._fetch_contracts",
+            new_callable=AsyncMock,
+            return_value=([], "cafef00d" * 8),
+        ),
+    ):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input={CALLBACK_URL_FIELD: callback_url}
+        )
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "no_contracts"
+    assert hass.config_entries.async_entries(DOMAIN) == []
 
 
 async def test_user_flow_multiple_contracts_shows_selector(hass: HomeAssistant) -> None:

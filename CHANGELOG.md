@@ -545,6 +545,11 @@ beta.3 ran for more than a day before the upgrade) are fixed by the coming
 
 ## [Unreleased]
 
+### Fixed
+
+- **Setup on an AGL login with no contracts now stops with a clear message** (#267). Before, it silently created an entry with no contract number, and every poll then failed with no explanation.
+- Contract-timezone lookups in the config flow and the overview refresh no longer read timezone data from disk on Home Assistant's event loop (#298).
+
 ### Targets for next sprint
 
 - #141 — user-configured ToU windows: derive tariff bands locally from
